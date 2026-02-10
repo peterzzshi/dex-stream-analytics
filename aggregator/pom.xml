@@ -6,11 +6,11 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.web3analytics</groupId>
-    <artifactId>processor</artifactId>
+    <artifactId>aggregator</artifactId>
     <version>1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>Web3 DEX Analytics - Flink Processor</name>
+    <name>Web3 DEX Analytics - Flink Aggregator</name>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

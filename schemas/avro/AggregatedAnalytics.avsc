@@ -1,0 +1,132 @@
+{
+  "namespace": "com.web3analytics.analytics",
+  "type": "record",
+  "name": "AggregatedAnalytics",
+  "doc": "Aggregated analytics for a DEX pair over a time window",
+  "fields": [
+    {
+      "name": "windowId",
+      "type": "string",
+      "doc": "Unique identifier for this window"
+    },
+    {
+      "name": "windowStart",
+      "type": "long",
+      "doc": "Window start timestamp (Unix seconds)"
+    },
+    {
+      "name": "windowEnd",
+      "type": "long",
+      "doc": "Window end timestamp (Unix seconds)"
+    },
+    {
+      "name": "pairAddress",
+      "type": "string",
+      "doc": "DEX pair address"
+    },
+    {
+      "name": "token0Symbol",
+      "type": "string",
+      "doc": "Symbol of token0"
+    },
+    {
+      "name": "token1Symbol",
+      "type": "string",
+      "doc": "Symbol of token1"
+    },
+    {
+      "name": "twap",
+      "type": "double",
+      "doc": "Time-Weighted Average Price for the window"
+    },
+    {
+      "name": "openPrice",
+      "type": "double",
+      "doc": "First price in the window"
+    },
+    {
+      "name": "closePrice",
+      "type": "double",
+      "doc": "Last price in the window"
+    },
+    {
+      "name": "highPrice",
+      "type": "double",
+      "doc": "Highest price in the window"
+    },
+    {
+      "name": "lowPrice",
+      "type": "double",
+      "doc": "Lowest price in the window"
+    },
+    {
+      "name": "priceVolatility",
+      "type": "double",
+      "doc": "Standard deviation of prices in the window"
+    },
+    {
+      "name": "totalVolume0",
+      "type": "string",
+      "doc": "Total volume of token0 swapped (as string for precision)"
+    },
+    {
+      "name": "totalVolume1",
+      "type": "string",
+      "doc": "Total volume of token1 swapped"
+    },
+    {
+      "name": "volumeUSD",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Total volume in USD if price feed available"
+    },
+    {
+      "name": "swapCount",
+      "type": "int",
+      "doc": "Number of swaps in this window"
+    },
+    {
+      "name": "uniqueTraders",
+      "type": "int",
+      "doc": "Count of unique trader addresses"
+    },
+    {
+      "name": "largestSwapValue",
+      "type": "string",
+      "doc": "Value of the largest swap in the window"
+    },
+    {
+      "name": "largestSwapAddress",
+      "type": "string",
+      "doc": "Address that made the largest swap"
+    },
+    {
+      "name": "totalGasUsed",
+      "type": "long",
+      "doc": "Total gas consumed by all swaps"
+    },
+    {
+      "name": "averageGasPrice",
+      "type": "string",
+      "doc": "Average gas price across swaps"
+    },
+    {
+      "name": "arbitrageCount",
+      "type": "int",
+      "doc": "Number of potential arbitrage patterns detected"
+    },
+    {
+      "name": "repeatedTraders",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "Addresses that made 3+ swaps in the window"
+    },
+    {
+      "name": "processedAt",
+      "type": "long",
+      "doc": "Timestamp when analytics were computed"
+    }
+  ]
+}

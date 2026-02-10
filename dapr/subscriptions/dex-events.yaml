@@ -6,5 +6,5 @@ spec:
   topic: dex-analytics
   route: /events/dex-analytics
   pubsubname: kafka-pubsub
-scopes:
-  - api
+  scopes:
+    - api

@@ -17,7 +17,7 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o producer ./cmd/producer
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o ingester ./cmd/ingester
 
 # Runtime stage
 FROM alpine:latest
@@ -33,7 +33,7 @@ RUN addgroup -g 1000 appuser && \
 WORKDIR /home/appuser
 
 # Copy binary from builder
-COPY --from=builder --chown=appuser:appuser /app/producer .
+COPY --from=builder --chown=appuser:appuser /app/ingester .
 
 # Switch to non-root user
 USER appuser
@@ -46,4 +46,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 
 # Run the application
-CMD ["./producer"]
+CMD ["./ingester"]

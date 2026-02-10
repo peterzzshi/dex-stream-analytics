@@ -1,0 +1,44 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: kafka-pubsub
+  namespace: default
+spec:
+  type: pubsub.kafka
+  version: v1
+  metadata:
+    # Kafka broker address
+    - name: brokers
+      value: "kafka:9092"
+
+    # Consumer group for this application
+    - name: consumerGroup
+      value: "dex-analytics-group"
+
+    # Client ID for identification
+    - name: clientID
+      value: "dex-analytics-client"
+
+    # Authentication type
+    - name: authType
+      value: "none"
+
+    # Number of retries for failed messages
+    - name: maxRetries
+      value: "3"
+
+    # Consumer configuration
+    - name: consumeRetryInterval
+      value: "200ms"
+
+    # Initial offset for new consumer groups
+    # Options: newest, oldest
+    - name: initialOffset
+      value: "oldest"
+
+    # Version of Kafka protocol
+    - name: version
+      value: "2.8.0"
+scopes:
+  - ingester
+  - api

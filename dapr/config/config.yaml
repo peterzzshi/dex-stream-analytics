@@ -1,0 +1,29 @@
+apiVersion: dapr.io/v2alpha1
+kind: Configuration
+metadata:
+  name: dex-analytics-config
+  namespace: default
+spec:
+  tracing:
+    samplingRate: "1"
+    zipkin:
+      endpointAddress: "http://zipkin:9411/api/v2/spans"
+
+  metric:
+    enabled: true
+
+  # Access control for pub/sub
+  accessControl:
+    defaultAction: allow
+    trustDomain: "public"
+
+  # API logging
+  logging:
+    apiLogging:
+      enabled: true
+      obfuscateURLs: false
+
+  # Features
+  features:
+    - name: Feature1
+      enabled: true

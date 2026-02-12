@@ -31,12 +31,86 @@ Polygon QuickSwap → Ingester (Go + DAPR) → Kafka → Aggregator (Flink + Jav
 
 ## Quick Start
 
+### Prerequisites
+
+- Go 1.21+ for ingester and API services
+- Java 17 + Maven for Flink aggregator (optional for local dev)
+- Docker & Docker Compose for full stack
+- WebSocket-enabled Polygon RPC endpoint (get free from [Alchemy](https://www.alchemy.com/) or [Infura](https://www.infura.io/))
+
 ### Setup
 
-1. Clone the repository
-2. Copy environment file: `cp .env.example .env`
-3. Start services: `docker-compose up -d`
-4. Check status: `docker-compose ps`
+1. **Clone repository:**
+   ```bash
+   git clone https://github.com/peterzzshi/dex-stream-analytics
+   cd dex-stream-analytics
+   ```
+
+2. **Run setup script:**
+   ```bash
+   ./setup.sh
+   ```
+   This creates `.env` file and downloads dependencies.
+
+3. **Configure your API key:**
+   ```bash
+   # Edit .env with your actual API key
+   nano .env
+   
+   # CRITICAL: Set POLYGON_RPC_URL to a WebSocket endpoint
+   # Example: wss://polygon-mainnet.g.alchemy.com/v2/YOUR-API-KEY
+   ```
+   
+   Get a free WebSocket endpoint from:
+   - **Alchemy** (recommended): https://www.alchemy.com/
+   - **Infura**: https://www.infura.io/
+
+4. **Run services:**
+
+   **Terminal 1 - Ingester:**
+   ```bash
+   ./run-ingester.sh
+   ```
+
+   **Terminal 2 - API:**
+   ```bash
+   ./run-api.sh
+   ```
+
+   **Or with Docker (full stack):**
+   ```bash
+   docker-compose up
+   ```
+
+5. **Verify it's working:**
+   
+   The ingester should show logs like:
+   ```json
+   {"level":"INFO","msg":"Configuration loaded"...}
+   {"level":"INFO","msg":"Pair metadata loaded"...}
+   {"level":"INFO","msg":"Swap event captured"...}
+   ```
+
+### Quick Commands
+
+```bash
+./setup.sh          # Initial setup (creates .env, downloads deps)
+./run-ingester.sh   # Run ingester with .env config
+./run-api.sh        # Run API with .env config
+
+# Build binaries
+cd ingester && go build -o bin/ingester ./cmd/ingester
+cd api && go build -o bin/api ./cmd/api
+
+# Run tests
+cd ingester && go test ./...
+cd api && go test ./...
+
+# Docker
+docker-compose up -d    # Start all services
+docker-compose logs -f  # View logs
+docker-compose down     # Stop all services
+```
 
 ### Accessing Services
 

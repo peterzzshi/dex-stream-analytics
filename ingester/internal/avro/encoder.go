@@ -8,7 +8,7 @@ import (
 
 // EncodeSwap serialises a SwapEvent to Avro binary using a provided codec.
 func EncodeSwap(codec *goavro.Codec, event events.SwapEvent) ([]byte, error) {
-	record := map[string]interface{}{
+	recordFields := map[string]interface{}{
 		"eventId":         event.EventID,
 		"blockNumber":     event.BlockNumber,
 		"blockTimestamp":  event.BlockTimestamp,
@@ -31,12 +31,12 @@ func EncodeSwap(codec *goavro.Codec, event events.SwapEvent) ([]byte, error) {
 		"gasPrice":        event.GasPrice,
 		"eventTimestamp":  event.EventTimestamp,
 	}
-	return codec.BinaryFromNative(nil, record)
+	return codec.BinaryFromNative(nil, recordFields)
 }
 
-func toNullable[T any](ptr *T) interface{} {
-	if ptr == nil {
+func toNullable[T any](valuePointer *T) interface{} {
+	if valuePointer == nil {
 		return nil
 	}
-	return *ptr
+	return *valuePointer
 }

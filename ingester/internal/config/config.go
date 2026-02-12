@@ -9,107 +9,100 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// Config holds all application configuration
 type Config struct {
-	// Blockchain configuration
 	PolygonRPCURL string
 	PairAddress   common.Address
 
-	// Kafka/DAPR configuration
 	DaprHTTPPort      string
 	DaprGRPCPort      string
 	PubSubName        string
 	TopicName         string
 	SchemaRegistryURL string
 
-	// Producer configuration
 	BatchSize     int
 	FlushInterval time.Duration
-	RetryMax      int
+	RetryMaximum  int
 
-	// Application configuration
-	AppPort  string
-	LogLevel string
-	Env      string
+	ApplicationPort string
+	LogLevel        string
+	Environment     string
 }
 
-// Load reads configuration from environment variables
 func Load() (*Config, error) {
-	cfg := &Config{
-		PolygonRPCURL:     getEnv("POLYGON_RPC_URL", "https://polygon-rpc.com"),
-		DaprHTTPPort:      getEnv("DAPR_HTTP_PORT", "3500"),
-		DaprGRPCPort:      getEnv("DAPR_GRPC_PORT", "50001"),
-		PubSubName:        getEnv("PUBSUB_NAME", "kafka-pubsub"),
-		TopicName:         getEnv("TOPIC_DEX_EVENTS", "dex-events"),
-		SchemaRegistryURL: getEnv("SCHEMA_REGISTRY_URL", "http://schema-registry:8081"),
-		AppPort:           getEnv("APP_PORT", "3000"),
-		LogLevel:          getEnv("LOG_LEVEL", "info"),
-		Env:               getEnv("ENVIRONMENT", "development"),
-		BatchSize:         getEnvInt("PRODUCER_BATCH_SIZE", 100),
-		RetryMax:          getEnvInt("PRODUCER_RETRY_MAX", 3),
+	configuration := &Config{
+		PolygonRPCURL:     getEnvironmentValue("POLYGON_RPC_URL", ""),
+		DaprHTTPPort:      getEnvironmentValue("DAPR_HTTP_PORT", "3500"),
+		DaprGRPCPort:      getEnvironmentValue("DAPR_GRPC_PORT", "50001"),
+		PubSubName:        getEnvironmentValue("PUBSUB_NAME", "kafka-pubsub"),
+		TopicName:         getEnvironmentValue("TOPIC_DEX_EVENTS", "dex-events"),
+		SchemaRegistryURL: getEnvironmentValue("SCHEMA_REGISTRY_URL", "http://schema-registry:8081"),
+		ApplicationPort:   getEnvironmentValue("APP_PORT", "3000"),
+		LogLevel:          getEnvironmentValue("LOG_LEVEL", "info"),
+		Environment:       getEnvironmentValue("ENVIRONMENT", "development"),
+		BatchSize:         getEnvironmentInt("PRODUCER_BATCH_SIZE", 100),
+		RetryMaximum:      getEnvironmentInt("PRODUCER_RETRY_MAX", 3),
 	}
 
-	// Parse pair address
-	pairAddrStr := getEnv("PAIR_ADDRESS", "0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827")
-	if !common.IsHexAddress(pairAddrStr) {
+	pairAddressText := getEnvironmentValue("PAIR_ADDRESS", "0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827")
+	if !common.IsHexAddress(pairAddressText) {
 		return nil, errors.New("invalid PAIR_ADDRESS")
 	}
-	cfg.PairAddress = common.HexToAddress(pairAddrStr)
+	configuration.PairAddress = common.HexToAddress(pairAddressText)
 
-	// Parse flush interval
-	flushIntervalStr := getEnv("PRODUCER_FLUSH_INTERVAL", "5s")
-	interval, err := time.ParseDuration(flushIntervalStr)
-	if err != nil {
-		return nil, err
+	flushIntervalText := getEnvironmentValue("PRODUCER_FLUSH_INTERVAL", "5s")
+	flushInterval, errorValue := time.ParseDuration(flushIntervalText)
+	if errorValue != nil {
+		return nil, errorValue
 	}
-	cfg.FlushInterval = interval
+	configuration.FlushInterval = flushInterval
 
-	return cfg, nil
+	return configuration, nil
 }
 
-// Validate checks if configuration is valid
-func (c *Config) Validate() error {
-	if c.PolygonRPCURL == "" {
-		return errors.New("POLYGON_RPC_URL is required")
+func (configuration *Config) Validate() error {
+	if configuration.PolygonRPCURL == "" {
+		return errors.New("POLYGON_RPC_URL is required - must be a WebSocket endpoint (wss://...)")
 	}
 
-	if c.PairAddress == (common.Address{}) {
+	// Check if URL starts with wss:// for WebSocket support
+	if len(configuration.PolygonRPCURL) >= 6 && configuration.PolygonRPCURL[:6] != "wss://" && configuration.PolygonRPCURL[:5] != "ws://" {
+		return errors.New("POLYGON_RPC_URL must be a WebSocket endpoint starting with wss:// or ws:// (not http:// or https://). Event subscriptions require WebSocket support")
+	}
+
+	if configuration.PairAddress == (common.Address{}) {
 		return errors.New("PAIR_ADDRESS is required")
 	}
 
-	if c.BatchSize <= 0 {
+	if configuration.BatchSize <= 0 {
 		return errors.New("PRODUCER_BATCH_SIZE must be positive")
 	}
 
-	if c.RetryMax < 0 {
+	if configuration.RetryMaximum < 0 {
 		return errors.New("PRODUCER_RETRY_MAX cannot be negative")
 	}
 
 	return nil
 }
 
-// IsDevelopment returns true if running in development mode
-func (c *Config) IsDevelopment() bool {
-	return c.Env == "development"
+func (configuration *Config) IsDevelopment() bool {
+	return configuration.Environment == "development"
 }
 
-// IsProduction returns true if running in production mode
-func (c *Config) IsProduction() bool {
-	return c.Env == "production"
+func (configuration *Config) IsProduction() bool {
+	return configuration.Environment == "production"
 }
 
-// Helper functions
-func getEnv(key, defaultValue string) string {
+func getEnvironmentValue(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
 }
 
-func getEnvInt(key string, defaultValue int) int {
+func getEnvironmentInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
-		if intVal, err := strconv.Atoi(value); err == nil {
-			return intVal
+		if intValue, errorValue := strconv.Atoi(value); errorValue == nil {
+			return intValue
 		}
 	}
 	return defaultValue

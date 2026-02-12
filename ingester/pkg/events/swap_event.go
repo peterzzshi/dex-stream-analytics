@@ -1,32 +1,30 @@
 package events
 
-// SwapEvent mirrors the Avro schema while keeping fields immutable once built.
 type SwapEvent struct {
-    EventID        string
-    BlockNumber    int64
-    BlockTimestamp int64
-    TransactionHash string
-    LogIndex        int32
-    PairAddress     string
-    Token0          string
-    Token1          string
-    Token0Symbol    *string
-    Token1Symbol    *string
-    Sender          string
-    Recipient       string
-    Amount0In       string
-    Amount1In       string
-    Amount0Out      string
-    Amount1Out      string
-    Price           float64
-    VolumeUSD       *float64
-    GasUsed         int64
-    GasPrice        string
-    EventTimestamp  int64
+	EventID         string   `json:"eventId"`
+	BlockNumber     int64    `json:"blockNumber"`
+	BlockTimestamp  int64    `json:"blockTimestamp"`
+	TransactionHash string   `json:"transactionHash"`
+	LogIndex        int32    `json:"logIndex"`
+	PairAddress     string   `json:"pairAddress"`
+	Token0          string   `json:"token0"`
+	Token1          string   `json:"token1"`
+	Token0Symbol    *string  `json:"token0Symbol"`
+	Token1Symbol    *string  `json:"token1Symbol"`
+	Sender          string   `json:"sender"`
+	Recipient       string   `json:"recipient"`
+	Amount0In       string   `json:"amount0In"`
+	Amount1In       string   `json:"amount1In"`
+	Amount0Out      string   `json:"amount0Out"`
+	Amount1Out      string   `json:"amount1Out"`
+	Price           float64  `json:"price"`
+	VolumeUSD       *float64 `json:"volumeUSD"`
+	GasUsed         int64    `json:"gasUsed"`
+	GasPrice        string   `json:"gasPrice"`
+	EventTimestamp  int64    `json:"eventTimestamp"`
 }
 
-// WithPrice returns a new event with price set, preserving immutability.
-func (e SwapEvent) WithPrice(price float64) SwapEvent {
-    e.Price = price
-    return e
+func (swapEvent SwapEvent) WithPrice(price float64) SwapEvent {
+	swapEvent.Price = price
+	return swapEvent
 }

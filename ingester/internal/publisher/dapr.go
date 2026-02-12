@@ -6,53 +6,54 @@ import (
 	"net/http"
 	"strings"
 
+	"ingester/internal/avro"
 	"ingester/internal/config"
+	"ingester/logger"
 	"ingester/pkg/events"
-	"ingester/pkg/logger"
 
 	"github.com/linkedin/goavro/v2"
 )
 
 // Publisher pushes Avro-encoded swap events to Dapr pub/sub.
 type Publisher struct {
-	httpClient *http.Client
-	codec      *goavro.Codec
-	cfg        *config.Config
-	log        *logger.Logger
+	httpClient        *http.Client
+	codec             *goavro.Codec
+	configuration     *config.Config
+	applicationLogger *logger.Logger
 }
 
-func New(cfg *config.Config, log *logger.Logger, codec *goavro.Codec) *Publisher {
+func New(configuration *config.Config, applicationLogger *logger.Logger, codec *goavro.Codec) *Publisher {
 	return &Publisher{
-		httpClient: &http.Client{},
-		codec:      codec,
-		cfg:        cfg,
-		log:        log,
+		httpClient:        &http.Client{},
+		codec:             codec,
+		configuration:     configuration,
+		applicationLogger: applicationLogger,
 	}
 }
 
-func (p *Publisher) Publish(ctx context.Context, event events.SwapEvent) error {
-	body, err := p.codec.BinaryFromNative(nil, map[string]interface{}{})
-	if err != nil {
-		return err
+func (publisher *Publisher) Publish(executionContext context.Context, event events.SwapEvent) error {
+	encodedBody, errorValue := avro.EncodeSwap(publisher.codec, event)
+	if errorValue != nil {
+		return errorValue
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("http://localhost:%s/v1.0/publish/%s/%s", p.cfg.DaprHTTPPort, p.cfg.PubSubName, p.cfg.TopicName),
-		strings.NewReader(string(body)))
-	if err != nil {
-		return err
+	request, errorValue := http.NewRequestWithContext(executionContext, http.MethodPost,
+		fmt.Sprintf("http://localhost:%s/v1.0/publish/%s/%s", publisher.configuration.DaprHTTPPort, publisher.configuration.PubSubName, publisher.configuration.TopicName),
+		strings.NewReader(string(encodedBody)))
+	if errorValue != nil {
+		return errorValue
 	}
-	req.Header.Set("Content-Type", "application/avro-binary")
+	request.Header.Set("Content-Type", "application/avro-binary")
 
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return err
+	response, errorValue := publisher.httpClient.Do(request)
+	if errorValue != nil {
+		return errorValue
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("publish failed: %s", resp.Status)
+	defer response.Body.Close()
+	if response.StatusCode >= 300 {
+		return fmt.Errorf("publish failed: %s", response.Status)
 	}
 	return nil
 }
 
-func (p *Publisher) Close() {}
+func (publisher *Publisher) Close() {}

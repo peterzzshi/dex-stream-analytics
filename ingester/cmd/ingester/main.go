@@ -2,121 +2,109 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"ingester/internal/blockchain"
 	"ingester/internal/config"
-	"ingester/internal/publisher"
-	"ingester/pkg/logger"
+	"ingester/logger"
+	"ingester/pkg/events"
 )
 
 func main() {
-	// Initialize logger
-	log := logger.New(os.Getenv("LOG_LEVEL"))
-	log.Info("Starting Web3 DEX Analytics Ingester")
+	logLevel := os.Getenv("LOG_LEVEL")
+	applicationLogger := logger.New(logLevel)
 
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatal("Failed to load configuration", "error", err)
+	errorValue := run(applicationLogger)
+	if errorValue != nil {
+		applicationLogger.Fatal(context.Background(), "Ingester stopped", "error", errorValue)
 	}
-
-	// Validate configuration
-	if err := cfg.Validate(); err != nil {
-		log.Fatal("Invalid configuration", "error", err)
-	}
-
-	log.Info("Configuration loaded",
-		"rpc_url", cfg.PolygonRPCURL,
-		"pair_address", cfg.PairAddress,
-	)
-
-	// Create context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Initialize publisher (DAPR pub/sub)
-	pub, err := publisher.New(cfg, log)
-	if err != nil {
-		log.Fatal("Failed to create publisher", "error", err)
-	}
-	defer pub.Close()
-
-	// Initialize blockchain listener
-	listener, err := blockchain.NewListener(cfg, log)
-	if err != nil {
-		log.Fatal("Failed to create blockchain listener", "error", err)
-	}
-	defer listener.Close()
-
-	// Channel for events
-	eventChan := make(chan *blockchain.SwapEvent, 100)
-	errorChan := make(chan error, 1)
-
-	// Start listening to blockchain events
-	go func() {
-		log.Info("Starting blockchain event listener")
-		if err := listener.Listen(ctx, eventChan); err != nil {
-			errorChan <- fmt.Errorf("listener error: %w", err)
-		}
-	}()
-
-	// Start publishing events
-	go func() {
-		log.Info("Starting event publisher")
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case event := <-eventChan:
-				if err := pub.Publish(ctx, event); err != nil {
-					log.Error("Failed to publish event",
-						"event_id", event.EventID,
-						"error", err,
-					)
-					// Implement retry logic or dead letter queue here
-					continue
-				}
-				log.Debug("Event published successfully",
-					"event_id", event.EventID,
-					"block", event.BlockNumber,
-					"pair", event.PairAddress,
-				)
-			}
-		}
-	}()
-
-	// Health check server
-	go func() {
-		if err := startHealthServer(cfg.AppPort, log); err != nil {
-			log.Error("Health server error", "error", err)
-		}
-	}()
-
-	// Wait for shutdown signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	select {
-	case <-sigChan:
-		log.Info("Shutdown signal received")
-	case err := <-errorChan:
-		log.Error("Fatal error", "error", err)
-	}
-
-	// Graceful shutdown
-	log.Info("Shutting down gracefully...")
-	cancel()
-	time.Sleep(2 * time.Second)
-	log.Info("Ingester stopped")
 }
 
-func startHealthServer(port string, log *logger.Logger) error {
-	// Simple health check endpoint
-	// Implementation in internal/server/health.go
-	return nil
+func run(applicationLogger *logger.Logger) error {
+	executionContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	configuration, errorValue := config.Load()
+	if errorValue != nil {
+		return errorValue
+	}
+
+	errorValue = configuration.Validate()
+	if errorValue != nil {
+		return errorValue
+	}
+
+	applicationLogger.Info(
+		executionContext,
+		"Configuration loaded",
+		"remote_procedure_call_url", configuration.PolygonRPCURL,
+		"pair_address", configuration.PairAddress.Hex(),
+	)
+
+	applicationLogger.Info(executionContext, "Initialising blockchain listener")
+	blockchainListener, errorValue := blockchain.NewListener(executionContext, configuration.PolygonRPCURL, configuration.PairAddress, applicationLogger)
+	if errorValue != nil {
+		return errorValue
+	}
+	defer blockchainListener.Close()
+
+	pairMetadata := blockchainListener.PairMetadata()
+	applicationLogger.Info(
+		executionContext,
+		"Pair metadata loaded",
+		"token0_address", pairMetadata.Token0Address.Hex(),
+		"token1_address", pairMetadata.Token1Address.Hex(),
+	)
+
+	swapEventChannel := make(chan events.SwapEvent, 100)
+	errorChannel := make(chan error, 1)
+
+	go func() {
+		errorChannel <- blockchainListener.Listen(executionContext, swapEventChannel)
+	}()
+
+	signalChannel := buildSignalChannel()
+
+	return consumeEvents(executionContext, cancel, applicationLogger, swapEventChannel, errorChannel, signalChannel)
+}
+
+func buildSignalChannel() chan os.Signal {
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+	return signalChannel
+}
+
+func consumeEvents(
+	executionContext context.Context,
+	cancel context.CancelFunc,
+	applicationLogger *logger.Logger,
+	swapEventChannel <-chan events.SwapEvent,
+	errorChannel <-chan error,
+	signalChannel <-chan os.Signal,
+) error {
+	for {
+		select {
+		case <-executionContext.Done():
+			return executionContext.Err()
+		case <-signalChannel:
+			applicationLogger.Info(executionContext, "Shutdown signal received")
+			cancel()
+			return nil
+		case errorValue := <-errorChannel:
+			if errorValue == nil || errors.Is(errorValue, context.Canceled) {
+				return nil
+			}
+			cancel()
+			return errorValue
+		case swapEvent := <-swapEventChannel:
+			logSwapEvent(executionContext, applicationLogger, swapEvent)
+		}
+	}
+}
+
+func logSwapEvent(executionContext context.Context, applicationLogger *logger.Logger, swapEvent events.SwapEvent) {
+	applicationLogger.Info(executionContext, "Swap event captured", "event", swapEvent)
 }

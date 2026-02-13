@@ -38,3 +38,5 @@ spec:
     # Actor state store (if using actors)
     - name: actorStateStore
       value: "true"
+scopes:
+  - api

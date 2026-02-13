@@ -6,6 +6,7 @@ services:
       - "9092:9092"
       - "29092:29092"
     environment:
+      CLUSTER_ID: "Yi30LVX8TlCMOk1KHapf-A"
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_NODE_ID: 1
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
@@ -24,7 +25,7 @@ services:
     networks:
       - dex-analytics-network
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:9092"]
       interval: 10s
       timeout: 10s
       retries: 5
@@ -70,6 +71,9 @@ services:
       - POLYGON_RPC_URL=${POLYGON_RPC_URL:-https://polygon-rpc.com}
       - PAIR_ADDRESS=${PAIR_ADDRESS:-0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827}
       - SCHEMA_REGISTRY_URL=http://schema-registry:8081
+      - DAPR_HTTP_PORT=3500
+      - PUBSUB_NAME=kafka-pubsub
+      - TOPIC_DEX_EVENTS=dex-events
       - LOG_LEVEL=info
       - APP_PORT=3000
     ports:
@@ -106,87 +110,6 @@ services:
     depends_on:
       - ingester
     network_mode: "service:ingester"
-
-  flink-jobmanager:
-    image: flink:2.0.1-scala_2.12-java17
-    container_name: flink-jobmanager
-    command: jobmanager
-    ports:
-      - "8081:8081"
-    environment:
-      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
-      - FLINK_PROPERTIES=jobmanager.rpc.address: flink-jobmanager
-    volumes:
-      - ./aggregator/target:/opt/flink/usrlib
-    networks:
-      - dex-analytics-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  flink-taskmanager:
-    image: flink:2.0.1-scala_2.12-java17
-    container_name: flink-taskmanager
-    command: taskmanager
-    depends_on:
-      flink-jobmanager:
-        condition: service_healthy
-    environment:
-      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
-      - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=4
-      - FLINK_PROPERTIES=jobmanager.rpc.address: flink-jobmanager
-    volumes:
-      - ./aggregator/target:/opt/flink/usrlib
-    networks:
-      - dex-analytics-network
-    scale: 2
-
-  # API: Go REST API exposing analytics
-  api:
-    build:
-      context: ./api
-      dockerfile: Dockerfile
-    container_name: api
-    environment:
-      - SCHEMA_REGISTRY_URL=http://schema-registry:8081
-      - LOG_LEVEL=info
-      - APP_PORT=8080
-    ports:
-      - "8080:8080"
-    depends_on:
-      kafka:
-        condition: service_healthy
-      schema-registry:
-        condition: service_healthy
-      dapr-placement:
-        condition: service_started
-    networks:
-      - dex-analytics-network
-    restart: unless-stopped
-
-  # DAPR sidecar for api
-  api-dapr:
-    image: daprio/daprd:1.12.0
-    container_name: api-dapr
-    command: [
-      "./daprd",
-      "-app-id", "api",
-      "-app-port", "8080",
-      "-dapr-http-port", "3501",
-      "-dapr-grpc-port", "50002",
-      "-components-path", "/components",
-      "-config", "/config/config.yaml",
-      "-log-level", "debug",
-      "-placement-host-address", "dapr-placement:50006"
-    ]
-    volumes:
-      - ./dapr/components:/components
-      - ./dapr/config:/config
-    depends_on:
-      - api
-    network_mode: "service:api"
 
 networks:
   dex-analytics-network:

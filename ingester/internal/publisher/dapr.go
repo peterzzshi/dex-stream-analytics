@@ -1,33 +1,29 @@
 package publisher
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"ingester/internal/avro"
 	"ingester/internal/config"
-	"ingester/logger"
 	"ingester/pkg/events"
 
 	"github.com/linkedin/goavro/v2"
 )
 
-// Publisher pushes Avro-encoded swap events to Dapr pub/sub.
 type Publisher struct {
-	httpClient        *http.Client
-	codec             *goavro.Codec
-	configuration     *config.Config
-	applicationLogger *logger.Logger
+	httpClient    *http.Client
+	codec         *goavro.Codec
+	configuration *config.Config
 }
 
-func New(configuration *config.Config, applicationLogger *logger.Logger, codec *goavro.Codec) *Publisher {
+func New(configuration *config.Config, codec *goavro.Codec) *Publisher {
 	return &Publisher{
-		httpClient:        &http.Client{},
-		codec:             codec,
-		configuration:     configuration,
-		applicationLogger: applicationLogger,
+		httpClient:    &http.Client{},
+		codec:         codec,
+		configuration: configuration,
 	}
 }
 
@@ -39,7 +35,7 @@ func (publisher *Publisher) Publish(executionContext context.Context, event even
 
 	request, errorValue := http.NewRequestWithContext(executionContext, http.MethodPost,
 		fmt.Sprintf("http://localhost:%s/v1.0/publish/%s/%s", publisher.configuration.DaprHTTPPort, publisher.configuration.PubSubName, publisher.configuration.TopicName),
-		strings.NewReader(string(encodedBody)))
+		bytes.NewReader(encodedBody))
 	if errorValue != nil {
 		return errorValue
 	}

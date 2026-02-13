@@ -1,11 +1,12 @@
 # Ingester
 
-Streams Polygon QuickSwap swap events for a single pair address and prints each event as structured JSON logs.
+Streams Polygon QuickSwap swap events for a single pair address, serialises them with Avro, and publishes them to Kafka via Dapr.
 
 ## Requirements
 
 - Go 1.21
 - A Polygon RPC endpoint with WebSocket support (public or private)
+- Dapr sidecar running on `DAPR_HTTP_PORT` (for local runs)
 
 ## Getting a Free RPC Endpoint
 
@@ -43,7 +44,11 @@ nano .env           # Edit with your WebSocket URL
 cd ingester
 POLYGON_RPC_URL="wss://polygon-mainnet.g.alchemy.com/v2/YOUR-API-KEY" \
 PAIR_ADDRESS="0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827" \
+APP_PORT="3000" \
 LOG_LEVEL="info" \
+DAPR_HTTP_PORT="3500" \
+PUBSUB_NAME="kafka-pubsub" \
+TOPIC_DEX_EVENTS="dex-events" \
 go run ./cmd/ingester
 ```
 
@@ -56,6 +61,11 @@ cd ingester
 go run ./cmd/ingester
 ```
 
+**Option 4: Docker (Dapr + Kafka + Ingester):**
+```bash
+docker compose up -d kafka schema-registry dapr-placement ingester ingester-dapr
+```
+
 ## Configuration
 
 All configuration is stored in `.env` file in the project root.
@@ -63,10 +73,29 @@ All configuration is stored in `.env` file in the project root.
 **Required:**
 - `POLYGON_RPC_URL` - WebSocket endpoint (format: `wss://...`)
 - `PAIR_ADDRESS` - QuickSwap pair contract address (default: WMATIC/USDC)
+- `APP_PORT` - Health server port for the Dapr sidecar (default: `3000`)
 - `LOG_LEVEL` - `debug`, `info`, `warn`, or `error` (default: `info`)
 
 **Optional (for Kafka publishing):**
-- `DAPR_HTTP_PORT`, `PUBSUB_NAME`, `TOPIC_DEX_EVENTS`, etc.
+- `DAPR_HTTP_PORT` - Dapr HTTP port (default: `3500`)
+- `PUBSUB_NAME` - Dapr pub/sub component name (default: `kafka-pubsub`)
+- `TOPIC_DEX_EVENTS` - Kafka topic for swap events (default: `dex-events`)
+
+## Verify
+
+```bash
+docker compose logs -f ingester
+```
+
+```bash
+docker exec -it kafka kafka-topics --bootstrap-server localhost:9092 --describe --topic dex-events
+```
+
+The topic payloads are Avro binary. If you want to inspect raw bytes:
+
+```bash
+docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic dex-events --from-beginning --max-messages 1
+```
 
 ## Troubleshooting
 

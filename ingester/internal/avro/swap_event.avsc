@@ -1,0 +1,116 @@
+{
+  "namespace": "com.web3analytics.events",
+  "type": "record",
+  "name": "SwapEvent",
+  "doc": "Represents a swap event from a DEX (Uniswap V2 compatible)",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": "string",
+      "doc": "Unique identifier for this event (txHash + logIndex)"
+    },
+    {
+      "name": "blockNumber",
+      "type": "long",
+      "doc": "Block number where the swap occurred"
+    },
+    {
+      "name": "blockTimestamp",
+      "type": "long",
+      "doc": "Unix timestamp of the block (in seconds)"
+    },
+    {
+      "name": "transactionHash",
+      "type": "string",
+      "doc": "Transaction hash containing this swap"
+    },
+    {
+      "name": "logIndex",
+      "type": "int",
+      "doc": "Index of the log entry in the transaction"
+    },
+    {
+      "name": "pairAddress",
+      "type": "string",
+      "doc": "Address of the Uniswap V2 pair contract"
+    },
+    {
+      "name": "token0",
+      "type": "string",
+      "doc": "Address of token0 in the pair"
+    },
+    {
+      "name": "token1",
+      "type": "string",
+      "doc": "Address of token1 in the pair"
+    },
+    {
+      "name": "token0Symbol",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token0 (e.g., WMATIC)"
+    },
+    {
+      "name": "token1Symbol",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token1 (e.g., USDC)"
+    },
+    {
+      "name": "sender",
+      "type": "string",
+      "doc": "Address that initiated the swap"
+    },
+    {
+      "name": "recipient",
+      "type": "string",
+      "doc": "Address that received the swapped tokens"
+    },
+    {
+      "name": "amount0In",
+      "type": "string",
+      "doc": "Amount of token0 going into the pair (as string to preserve precision)"
+    },
+    {
+      "name": "amount1In",
+      "type": "string",
+      "doc": "Amount of token1 going into the pair"
+    },
+    {
+      "name": "amount0Out",
+      "type": "string",
+      "doc": "Amount of token0 coming out of the pair"
+    },
+    {
+      "name": "amount1Out",
+      "type": "string",
+      "doc": "Amount of token1 coming out of the pair"
+    },
+    {
+      "name": "price",
+      "type": "double",
+      "doc": "Calculated price (token1/token0)"
+    },
+    {
+      "name": "volumeUSD",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Volume in USD if price feed available"
+    },
+    {
+      "name": "gasUsed",
+      "type": "long",
+      "doc": "Gas used for this transaction"
+    },
+    {
+      "name": "gasPrice",
+      "type": "string",
+      "doc": "Gas price in wei"
+    },
+    {
+      "name": "eventTimestamp",
+      "type": "long",
+      "doc": "Timestamp when event was captured by producer"
+    }
+  ]
+}

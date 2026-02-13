@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"api/internal/config"
-	"api/internal/handlers"
+	api "api/internal/handlers"
 	"api/internal/storage"
 	"api/internal/subscriber"
 	"api/pkg/logger"
@@ -55,17 +55,10 @@ func main() {
 	defer cancel()
 
 	// Initialize storage
-	store, err := storage.New(cfg, log)
-	if err != nil {
-		log.Fatal("Failed to create storage", "error", err)
-	}
-	defer store.Close()
+	store := storage.NewMemory()
 
 	// Initialize subscriber (DAPR pub/sub)
-	sub, err := subscriber.New(cfg, store, log)
-	if err != nil {
-		log.Fatal("Failed to create subscriber", "error", err)
-	}
+	sub := subscriber.New(store)
 	defer sub.Close()
 
 	// Start consuming analytics events
@@ -83,11 +76,10 @@ func main() {
 
 	router := gin.New()
 	router.Use(gin.Recovery())
-	router.Use(handlers.LoggerMiddleware(log))
-	router.Use(handlers.CORSMiddleware())
+	router.Use(gin.Logger())
 
 	// Setup routes
-	handlers.SetupRoutes(router, store, log)
+	api.SetupRoutes(router, store)
 
 	// Create HTTP server
 	srv := &http.Server{

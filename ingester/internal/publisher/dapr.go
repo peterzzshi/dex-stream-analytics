@@ -41,6 +41,11 @@ func (publisher *Publisher) Publish(executionContext context.Context, event even
 	}
 	request.Header.Set("Content-Type", "application/avro-binary")
 
+	// Set partition key for Kafka partitioning
+	// Using PairAddress ensures all swaps for same trading pair go to same partition
+	// This enables efficient parallel aggregation in Flink (each task handles specific pairs)
+	request.Header.Set("partitionKey", event.PairAddress)
+
 	response, errorValue := publisher.httpClient.Do(request)
 	if errorValue != nil {
 		return errorValue

@@ -112,10 +112,7 @@ public class StreamProcessor {
             .setTopics(config.getInputTopic())
             .setGroupId(config.getConsumerGroup())
             .setStartingOffsets(OffsetsInitializer.earliest())
-            .setValueOnlyDeserializer(
-                new AvroDeserializationSchema<>(SwapEvent.class,
-                    config.getSchemaRegistryUrl())
-            )
+            .setValueOnlyDeserializer(new AvroDeserializationSchema())
             .build();
     }
 
@@ -133,10 +130,7 @@ public class StreamProcessor {
                 KafkaRecordSerializationSchema.builder()
                     .setTopic(config.getOutputTopic())
                     .setValueSerializationSchema(
-                        new AvroSerializationSchema<>(
-                            AggregatedAnalytics.class,
-                            config.getSchemaRegistryUrl()
-                        )
+                        new AvroSerializationSchema<>()
                     )
                     .build()
             )

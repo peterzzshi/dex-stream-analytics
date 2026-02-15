@@ -7,7 +7,7 @@ Apache Flink job that aggregates swap events into analytics windows and writes t
 - Java 17
 - Maven
 - Flink 2.x
-- Kafka and Schema Registry endpoints
+- Kafka endpoint
 
 ## Build
 
@@ -30,4 +30,7 @@ flink run target/aggregator-1.0-SNAPSHOT.jar
 - `FLINK_CONSUMER_GROUP`: Kafka consumer group (default: `dex-processor`)
 - `FLINK_PARALLELISM`: Job parallelism (default: `2`)
 - `FLINK_CHECKPOINT_MS`: Checkpoint interval in milliseconds (default: `10000`)
-- `SCHEMA_REGISTRY_URL`: Schema Registry endpoint (default: `http://schema-registry:8081`)
+
+## Schema Management
+
+Avro schemas are embedded at compile time via Maven plugin. Schema files are located in `../schemas/avro/` and automatically generated as Java classes during build.

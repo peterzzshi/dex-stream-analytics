@@ -46,15 +46,12 @@ Polygon QuickSwap → Ingester (Go + DAPR) → Kafka → Aggregator (Flink + Jav
    cd dex-stream-analytics
    ```
 
-2. **Run setup script:**
+2. **Configure environment:**
    ```bash
-   ./setup.sh
-   ```
-   This creates `.env` file and downloads dependencies.
-
-3. **Configure your API key:**
-   ```bash
-   # Edit .env with your actual API key
+   # Copy example config
+   cp .env.example .env
+   
+   # Edit with your WebSocket API key
    nano .env
    
    # CRITICAL: Set POLYGON_RPC_URL to a WebSocket endpoint
@@ -65,21 +62,30 @@ Polygon QuickSwap → Ingester (Go + DAPR) → Kafka → Aggregator (Flink + Jav
    - **Alchemy** (recommended): https://www.alchemy.com/
    - **Infura**: https://www.infura.io/
 
-4. **Run services:**
-
-   **Terminal 1 - Ingester:**
+3. **Run with Docker (recommended):**
    ```bash
+   # Start full pipeline
+   docker compose up -d
+   
+   # View logs
+   docker logs -f ingester
+   
+   # Check Kafka messages
+   docker exec kafka kafka-console-consumer \
+     --bootstrap-server kafka:9092 \
+     --topic dex-events --from-beginning
+   ```
+
+4. **Or run locally for development:**
+   
+   **Note:** Local scripts run services without Kafka/DAPR. Events are logged but not published.
+   
+   ```bash
+   # Terminal 1 - Ingester (logs events only)
    ./run-ingester.sh
-   ```
-
-   **Terminal 2 - API:**
-   ```bash
+   
+   # Terminal 2 - API (if needed)
    ./run-api.sh
-   ```
-
-   **Or with Docker (full stack):**
-   ```bash
-   docker-compose up
    ```
 
 5. **Verify it's working:**
@@ -94,9 +100,14 @@ Polygon QuickSwap → Ingester (Go + DAPR) → Kafka → Aggregator (Flink + Jav
 ### Quick Commands
 
 ```bash
-./setup.sh          # Initial setup (creates .env, downloads deps)
-./run-ingester.sh   # Run ingester with .env config
-./run-api.sh        # Run API with .env config
+# Docker (full pipeline with Kafka)
+docker compose up -d              # Start all services
+docker compose logs -f ingester   # View ingester logs
+docker compose down               # Stop all services
+
+# Local development (without Kafka)
+./run-ingester.sh   # Run ingester locally (logs only, no publishing)
+./run-api.sh        # Run API locally
 
 # Build binaries
 cd ingester && go build -o bin/ingester ./cmd/ingester

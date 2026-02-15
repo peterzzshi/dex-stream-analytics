@@ -13,11 +13,10 @@ type Config struct {
 	PolygonRPCURL string
 	PairAddress   common.Address
 
-	DaprHTTPPort      string
-	DaprGRPCPort      string
-	PubSubName        string
-	TopicName         string
-	SchemaRegistryURL string
+	DaprHTTPPort string
+	DaprGRPCPort string
+	PubSubName   string
+	TopicName    string
 
 	BatchSize     int
 	FlushInterval time.Duration
@@ -30,17 +29,16 @@ type Config struct {
 
 func Load() (*Config, error) {
 	configuration := &Config{
-		PolygonRPCURL:     getEnvironmentValue("POLYGON_RPC_URL", ""),
-		DaprHTTPPort:      getEnvironmentValue("DAPR_HTTP_PORT", "3500"),
-		DaprGRPCPort:      getEnvironmentValue("DAPR_GRPC_PORT", "50001"),
-		PubSubName:        getEnvironmentValue("PUBSUB_NAME", "kafka-pubsub"),
-		TopicName:         getEnvironmentValue("TOPIC_DEX_EVENTS", "dex-events"),
-		SchemaRegistryURL: getEnvironmentValue("SCHEMA_REGISTRY_URL", "http://schema-registry:8081"),
-		ApplicationPort:   getEnvironmentValue("APP_PORT", "3000"),
-		LogLevel:          getEnvironmentValue("LOG_LEVEL", "info"),
-		Environment:       getEnvironmentValue("ENVIRONMENT", "development"),
-		BatchSize:         getEnvironmentInt("PRODUCER_BATCH_SIZE", 100),
-		RetryMaximum:      getEnvironmentInt("PRODUCER_RETRY_MAX", 3),
+		PolygonRPCURL:   getEnvironmentValue("POLYGON_RPC_URL", ""),
+		DaprHTTPPort:    getEnvironmentValue("DAPR_HTTP_PORT", "3500"),
+		DaprGRPCPort:    getEnvironmentValue("DAPR_GRPC_PORT", "50001"),
+		PubSubName:      getEnvironmentValue("PUBSUB_NAME", "kafka-pubsub"),
+		TopicName:       getEnvironmentValue("TOPIC_DEX_EVENTS", "dex-events"),
+		ApplicationPort: getEnvironmentValue("APP_PORT", "3000"),
+		LogLevel:        getEnvironmentValue("LOG_LEVEL", "info"),
+		Environment:     getEnvironmentValue("ENVIRONMENT", "development"),
+		BatchSize:       getEnvironmentInt("PRODUCER_BATCH_SIZE", 100),
+		RetryMaximum:    getEnvironmentInt("PRODUCER_RETRY_MAX", 3),
 	}
 
 	pairAddressText := getEnvironmentValue("PAIR_ADDRESS", "0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827")

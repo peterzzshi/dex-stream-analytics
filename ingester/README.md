@@ -28,42 +28,59 @@ The ingester requires WebSocket support for real-time event streaming. Free opti
 
 ## Run
 
-**Option 1: Using setup script (Recommended):**
-```bash
-# From project root - one-time setup
-cd ..
-./setup.sh          # Creates .env and downloads dependencies
-nano .env           # Edit with your WebSocket URL
+### Option 1: Docker (Full Pipeline - Recommended)
 
-# Run ingester
+Run ingester with Kafka and DAPR for complete event publishing:
+
+```bash
+# From project root
+docker compose up -d
+
+# View logs
+docker logs -f ingester
+
+# Verify events in Kafka
+docker exec kafka kafka-console-consumer \
+  --bootstrap-server kafka:9092 \
+  --topic dex-events --from-beginning --max-messages 5
+```
+
+**Services started:**
+- Kafka (with 6 partitions)
+- DAPR placement service
+- Ingester container
+- DAPR sidecar (publishes to Kafka)
+
+### Option 2: Local Development (No Kafka)
+
+Run ingester locally for testing blockchain connectivity and event parsing:
+
+```bash
+# From project root
 ./run-ingester.sh
 ```
 
-**Option 2: Manual with environment variables:**
+**What happens:**
+- ✅ Connects to Polygon blockchain
+- ✅ Captures and logs swap events
+- ❌ **Cannot publish to Kafka** (no DAPR sidecar)
+- ⚠️ You'll see: `"Failed to publish swap event"...connect: connection refused"`
+
+**This is expected!** Use this mode for:
+- Testing RPC connectivity
+- Verifying swap event capture
+- Debugging blockchain listener logic
+- Quick local development without Docker
+
+### Option 3: Manual with Environment Variables
+
 ```bash
 cd ingester
 POLYGON_RPC_URL="wss://polygon-mainnet.g.alchemy.com/v2/YOUR-API-KEY" \
 PAIR_ADDRESS="0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827" \
 APP_PORT="3000" \
 LOG_LEVEL="info" \
-DAPR_HTTP_PORT="3500" \
-PUBSUB_NAME="kafka-pubsub" \
-TOPIC_DEX_EVENTS="dex-events" \
 go run ./cmd/ingester
-```
-
-**Option 3: Using .env file in project root:**
-```bash
-# If .env exists in parent directory
-cd ..
-export $(cat .env | grep -v '^#' | xargs)
-cd ingester
-go run ./cmd/ingester
-```
-
-**Option 4: Docker (Dapr + Kafka + Ingester):**
-```bash
-docker compose up -d kafka schema-registry dapr-placement ingester ingester-dapr
 ```
 
 ## Configuration
@@ -76,28 +93,73 @@ All configuration is stored in `.env` file in the project root.
 - `APP_PORT` - Health server port for the Dapr sidecar (default: `3000`)
 - `LOG_LEVEL` - `debug`, `info`, `warn`, or `error` (default: `info`)
 
-**Optional (for Kafka publishing):**
-- `DAPR_HTTP_PORT` - Dapr HTTP port (default: `3500`)
+**Optional (for Kafka publishing via DAPR):**
+- `DAPR_HTTP_PORT` - Dapr HTTP port (default: `3500`) - **Only used in Docker**
 - `PUBSUB_NAME` - Dapr pub/sub component name (default: `kafka-pubsub`)
 - `TOPIC_DEX_EVENTS` - Kafka topic for swap events (default: `dex-events`)
 
+**Note:** When running locally with `./run-ingester.sh`, DAPR variables are ignored since there's no DAPR sidecar.
+
 ## Verify
 
+**For Docker deployment:**
+
+Check ingester logs:
 ```bash
-docker compose logs -f ingester
+docker logs -f ingester
+# Should see: "Swap event published"
 ```
 
+Check Kafka topic:
 ```bash
-docker exec -it kafka kafka-topics --bootstrap-server localhost:9092 --describe --topic dex-events
+docker exec kafka kafka-topics \
+  --bootstrap-server kafka:9092 \
+  --describe --topic dex-events
+# Should show: PartitionCount: 6
 ```
 
-The topic payloads are Avro binary. If you want to inspect raw bytes:
-
+View messages (Avro binary):
 ```bash
-docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic dex-events --from-beginning --max-messages 1
+docker exec kafka kafka-console-consumer \
+  --bootstrap-server kafka:9092 \
+  --topic dex-events --from-beginning --max-messages 1
+```
+
+**For local development:**
+
+Check ingester logs:
+```bash
+# Should see blockchain events being captured
+{"level":"INFO","msg":"Configuration loaded"...}
+{"level":"INFO","msg":"Pair metadata loaded"...}
+
+# Publishing will fail (expected):
+{"level":"ERROR","msg":"Failed to publish swap event"...connection refused"}
 ```
 
 ## Troubleshooting
+
+### Error: "Failed to publish swap event...connection refused"
+
+**When running locally (`./run-ingester.sh`):**
+
+✅ **This is expected and normal!** The local script runs the ingester without DAPR, so it cannot publish to Kafka. Use this mode to:
+- Test blockchain connectivity
+- Verify swap events are captured
+- Debug event parsing logic
+
+To publish events to Kafka, use Docker:
+```bash
+docker compose up -d
+```
+
+**When running in Docker:**
+
+❌ This indicates DAPR sidecar is not running. Check:
+```bash
+docker ps | grep dapr
+docker logs ingester-dapr
+```
 
 ### Error: "notifications not supported"
 This error means your RPC endpoint doesn't support WebSocket subscriptions. Make sure:

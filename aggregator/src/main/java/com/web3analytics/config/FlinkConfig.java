@@ -6,8 +6,7 @@ public record FlinkConfig(
         String outputTopic,
         String consumerGroup,
         int parallelism,
-        long checkpointMs,
-        String schemaRegistryUrl
+        long checkpointMs
 ) {
     public static FlinkConfig fromEnv() {
         return new FlinkConfig(
@@ -16,8 +15,7 @@ public record FlinkConfig(
                 env("TOPIC_DEX_ANALYTICS", "dex-analytics"),
                 env("FLINK_CONSUMER_GROUP", "dex-processor"),
                 Integer.parseInt(env("FLINK_PARALLELISM", "2")),
-                Long.parseLong(env("FLINK_CHECKPOINT_MS", "10000")),
-                env("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
+                Long.parseLong(env("FLINK_CHECKPOINT_MS", "10000"))
         );
     }
 

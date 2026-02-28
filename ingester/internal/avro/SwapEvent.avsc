@@ -5,6 +5,11 @@
   "doc": "Represents a swap event from a DEX (Uniswap V2 compatible)",
   "fields": [
     {
+      "name": "eventType",
+      "type": "string",
+      "doc": "Type of event (swap, mint, or burn)"
+    },
+    {
       "name": "eventId",
       "type": "string",
       "doc": "Unique identifier for this event (txHash + logIndex)"

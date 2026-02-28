@@ -13,11 +13,11 @@ spec:
 
     # Consumer group for this application
     - name: consumerGroup
-      value: "dex-analytics-group"
+      value: "api-consumer-group"
 
     # Client ID for identification
     - name: clientID
-      value: "dex-analytics-client"
+      value: "api-consumer-client"
 
     # Authentication type
     - name: authType

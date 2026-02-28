@@ -4,191 +4,158 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"ingester/internal/avro"
 	"ingester/internal/blockchain"
 	"ingester/internal/config"
+	ierrors "ingester/internal/errors"
+	"ingester/internal/events"
 	"ingester/internal/publisher"
-	"ingester/logger"
-	"ingester/pkg/events"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
-func main() {
-	logLevel := os.Getenv("LOG_LEVEL")
-	applicationLogger := logger.New(logLevel)
+const (
+	eventChannelBuffer  = 100
+	healthServerTimeout = 5 * time.Second
+	shutdownGracePeriod = 5 * time.Second
+)
 
-	errorValue := run(applicationLogger)
-	if errorValue != nil {
-		applicationLogger.Fatal(context.Background(), "Ingester stopped", "error", errorValue)
+var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+func main() {
+	if err := run(); err != nil {
+		logger.Error("Ingester stopped", "error", err)
+		os.Exit(1)
 	}
 }
 
-func run(applicationLogger *logger.Logger) error {
-	executionContext, cancel := context.WithCancel(context.Background())
+func run() error {
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	configuration, errorValue := config.Load()
-	if errorValue != nil {
-		return errorValue
+	rpcURL := config.GetPolygonRPCURL()
+	if err := validateRPCURL(rpcURL); err != nil {
+		return err
 	}
 
-	errorValue = configuration.Validate()
-	if errorValue != nil {
-		return errorValue
+	pairAddress, err := parsePairAddress(config.GetPairAddress())
+	if err != nil {
+		return err
 	}
 
-	applicationLogger.Info(
-		executionContext,
-		"Configuration loaded",
-		"remote_procedure_call_url", configuration.PolygonRPCURL,
-		"pair_address", configuration.PairAddress.Hex(),
-	)
+	logger.Info("Configuration loaded", "pair", pairAddress.Hex())
 
-	healthServer, errorValue := startHealthServer(configuration.ApplicationPort, applicationLogger)
-	if errorValue != nil {
-		return errorValue
+	healthServer, err := startHealthServer(config.GetAppPort())
+	if err != nil {
+		return err
 	}
-	defer stopHealthServer(healthServer, applicationLogger)
+	defer func() {
+		if healthServer != nil {
+			stopHealthServer(healthServer)
+		}
+	}()
 
-	swapEventCodec, errorValue := avro.NewSwapEventCodec()
-	if errorValue != nil {
-		return errorValue
+	eventPublisher, err := publisher.New()
+	if err != nil {
+		return err
 	}
-
-	eventPublisher := publisher.New(configuration, swapEventCodec)
 	defer eventPublisher.Close()
 
-	applicationLogger.Info(executionContext, "Initialising blockchain listener")
-	blockchainListener, errorValue := blockchain.NewListener(executionContext, configuration.PolygonRPCURL, configuration.PairAddress, applicationLogger)
-	if errorValue != nil {
-		return errorValue
+	listener, err := blockchain.NewListener(ctx, rpcURL, pairAddress)
+	if err != nil {
+		return err
 	}
-	defer blockchainListener.Close()
+	defer listener.Close()
 
-	pairMetadata := blockchainListener.PairMetadata()
-	applicationLogger.Info(
-		executionContext,
-		"Pair metadata loaded",
-		"token0_address", pairMetadata.Token0Address.Hex(),
-		"token1_address", pairMetadata.Token1Address.Hex(),
-	)
+	logger.Info("Listener ready")
 
-	swapEventChannel := make(chan events.SwapEvent, 100)
+	eventChannel := make(chan events.Event, eventChannelBuffer)
 	errorChannel := make(chan error, 1)
 
 	go func() {
-		errorChannel <- blockchainListener.Listen(executionContext, swapEventChannel)
+		errorChannel <- listener.Listen(ctx, eventChannel)
 	}()
 
-	signalChannel := buildSignalChannel()
-
-	return consumeEvents(
-		executionContext,
-		cancel,
-		applicationLogger,
-		eventPublisher,
-		swapEventChannel,
-		errorChannel,
-		signalChannel,
-	)
-}
-
-func buildSignalChannel() chan os.Signal {
 	signalChannel := make(chan os.Signal, 1)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
-	return signalChannel
+
+	return consumeEvents(ctx, cancel, eventPublisher, eventChannel, errorChannel, signalChannel)
 }
 
 func consumeEvents(
-	executionContext context.Context,
+	ctx context.Context,
 	cancel context.CancelFunc,
-	applicationLogger *logger.Logger,
 	eventPublisher *publisher.Publisher,
-	swapEventChannel <-chan events.SwapEvent,
+	eventChannel <-chan events.Event,
 	errorChannel <-chan error,
 	signalChannel <-chan os.Signal,
 ) error {
 	for {
 		select {
-		case <-executionContext.Done():
-			return executionContext.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-signalChannel:
-			applicationLogger.Info(executionContext, "Shutdown signal received")
+			logger.Info("Shutdown signal received")
 			cancel()
 			return nil
-		case errorValue := <-errorChannel:
-			if errorValue == nil || errors.Is(errorValue, context.Canceled) {
+		case err := <-errorChannel:
+			if err == nil || errors.Is(err, context.Canceled) {
 				return nil
 			}
 			cancel()
-			return errorValue
-		case swapEvent := <-swapEventChannel:
-			publishSwapEvent(executionContext, applicationLogger, eventPublisher, swapEvent)
+			return err
+		case event := <-eventChannel:
+			eventPublisher.Publish(ctx, event)
 		}
 	}
 }
 
-func publishSwapEvent(
-	executionContext context.Context,
-	applicationLogger *logger.Logger,
-	eventPublisher *publisher.Publisher,
-	swapEvent events.SwapEvent,
-) {
-	errorValue := eventPublisher.Publish(executionContext, swapEvent)
-	if errorValue != nil {
-		applicationLogger.Error(
-			executionContext,
-			"Failed to publish swap event",
-			"event_id", swapEvent.EventID,
-			"error", errorValue,
-		)
-		return
-	}
-
-	applicationLogger.Info(
-		executionContext,
-		"Swap event published",
-		"event_id", swapEvent.EventID,
-		"transaction_hash", swapEvent.TransactionHash,
-	)
-}
-
-func startHealthServer(applicationPort string, applicationLogger *logger.Logger) (*http.Server, error) {
-	if applicationPort == "" {
-		return nil, errors.New("APP_PORT is required")
+func startHealthServer(appPort string) (*http.Server, error) {
+	if appPort == "" {
+		return nil, ierrors.Config("APP_PORT", "port is required")
 	}
 
 	healthServer := &http.Server{
-		Addr:              fmt.Sprintf(":%s", applicationPort),
+		Addr:              fmt.Sprintf(":%s", appPort),
 		Handler:           healthHandler(),
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: healthServerTimeout,
 	}
 
+	errChan := make(chan error, 1)
 	go func() {
-		errorValue := healthServer.ListenAndServe()
-		if errorValue == nil || errors.Is(errorValue, http.ErrServerClosed) {
-			return
+		err := healthServer.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			select {
+			case errChan <- err:
+			default:
+				logger.Error("Health server stopped unexpectedly", "error", err)
+			}
 		}
-		applicationLogger.Error(context.Background(), "Health server stopped", "error", errorValue)
 	}()
+
+	select {
+	case err := <-errChan:
+		return nil, ierrors.Connection("health-server", err)
+	case <-time.After(100 * time.Millisecond):
+		// Server started successfully
+	}
 
 	return healthServer, nil
 }
 
-func stopHealthServer(healthServer *http.Server, applicationLogger *logger.Logger) {
-	if healthServer == nil {
-		return
-	}
-	shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func stopHealthServer(healthServer *http.Server) {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
 	defer cancel()
-	errorValue := healthServer.Shutdown(shutdownContext)
-	if errorValue != nil {
-		applicationLogger.Error(context.Background(), "Failed to stop health server", "error", errorValue)
+	err := healthServer.Shutdown(shutdownCtx)
+	if err != nil {
+		logger.Error("Failed to stop health server", "error", err)
 	}
 }
 
@@ -198,4 +165,24 @@ func healthHandler() http.Handler {
 		writer.WriteHeader(http.StatusOK)
 	})
 	return mux
+}
+
+func parsePairAddress(text string) (common.Address, error) {
+	if !common.IsHexAddress(text) {
+		return common.Address{}, ierrors.Config("PAIR_ADDRESS", "must be valid hex address")
+	}
+	return common.HexToAddress(text), nil
+}
+
+func validateRPCURL(url string) error {
+	if url == "" {
+		return ierrors.Config("POLYGON_RPC_URL", "required (must be WebSocket: wss:// or ws://)")
+	}
+	if len(url) < 5 {
+		return ierrors.Config("POLYGON_RPC_URL", "URL too short")
+	}
+	if strings.HasPrefix(url, "wss://") || strings.HasPrefix(url, "ws://") {
+		return nil
+	}
+	return ierrors.Config("POLYGON_RPC_URL", "must be WebSocket URL (wss:// or ws://)")
 }

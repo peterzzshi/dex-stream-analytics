@@ -49,11 +49,17 @@ services:
       dockerfile: Dockerfile
     container_name: ingester
     environment:
-      - POLYGON_RPC_URL=${POLYGON_RPC_URL:-https://polygon-rpc.com}
-      - PAIR_ADDRESS=${PAIR_ADDRESS:-0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827}
+      - POLYGON_RPC_URL=${POLYGON_RPC_URL}
+      - PAIR_ADDRESS=${PAIR_ADDRESS}
+      - DAPR_HOST=ingester-dapr
       - DAPR_HTTP_PORT=3500
+      - DAPR_GRPC_PORT=50001
       - PUBSUB_NAME=kafka-pubsub
-      - TOPIC_DEX_EVENTS=dex-events
+      - TOPIC_TRADING_EVENTS=dex-trading-events
+      - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
+      - PRODUCER_BATCH_SIZE=100
+      - PRODUCER_RETRY_MAX=3
+      - PRODUCER_FLUSH_INTERVAL=5s
       - LOG_LEVEL=info
       - APP_PORT=3000
     ports:
@@ -75,11 +81,12 @@ services:
       "./daprd",
       "-app-id", "ingester",
       "-app-port", "3000",
+      "-app-protocol", "http",
       "-dapr-http-port", "3500",
       "-dapr-grpc-port", "50001",
       "-components-path", "/components",
       "-config", "/config/config.yaml",
-      "-log-level", "debug",
+      "-log-level", "info",
       "-placement-host-address", "dapr-placement:50006"
     ]
     volumes:
@@ -87,7 +94,81 @@ services:
       - ./dapr/config:/config
     depends_on:
       - ingester
-    network_mode: "service:ingester"
+    networks:
+      - dex-analytics-network
+    environment:
+      - DAPR_HOST_IP=ingester
+
+  # Flink Aggregator: Stream processing job (dual-topic architecture)
+  aggregator:
+    build:
+      context: ./aggregator
+      dockerfile: Dockerfile
+    container_name: aggregator
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC_TRADING_EVENTS=dex-trading-events
+      - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
+      - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
+      - FLINK_PARALLELISM=2
+      - FLINK_CHECKPOINT_MS=10000
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - dex-analytics-network
+    restart: unless-stopped
+    # For development: comment out to run in IntelliJ instead
+    profiles:
+      - full-stack
+
+  # API: REST service for querying aggregated analytics
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: api
+    environment:
+      - APP_PORT=8080
+      - ENVIRONMENT=development
+      - LOG_LEVEL=info
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      dapr-placement:
+        condition: service_started
+    networks:
+      - dex-analytics-network
+    restart: unless-stopped
+
+  # DAPR sidecar for API
+  api-dapr:
+    image: daprio/daprd:1.12.0
+    container_name: api-dapr
+    command: [
+      "./daprd",
+      "-app-id", "api",
+      "-app-port", "8080",
+      "-app-protocol", "http",
+      "-dapr-http-port", "3501",
+      "-dapr-grpc-port", "50002",
+      "-components-path", "/components",
+      "-config", "/config/config.yaml",
+      "-log-level", "info",
+      "-placement-host-address", "dapr-placement:50006"
+    ]
+    volumes:
+      - ./dapr/components:/components
+      - ./dapr/config:/config
+      - ./dapr/subscriptions:/subscriptions
+    depends_on:
+      - api
+    networks:
+      - dex-analytics-network
+    environment:
+      - DAPR_HOST_IP=api
 
 networks:
   dex-analytics-network:

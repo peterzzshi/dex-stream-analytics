@@ -78,7 +78,8 @@ func TestCacheGetOrFetch(t *testing.T) {
 		t.Errorf("Expected still 1 fetch (cached), got %d", fetchCount)
 	}
 
-	// Fetch failure - should also be cached
+	// Fetch failure - should NOT be cached with TTL=0 (infinite)
+	// This prevents transient RPC errors from becoming permanent
 	value, found = cache.GetOrFetch(context.Background(), 2, fetch)
 	if found || value != "" {
 		t.Errorf("Expected ('', false), got (%s, %v)", value, found)
@@ -87,13 +88,13 @@ func TestCacheGetOrFetch(t *testing.T) {
 		t.Errorf("Expected 2 fetches, got %d", fetchCount)
 	}
 
-	// Second call to failed key - should use cached failure
+	// Second call to failed key - should retry (NOT cached with TTL=0)
 	value, found = cache.GetOrFetch(context.Background(), 2, fetch)
 	if found || value != "" {
 		t.Errorf("Expected ('', false), got (%s, %v)", value, found)
 	}
-	if fetchCount != 2 {
-		t.Errorf("Expected still 2 fetches (cached), got %d", fetchCount)
+	if fetchCount != 3 {
+		t.Errorf("Expected 3 fetches (failures not cached with TTL=0), got %d", fetchCount)
 	}
 }
 

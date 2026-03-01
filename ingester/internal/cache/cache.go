@@ -34,22 +34,31 @@ func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 // Returns (value, found, exists)
 // - found: whether the lookup was successful (true) or cached failure (false)
 // - exists: whether the key exists in cache at all
+// Expired entries are automatically evicted to prevent memory leaks
 func (c *Cache[K, V]) Get(key K) (V, bool, bool) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	entry, exists := c.items[key]
+
 	if !exists {
+		c.mu.RUnlock()
 		var zero V
 		return zero, false, false
 	}
 
 	// Check expiration
 	if !entry.ExpiresAt.IsZero() && time.Now().After(entry.ExpiresAt) {
+		c.mu.RUnlock()
+
+		// Upgrade to write lock to evict expired entry
+		c.mu.Lock()
+		delete(c.items, key)
+		c.mu.Unlock()
+
 		var zero V
 		return zero, false, false
 	}
 
+	c.mu.RUnlock()
 	return entry.Value, entry.Found, true
 }
 
@@ -73,7 +82,7 @@ func (c *Cache[K, V]) Set(key K, value V, found bool) {
 
 // GetOrFetch retrieves from cache or fetches using provided function
 // The fetch function is only called on cache miss
-// Results (both success and failure) are automatically cached
+// Success is always cached. Failures are only cached if TTL > 0 (to allow retries).
 func (c *Cache[K, V]) GetOrFetch(
 	ctx context.Context,
 	key K,
@@ -88,8 +97,11 @@ func (c *Cache[K, V]) GetOrFetch(
 	// Cache miss - fetch from source
 	value, found = fetch(ctx, key)
 
-	// Cache the result (success or failure)
-	c.Set(key, value, found)
+	// Cache the result - but don't cache failures when TTL is infinite
+	// Rationale: transient RPC errors shouldn't be permanent with TTL=0
+	if found || c.ttl > 0 {
+		c.Set(key, value, found)
+	}
 
 	return value, found
 }

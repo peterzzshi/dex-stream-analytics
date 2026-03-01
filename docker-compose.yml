@@ -60,7 +60,6 @@ services:
       - PRODUCER_BATCH_SIZE=100
       - PRODUCER_RETRY_MAX=3
       - PRODUCER_FLUSH_INTERVAL=5s
-      - LOG_LEVEL=info
       - APP_PORT=3000
     ports:
       - "3000:3000"

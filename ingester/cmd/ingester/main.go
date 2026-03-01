@@ -12,13 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+
 	"ingester/internal/blockchain"
 	"ingester/internal/config"
 	ierrors "ingester/internal/errors"
 	"ingester/internal/events"
 	"ingester/internal/publisher"
-
-	"github.com/ethereum/go-ethereum/common"
 )
 
 const (
@@ -62,11 +62,17 @@ func run() error {
 		}
 	}()
 
-	eventPublisher, err := publisher.New()
+	codecs, err := publisher.CreateCodecMap()
 	if err != nil {
 		return err
 	}
-	defer eventPublisher.Close()
+
+	topicMapper := publisher.DefaultTopicMapper()
+	urlBuilder := publisher.DefaultURLBuilder()
+	httpDoer := func(req *http.Request) (*http.Response, error) {
+		client := &http.Client{Timeout: 10 * time.Second}
+		return client.Do(req)
+	}
 
 	listener, err := blockchain.NewListener(ctx, rpcURL, pairAddress)
 	if err != nil {
@@ -86,13 +92,16 @@ func run() error {
 	signalChannel := make(chan os.Signal, 1)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 
-	return consumeEvents(ctx, cancel, eventPublisher, eventChannel, errorChannel, signalChannel)
+	return consumeEvents(ctx, cancel, codecs, topicMapper, urlBuilder, httpDoer, eventChannel, errorChannel, signalChannel)
 }
 
 func consumeEvents(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	eventPublisher *publisher.Publisher,
+	codecs publisher.CodecMap,
+	topicMapper publisher.TopicMapper,
+	urlBuilder publisher.URLBuilder,
+	httpDoer publisher.HTTPDoer,
 	eventChannel <-chan events.Event,
 	errorChannel <-chan error,
 	signalChannel <-chan os.Signal,
@@ -112,7 +121,7 @@ func consumeEvents(
 			cancel()
 			return err
 		case event := <-eventChannel:
-			eventPublisher.Publish(ctx, event)
+			publisher.Publish(ctx, event, codecs, topicMapper, urlBuilder, httpDoer)
 		}
 	}
 }

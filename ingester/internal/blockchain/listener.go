@@ -34,7 +34,8 @@ type Listener struct {
 	pairAddress  common.Address
 	client       *ethclient.Client
 	pairMetadata PairMetadata
-	priceOracle  *oracle.ChainlinkOracle
+	priceCache   *cache.Cache[common.Address, float64]
+	priceFetcher oracle.PriceFetcher
 }
 
 func NewListener(ctx context.Context, rpcURL string, pairAddress common.Address) (*Listener, error) {
@@ -49,14 +50,23 @@ func NewListener(ctx context.Context, rpcURL string, pairAddress common.Address)
 		return nil, err
 	}
 
-	// Initialize Chainlink price oracle for accurate USD volume
-	priceOracle := oracle.NewChainlinkOracle(client)
+	// Create ContractCaller function for FP-style oracle
+	contractCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+		return client.CallContract(ctx, call, blockNumber)
+	}
+
+	// Create price fetcher using FP style
+	priceFetcher := oracle.CreatePriceFetcherWithChainlink(contractCaller)
+
+	// Create price cache (5 minutes TTL)
+	priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
 
 	return &Listener{
 		pairAddress:  pairAddress,
 		client:       client,
 		pairMetadata: pairMetadata,
-		priceOracle:  priceOracle,
+		priceCache:   priceCache,
+		priceFetcher: priceFetcher,
 	}, nil
 }
 
@@ -154,7 +164,7 @@ func (l *Listener) parseSwapEvent(ctx context.Context, logEntry types.Log) (even
 		Amount0Out: amount0Out.String(),
 		Amount1Out: amount1Out.String(),
 		Price:      price,
-		VolumeUSD:  volumeUSDFromSwap(ctx, l.priceOracle, amount0In, amount1In, amount0Out, amount1Out, l.pairMetadata, price),
+		VolumeUSD:  volumeUSDFromSwap(ctx, l.priceCache, l.priceFetcher, amount0In, amount1In, amount0Out, amount1Out, l.pairMetadata, price),
 		GasUsed:    gasUsed,
 		GasPrice:   gasPrice,
 	}, nil
@@ -251,13 +261,22 @@ func priceFromSwapAmounts(amount0In, amount1In, amount0Out, amount1Out *big.Int,
 	return 0
 }
 
-func volumeUSDFromSwap(ctx context.Context, oracle *oracle.ChainlinkOracle, amount0In, amount1In, amount0Out, amount1Out *big.Int, pairMetadata PairMetadata, price float64) *float64 {
+// volumeUSDFromSwap calculates USD volume using Chainlink price oracle (FP style)
+// Pure function with injected price fetching behavior
+func volumeUSDFromSwap(
+	ctx context.Context,
+	priceCache *cache.Cache[common.Address, float64],
+	priceFetcher oracle.PriceFetcher,
+	amount0In, amount1In, amount0Out, amount1Out *big.Int,
+	pairMetadata PairMetadata,
+	price float64,
+) *float64 {
 	// Calculate accurate USD volume using Chainlink price oracle
 	// Four-tier strategy: stablecoin direct → oracle token0 → oracle token1 → price estimation
 
 	// Strategy 1: If token1 is a stablecoin (most accurate, ~70% of pairs)
 	// Oracle returns $1.00 immediately for stablecoins (USDC/USDT/DAI)
-	token1Price, foundToken1 := oracle.GetTokenUSDPrice(ctx, pairMetadata.Token1Address)
+	token1Price, foundToken1 := oracle.GetTokenUSDPrice(ctx, pairMetadata.Token1Address, priceCache, priceFetcher)
 	if foundToken1 && token1Price == 1.0 {
 		// It's a stablecoin - use amount directly
 		var amount1 *big.Int
@@ -271,7 +290,7 @@ func volumeUSDFromSwap(ctx context.Context, oracle *oracle.ChainlinkOracle, amou
 	}
 
 	// Strategy 2: If token0 is a stablecoin
-	token0Price, foundToken0 := oracle.GetTokenUSDPrice(ctx, pairMetadata.Token0Address)
+	token0Price, foundToken0 := oracle.GetTokenUSDPrice(ctx, pairMetadata.Token0Address, priceCache, priceFetcher)
 	if foundToken0 && token0Price == 1.0 {
 		// It's a stablecoin - use amount directly
 		var amount0 *big.Int
@@ -384,10 +403,10 @@ func fetchGasDetails(ctx context.Context, client *ethclient.Client, txHash commo
 }
 
 func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddress common.Address, pairABI abi.ABI) (PairMetadata, error) {
-	contract := bind.NewBoundContract(pairAddress, pairABI, client, client, client)
+	pairContract := bind.NewBoundContract(pairAddress, pairABI, client, client, client)
 
 	token0Results := []interface{}{new(common.Address)}
-	if err := contract.Call(&bind.CallOpts{Context: ctx}, &token0Results, "token0"); err != nil {
+	if err := pairContract.Call(&bind.CallOpts{Context: ctx}, &token0Results, "token0"); err != nil {
 		if ctx.Err() != nil {
 			return PairMetadata{}, ctx.Err()
 		}
@@ -396,7 +415,7 @@ func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddres
 	token0Address := *token0Results[0].(*common.Address)
 
 	token1Results := []interface{}{new(common.Address)}
-	if err := contract.Call(&bind.CallOpts{Context: ctx}, &token1Results, "token1"); err != nil {
+	if err := pairContract.Call(&bind.CallOpts{Context: ctx}, &token1Results, "token1"); err != nil {
 		if ctx.Err() != nil {
 			return PairMetadata{}, ctx.Err()
 		}
@@ -429,8 +448,13 @@ func fetchTokenDecimals(ctx context.Context, client *ethclient.Client, tokenAddr
 		return 0, ierrors.Config("ABI", "failed to get ERC20 decimals ABI")
 	}
 
+	// Create ContractCaller from ethclient
+	contractCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+		return client.CallContract(ctx, call, blockNumber)
+	}
+
 	var decimals uint8
-	if err := contract.CallContract(ctx, client, tokenAddress, decimalsABI, "decimals", &decimals); err != nil {
+	if err := contract.CallContract(ctx, contractCaller, tokenAddress, decimalsABI, "decimals", &decimals); err != nil {
 		return 0, err
 	}
 
@@ -446,8 +470,13 @@ func fetchTokenSymbol(ctx context.Context, client *ethclient.Client, tokenAddres
 			return "", false
 		}
 
+		// Create ContractCaller from ethclient
+		contractCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+			return client.CallContract(ctx, call, blockNumber)
+		}
+
 		var symbol string
-		if err := contract.CallContract(ctx, client, addr, symbolABI, "symbol", &symbol); err != nil {
+		if err := contract.CallContract(ctx, contractCaller, addr, symbolABI, "symbol", &symbol); err != nil {
 			logger.Debug("Symbol fetch failed", "token", addr.Hex(), "error", err)
 			return "", false
 		}

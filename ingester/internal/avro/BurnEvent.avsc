@@ -5,11 +5,6 @@
   "doc": "Represents a liquidity removal (burn) event from a DEX (Uniswap V2 compatible)",
   "fields": [
     {
-      "name": "eventType",
-      "type": "string",
-      "doc": "Type of event (swap, mint, or burn)"
-    },
-    {
       "name": "eventId",
       "type": "string",
       "doc": "Unique identifier for this event (txHash + logIndex)"
@@ -79,12 +74,7 @@
     {
       "name": "amount1",
       "type": "string",
-      "doc": "Amount of token1 removed from the pair"
-    },
-    {
-      "name": "liquidityBurned",
-      "type": "string",
-      "doc": "Amount of LP tokens burned"
+      "doc": "Amount of token1 removed from the pair (delta on pool reserves)"
     },
     {
       "name": "eventTimestamp",

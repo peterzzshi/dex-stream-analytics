@@ -4,17 +4,15 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-// Embedded ABI JSON files
-//
 //go:embed erc20_decimals.abi.json
 var erc20DecimalsABIJSON string
 
@@ -27,7 +25,6 @@ var chainlinkAggregatorABIJSON string
 //go:embed uniswap_v2_pair.abi.json
 var uniswapV2PairABIJSON string
 
-// ABIName represents a known contract ABI identifier
 type ABIName string
 
 const (
@@ -37,7 +34,8 @@ const (
 	UniswapV2Pair       ABIName = "uniswap_v2_pair"
 )
 
-// Lazy-loaded ABI cache using sync.Once for each ABI (no locks needed after init)
+type ContractCaller func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
+
 var (
 	erc20DecimalsABI        abi.ABI
 	erc20DecimalsOnce       sync.Once
@@ -49,8 +47,6 @@ var (
 	uniswapV2PairOnce       sync.Once
 )
 
-// GetABI returns a parsed ABI by name (type-safe)
-// Uses sync.Once per ABI - thread-safe, no locks after first call
 func GetABI(name ABIName) (abi.ABI, error) {
 	switch name {
 	case ERC20Decimals:
@@ -86,7 +82,6 @@ func GetABI(name ABIName) (abi.ABI, error) {
 	}
 }
 
-// parseABI parses an ABI from the embedded JSON strings
 func parseABI(name ABIName) (abi.ABI, error) {
 	var jsonStr string
 
@@ -111,16 +106,31 @@ func parseABI(name ABIName) (abi.ABI, error) {
 	return parsed, nil
 }
 
-// CallContract makes a read-only contract call with generic type support
 func CallContract[T any](
 	ctx context.Context,
-	client *ethclient.Client,
+	callContract ContractCaller,
 	contractAddress common.Address,
 	contractABI abi.ABI,
 	methodName string,
 	resultPtr *T,
 ) error {
-	contract := bind.NewBoundContract(contractAddress, contractABI, client, client, client)
+	data, err := contractABI.Pack(methodName)
+	if err != nil {
+		return fmt.Errorf("pack method %s: %w", methodName, err)
+	}
+
+	result, err := callContract(ctx, ethereum.CallMsg{
+		To:   &contractAddress,
+		Data: data,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("call contract: %w", err)
+	}
+
 	results := []interface{}{resultPtr}
-	return contract.Call(&bind.CallOpts{Context: ctx}, &results, methodName)
+	if err := contractABI.UnpackIntoInterface(&results, methodName, result); err != nil {
+		return fmt.Errorf("unpack result: %w", err)
+	}
+
+	return nil
 }

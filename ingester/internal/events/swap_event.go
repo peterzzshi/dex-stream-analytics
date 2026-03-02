@@ -19,18 +19,6 @@ func (e SwapEvent) WithPrice(price float64) SwapEvent {
 	return e
 }
 
-func (e SwapEvent) GetEventType() string {
-	return e.EventType
-}
-
-func (e SwapEvent) GetEventID() string {
-	return e.EventID
-}
-
-func (e SwapEvent) GetPairAddress() string {
-	return e.PairAddress
-}
-
 func (e SwapEvent) ToMap() map[string]interface{} {
 	m := e.BaseEvent.ToMap()
 	m["sender"] = e.Sender

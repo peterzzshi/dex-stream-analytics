@@ -18,7 +18,7 @@ var AllEventTypes = []EventType{
 
 // Event is the interface that all DEX events must implement
 type Event interface {
-	GetEventType() string
+	GetEventType() EventType
 	GetEventID() string
 	GetPairAddress() string
 	ToMap() map[string]interface{}
@@ -26,18 +26,30 @@ type Event interface {
 
 // BaseEvent contains fields common to all DEX events
 type BaseEvent struct {
-	EventType       string  `json:"eventType"`
-	EventID         string  `json:"eventId"`
-	BlockNumber     int64   `json:"blockNumber"`
-	BlockTimestamp  int64   `json:"blockTimestamp"`
-	TransactionHash string  `json:"transactionHash"`
-	LogIndex        int32   `json:"logIndex"`
-	PairAddress     string  `json:"pairAddress"`
-	Token0          string  `json:"token0"`
-	Token1          string  `json:"token1"`
-	Token0Symbol    *string `json:"token0Symbol,omitempty"`
-	Token1Symbol    *string `json:"token1Symbol,omitempty"`
-	EventTimestamp  int64   `json:"eventTimestamp"`
+	EventType       EventType `json:"eventType"`
+	EventID         string    `json:"eventId"`
+	BlockNumber     int64     `json:"blockNumber"`
+	BlockTimestamp  int64     `json:"blockTimestamp"`
+	TransactionHash string    `json:"transactionHash"`
+	LogIndex        int32     `json:"logIndex"`
+	PairAddress     string    `json:"pairAddress"`
+	Token0          string    `json:"token0"`
+	Token1          string    `json:"token1"`
+	Token0Symbol    *string   `json:"token0Symbol,omitempty"`
+	Token1Symbol    *string   `json:"token1Symbol,omitempty"`
+	EventTimestamp  int64     `json:"eventTimestamp"`
+}
+
+func (base BaseEvent) GetEventType() EventType {
+	return base.EventType
+}
+
+func (base BaseEvent) GetEventID() string {
+	return base.EventID
+}
+
+func (base BaseEvent) GetPairAddress() string {
+	return base.PairAddress
 }
 
 // ToMap converts BaseEvent fields to a map for Avro serialization

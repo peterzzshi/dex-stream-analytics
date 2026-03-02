@@ -20,7 +20,7 @@ import (
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 type HTTPDoer func(req *http.Request) (*http.Response, error)
-type CodecMap map[string]*goavro.Codec
+type CodecMap map[events.EventType]*goavro.Codec
 type TopicMapper func(eventType events.EventType) (string, error)
 type URLBuilder func(topic string) string
 
@@ -32,7 +32,7 @@ func CreateCodecMap() (CodecMap, error) {
 		if err != nil {
 			return nil, err
 		}
-		codecs[string(eventType)] = codec
+		codecs[eventType] = codec
 	}
 
 	return codecs, nil
@@ -121,10 +121,10 @@ func prepare(event events.Event, codecs CodecMap, topicMapper TopicMapper) (*goa
 
 	codec, ok := codecs[eventType]
 	if !ok {
-		return nil, "", &ConfigError{Message: "codec not found for event type: " + eventType}
+		return nil, "", &ConfigError{Message: "codec not found for event type: " + string(eventType)}
 	}
 
-	topic, err := topicMapper(events.EventType(eventType))
+	topic, err := topicMapper(eventType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -135,7 +135,7 @@ func prepare(event events.Event, codecs CodecMap, topicMapper TopicMapper) (*goa
 func encode(codec *goavro.Codec, event events.Event) ([]byte, error) {
 	encodedBody, err := codec.BinaryFromNative(nil, event.ToMap())
 	if err != nil {
-		return nil, &DataError{Message: "encode failed for " + event.GetEventType(), Cause: err}
+		return nil, &DataError{Message: "encode failed for " + string(event.GetEventType()), Cause: err}
 	}
 	return encodedBody, nil
 }

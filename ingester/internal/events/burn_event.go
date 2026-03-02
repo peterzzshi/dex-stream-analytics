@@ -8,18 +8,6 @@ type BurnEvent struct {
 	Amount1   string `json:"amount1"` // Token1 amount removed from pool
 }
 
-func (e BurnEvent) GetEventType() string {
-	return e.EventType
-}
-
-func (e BurnEvent) GetEventID() string {
-	return e.EventID
-}
-
-func (e BurnEvent) GetPairAddress() string {
-	return e.PairAddress
-}
-
 func (e BurnEvent) ToMap() map[string]interface{} {
 	m := e.BaseEvent.ToMap()
 	m["sender"] = e.Sender

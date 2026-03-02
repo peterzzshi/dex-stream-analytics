@@ -38,7 +38,7 @@ func TestEncodeDecode_SwapEvent(t *testing.T) {
 	// Use nil volumeUSD to avoid Avro union encoding complexity in tests
 	original := events.SwapEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:       "Swap",
+			EventType:       events.EventTypeSwap,
 			EventID:         "tx-123-0",
 			BlockNumber:     1000,
 			BlockTimestamp:  1640000000,
@@ -100,7 +100,7 @@ func TestEncodeDecode_MintEvent(t *testing.T) {
 
 	original := events.MintEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:       "Mint",
+			EventType:       events.EventTypeMint,
 			EventID:         "tx-456-1",
 			BlockNumber:     2000,
 			BlockTimestamp:  1640001000,
@@ -150,7 +150,7 @@ func TestEncodeDecode_BurnEvent(t *testing.T) {
 
 	original := events.BurnEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:       "Burn",
+			EventType:       events.EventTypeBurn,
 			EventID:         "tx-789-2",
 			BlockNumber:     3000,
 			BlockTimestamp:  1640002000,

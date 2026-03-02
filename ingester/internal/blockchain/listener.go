@@ -146,17 +146,15 @@ func (l *Listener) parseSwapEvent(ctx context.Context, logEntry types.Log) (even
 		}
 	}
 
-	blockTimestamp, err := fetchBlockTimestamp(ctx, l.client, logEntry.BlockNumber)
-	if err != nil {
-		return events.SwapEvent{}, err
-	}
-
 	gasUsed, gasPrice, err := fetchGasDetails(ctx, l.client, logEntry.TxHash)
 	if err != nil {
 		return events.SwapEvent{}, err
 	}
 
-	base := buildBaseEvent(ctx, l.client, logEntry, events.EventTypeSwap, blockTimestamp, l.pairMetadata)
+	base, err := l.buildBase(ctx, logEntry, events.EventTypeSwap)
+	if err != nil {
+		return events.SwapEvent{}, err
+	}
 	price := priceFromSwapAmounts(amount0In, amount1In, amount0Out, amount1Out, l.pairMetadata)
 
 	return events.SwapEvent{
@@ -183,12 +181,10 @@ func (l *Listener) parseMintEvent(ctx context.Context, logEntry types.Log) (even
 		}
 	}
 
-	blockTimestamp, err := fetchBlockTimestamp(ctx, l.client, logEntry.BlockNumber)
+	base, err := l.buildBase(ctx, logEntry, events.EventTypeMint)
 	if err != nil {
 		return events.MintEvent{}, err
 	}
-
-	base := buildBaseEvent(ctx, l.client, logEntry, events.EventTypeMint, blockTimestamp, l.pairMetadata)
 
 	return events.MintEvent{
 		BaseEvent: base,
@@ -207,12 +203,10 @@ func (l *Listener) parseBurnEvent(ctx context.Context, logEntry types.Log) (even
 		}
 	}
 
-	blockTimestamp, err := fetchBlockTimestamp(ctx, l.client, logEntry.BlockNumber)
+	base, err := l.buildBase(ctx, logEntry, events.EventTypeBurn)
 	if err != nil {
 		return events.BurnEvent{}, err
 	}
-
-	base := buildBaseEvent(ctx, l.client, logEntry, events.EventTypeBurn, blockTimestamp, l.pairMetadata)
 
 	return events.BurnEvent{
 		BaseEvent: base,
@@ -223,42 +217,43 @@ func (l *Listener) parseBurnEvent(ctx context.Context, logEntry types.Log) (even
 	}, nil
 }
 
-func buildBaseEvent(ctx context.Context, client *ethclient.Client, logEntry types.Log, eventType events.EventType, blockTimestamp int64, pairMetadata PairMetadata) events.BaseEvent {
-	// Build event identifier inline (txHash:logIndex)
+func (l *Listener) buildBase(ctx context.Context, logEntry types.Log, eventType events.EventType) (events.BaseEvent, error) {
+	blockTimestamp, err := fetchBlockTimestamp(ctx, l.client, logEntry.BlockNumber)
+	if err != nil {
+		return events.BaseEvent{}, err
+	}
+
+	token0 := fetchTokenSymbol(ctx, l.client, l.pairMetadata.Token0Address)
+	token1 := fetchTokenSymbol(ctx, l.client, l.pairMetadata.Token1Address)
+
+	var token0Ptr, token1Ptr *string
+	if token0 != "" {
+		token0Ptr = &token0
+	}
+	if token1 != "" {
+		token1Ptr = &token1
+	}
+
 	var eventIDBuilder strings.Builder
-	eventIDBuilder.Grow(66 + 1 + 10) // 0x + 64 hex chars + : + max uint digits
+	eventIDBuilder.Grow(66 + 1 + 10)
 	eventIDBuilder.WriteString(logEntry.TxHash.Hex())
 	eventIDBuilder.WriteByte(':')
 	eventIDBuilder.WriteString(strconv.FormatUint(uint64(logEntry.Index), 10))
 
-	// Fetch token symbols (with caching to minimize RPC calls)
-	// First event from a pair will make 2 RPC calls, subsequent events hit cache
-	token0Symbol := fetchTokenSymbol(ctx, client, pairMetadata.Token0Address)
-	token1Symbol := fetchTokenSymbol(ctx, client, pairMetadata.Token1Address)
-
-	// Convert to *string (nullable - empty means symbol not available)
-	var token0SymbolPtr, token1SymbolPtr *string
-	if token0Symbol != "" {
-		token0SymbolPtr = &token0Symbol
-	}
-	if token1Symbol != "" {
-		token1SymbolPtr = &token1Symbol
-	}
-
 	return events.BaseEvent{
-		EventType:       string(eventType),
+		EventType:       eventType,
 		EventID:         eventIDBuilder.String(),
 		BlockNumber:     int64(logEntry.BlockNumber),
 		BlockTimestamp:  blockTimestamp,
 		TransactionHash: logEntry.TxHash.Hex(),
 		LogIndex:        int32(logEntry.Index),
-		PairAddress:     pairMetadata.PairAddress.Hex(),
-		Token0:          pairMetadata.Token0Address.Hex(),
-		Token1:          pairMetadata.Token1Address.Hex(),
-		Token0Symbol:    token0SymbolPtr,
-		Token1Symbol:    token1SymbolPtr,
+		PairAddress:     l.pairMetadata.PairAddress.Hex(),
+		Token0:          l.pairMetadata.Token0Address.Hex(),
+		Token1:          l.pairMetadata.Token1Address.Hex(),
+		Token0Symbol:    token0Ptr,
+		Token1Symbol:    token1Ptr,
 		EventTimestamp:  time.Now().Unix(),
-	}
+	}, nil
 }
 
 func priceFromSwapAmounts(amount0In, amount1In, amount0Out, amount1Out *big.Int, pairMetadata PairMetadata) float64 {

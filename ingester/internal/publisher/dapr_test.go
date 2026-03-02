@@ -25,15 +25,6 @@ func mockURLBuilder(topic string) string {
 	return "http://localhost:3500/v1.0/publish/kafka-pubsub/" + topic
 }
 
-func mockHTTPSuccess() HTTPDoer {
-	return func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: 200,
-			Body:       io.NopCloser(strings.NewReader("")),
-		}, nil
-	}
-}
-
 func mockHTTPError(statusCode int) HTTPDoer {
 	return func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -62,7 +53,7 @@ func TestCreateCodecMap(t *testing.T) {
 
 	// Verify all event types have codecs
 	for _, eventType := range events.AllEventTypes {
-		if _, ok := codecs[string(eventType)]; !ok {
+		if _, ok := codecs[eventType]; !ok {
 			t.Errorf("Missing codec for event type: %s", eventType)
 		}
 	}
@@ -83,7 +74,7 @@ func TestPublish_SwapEvent(t *testing.T) {
 
 	event := events.SwapEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:       "Swap",
+			EventType:       events.EventTypeSwap,
 			EventID:         "tx-123-0",
 			PairAddress:     "0xpair",
 			BlockNumber:     1000,
@@ -135,7 +126,7 @@ func TestPublish_MintEvent(t *testing.T) {
 
 	event := events.MintEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:   "Mint",
+			EventType:   events.EventTypeMint,
 			EventID:     "tx-456-1",
 			PairAddress: "0xpair2",
 		},
@@ -161,7 +152,7 @@ func TestPublish_BurnEvent(t *testing.T) {
 
 	event := events.BurnEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:   "Burn",
+			EventType:   events.EventTypeBurn,
 			EventID:     "tx-789-2",
 			PairAddress: "0xpair3",
 		},
@@ -184,7 +175,7 @@ func TestPublish_HTTPError(t *testing.T) {
 
 	event := events.SwapEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:   "Swap",
+			EventType:   events.EventTypeSwap,
 			EventID:     "test",
 			PairAddress: "0xpair",
 		},
@@ -199,7 +190,7 @@ func TestPublish_NetworkError(t *testing.T) {
 
 	event := events.SwapEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:   "Swap",
+			EventType:   events.EventTypeSwap,
 			EventID:     "test",
 			PairAddress: "0xpair",
 		},
@@ -220,7 +211,7 @@ func TestPrepare(t *testing.T) {
 		{
 			name: "Swap event",
 			event: events.SwapEvent{
-				BaseEvent: events.BaseEvent{EventType: "Swap"},
+				BaseEvent: events.BaseEvent{EventType: events.EventTypeSwap},
 			},
 			expectedTopic: "dex-trading-events",
 			expectError:   false,
@@ -228,7 +219,7 @@ func TestPrepare(t *testing.T) {
 		{
 			name: "Mint event",
 			event: events.MintEvent{
-				BaseEvent: events.BaseEvent{EventType: "Mint"},
+				BaseEvent: events.BaseEvent{EventType: events.EventTypeMint},
 			},
 			expectedTopic: "dex-liquidity-events",
 			expectError:   false,
@@ -236,7 +227,7 @@ func TestPrepare(t *testing.T) {
 		{
 			name: "Burn event",
 			event: events.BurnEvent{
-				BaseEvent: events.BaseEvent{EventType: "Burn"},
+				BaseEvent: events.BaseEvent{EventType: events.EventTypeBurn},
 			},
 			expectedTopic: "dex-liquidity-events",
 			expectError:   false,
@@ -270,7 +261,7 @@ func TestEncode(t *testing.T) {
 
 	event := events.SwapEvent{
 		BaseEvent: events.BaseEvent{
-			EventType:   "Swap",
+			EventType:   events.EventTypeSwap,
 			EventID:     "test-id",
 			PairAddress: "0xpair",
 		},

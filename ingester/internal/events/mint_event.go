@@ -7,18 +7,6 @@ type MintEvent struct {
 	Amount1 string `json:"amount1"` // Token1 amount added to pool
 }
 
-func (e MintEvent) GetEventType() string {
-	return e.EventType
-}
-
-func (e MintEvent) GetEventID() string {
-	return e.EventID
-}
-
-func (e MintEvent) GetPairAddress() string {
-	return e.PairAddress
-}
-
 func (e MintEvent) ToMap() map[string]interface{} {
 	m := e.BaseEvent.ToMap()
 	m["sender"] = e.Sender

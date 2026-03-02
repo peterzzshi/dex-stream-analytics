@@ -13,7 +13,7 @@ import (
 
 	"ingester/internal/avro"
 	"ingester/internal/config"
-	ierrors "ingester/internal/errors"
+	. "ingester/internal/errors"
 	"ingester/internal/events"
 )
 
@@ -46,7 +46,7 @@ func DefaultTopicMapper() TopicMapper {
 		case events.EventTypeMint, events.EventTypeBurn:
 			return config.GetTopicLiquidityEvents(), nil
 		default:
-			return "", ierrors.Config("topic", "no mapping for event type: "+string(eventType))
+			return "", &ConfigError{Message: "no mapping for event type: " + string(eventType)}
 		}
 	}
 }
@@ -99,16 +99,14 @@ func logError(event events.Event, err error) {
 	eventType := event.GetEventType()
 	pair := event.GetPairAddress()
 
-	var (
-		connErr    *ierrors.ConnectionError
-		publishErr *ierrors.PublishError
-		configErr  *ierrors.ConfigError
-		dataErr    *ierrors.DataError
-	)
+	var connErr *ConnectionError
+	var publishErr *PublishError
+	var configErr *ConfigError
+	var dataErr *DataError
 
 	switch {
 	case errors.As(err, &connErr) || errors.As(err, &publishErr):
-		logger.Warn("Publish will retry", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
+		logger.Warn("Publish failed (retryable)", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
 	case errors.As(err, &configErr):
 		logger.Error("Fatal configuration error", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
 	case errors.As(err, &dataErr):
@@ -123,7 +121,7 @@ func prepare(event events.Event, codecs CodecMap, topicMapper TopicMapper) (*goa
 
 	codec, ok := codecs[eventType]
 	if !ok {
-		return nil, "", ierrors.Config("codec", "not found for event type: "+eventType)
+		return nil, "", &ConfigError{Message: "codec not found for event type: " + eventType}
 	}
 
 	topic, err := topicMapper(events.EventType(eventType))
@@ -137,7 +135,7 @@ func prepare(event events.Event, codecs CodecMap, topicMapper TopicMapper) (*goa
 func encode(codec *goavro.Codec, event events.Event) ([]byte, error) {
 	encodedBody, err := codec.BinaryFromNative(nil, event.ToMap())
 	if err != nil {
-		return nil, ierrors.Data("encode", event.GetEventType(), err)
+		return nil, &DataError{Message: "encode failed for " + event.GetEventType(), Cause: err}
 	}
 	return encodedBody, nil
 }
@@ -151,7 +149,7 @@ func publish(
 ) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return ierrors.Config("http_request", fmt.Sprintf("failed to create request for URL %s: %v", url, err))
+		return &ConfigError{Message: fmt.Sprintf("failed to create request for URL %s: %v", url, err)}
 	}
 
 	request.Header.Set("Content-Type", "application/avro-binary")
@@ -159,12 +157,12 @@ func publish(
 
 	response, err := httpDoer(request)
 	if err != nil {
-		return ierrors.Connection("dapr", err)
+		return &ConnectionError{Message: "dapr publish failed", Cause: err}
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode >= 300 {
-		return ierrors.Publish(url, fmt.Errorf("HTTP %d: %s", response.StatusCode, response.Status))
+		return &PublishError{Message: fmt.Sprintf("%s returned HTTP %d: %s", url, response.StatusCode, response.Status), Cause: nil}
 	}
 
 	return nil

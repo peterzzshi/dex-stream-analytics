@@ -127,9 +127,18 @@ func CallContract[T any](
 		return fmt.Errorf("call contract: %w", err)
 	}
 
-	results := []interface{}{resultPtr}
-	if err := contractABI.UnpackIntoInterface(&results, methodName, result); err != nil {
+	method, ok := contractABI.Methods[methodName]
+	if !ok {
+		return fmt.Errorf("method %s not found in ABI", methodName)
+	}
+
+	values, err := method.Outputs.Unpack(result)
+	if err != nil {
 		return fmt.Errorf("unpack result: %w", err)
+	}
+
+	if err := method.Outputs.Copy(resultPtr, values); err != nil {
+		return fmt.Errorf("copy result: %w", err)
 	}
 
 	return nil

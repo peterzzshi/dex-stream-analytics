@@ -3,7 +3,7 @@ package avro
 import (
 	_ "embed"
 
-	ierrors "ingester/internal/errors"
+	. "ingester/internal/errors"
 	"ingester/internal/events"
 
 	"github.com/linkedin/goavro/v2"
@@ -27,11 +27,11 @@ var schemaRegistry = map[events.EventType]string{
 func NewCodec(eventType events.EventType) (*goavro.Codec, error) {
 	schemaText, ok := schemaRegistry[eventType]
 	if !ok {
-		return nil, ierrors.Config("schema", "event type not found: "+string(eventType))
+		return nil, &ConfigError{Message: "event type not found: " + string(eventType)}
 	}
 	codec, err := goavro.NewCodec(schemaText)
 	if err != nil {
-		return nil, ierrors.Config("schema", "failed to parse Avro schema for "+string(eventType))
+		return nil, &ConfigError{Message: "failed to parse Avro schema for " + string(eventType)}
 	}
 	return codec, nil
 }

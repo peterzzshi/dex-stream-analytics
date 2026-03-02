@@ -20,7 +20,7 @@ import (
 
 	"ingester/internal/cache"
 	"ingester/internal/contract"
-	ierrors "ingester/internal/errors"
+	. "ingester/internal/errors"
 	"ingester/internal/events"
 	"ingester/internal/oracle"
 )
@@ -41,7 +41,7 @@ type Listener struct {
 func NewListener(ctx context.Context, rpcURL string, pairAddress common.Address) (*Listener, error) {
 	client, err := ethclient.Dial(rpcURL)
 	if err != nil {
-		return nil, ierrors.Connection("rpc", err)
+		return nil, &ConnectionError{Message: "rpc dial failed", Cause: err}
 	}
 
 	pairMetadata, err := fetchPairMetadata(ctx, client, pairAddress, UniswapV2PairABI)
@@ -50,15 +50,12 @@ func NewListener(ctx context.Context, rpcURL string, pairAddress common.Address)
 		return nil, err
 	}
 
-	// Create ContractCaller function for FP-style oracle
 	contractCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 		return client.CallContract(ctx, call, blockNumber)
 	}
 
-	// Create price fetcher using FP style
 	priceFetcher := oracle.CreatePriceFetcherWithChainlink(contractCaller)
 
-	// Create price cache (5 minutes TTL)
 	priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
 
 	return &Listener{
@@ -80,10 +77,10 @@ func (l *Listener) Listen(ctx context.Context, outputChannel chan<- events.Event
 		Topics:    [][]common.Hash{{SwapEventTopic, MintEventTopic, BurnEventTopic}},
 	}
 
-	logChannel := make(chan types.Log)
+	logChannel := make(chan types.Log, 100)
 	subscription, err := l.client.SubscribeFilterLogs(ctx, filterQuery, logChannel)
 	if err != nil {
-		return ierrors.Connection("event-subscription", err)
+		return &ConnectionError{Message: "event subscription failed", Cause: err}
 	}
 
 	for {
@@ -91,11 +88,11 @@ func (l *Listener) Listen(ctx context.Context, outputChannel chan<- events.Event
 		case <-ctx.Done():
 			return ctx.Err()
 		case subscriptionErr := <-subscription.Err():
-			return ierrors.Connection("event-stream", subscriptionErr)
+			return &ConnectionError{Message: "event stream failed", Cause: subscriptionErr}
 		case logEntry := <-logChannel:
 			event, err := l.eventFromLog(ctx, logEntry)
 			if err != nil {
-				var dataErr *ierrors.DataError
+				var dataErr *DataError
 				if errors.As(err, &dataErr) {
 					logger.Warn("Skipping bad event data", "error", err)
 					continue
@@ -117,8 +114,10 @@ func (l *Listener) Close() {
 
 func (l *Listener) eventFromLog(ctx context.Context, logEntry types.Log) (events.Event, error) {
 	if len(logEntry.Topics) == 0 {
-		return nil, ierrors.Data("parse", fmt.Sprintf("block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
-			fmt.Errorf("no topics"))
+		return nil, &DataError{
+			Message: fmt.Sprintf("no topics in log at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
+			Cause:   nil,
+		}
 	}
 
 	topic := logEntry.Topics[0]
@@ -131,15 +130,20 @@ func (l *Listener) eventFromLog(ctx context.Context, logEntry types.Log) (events
 	case BurnEventTopic:
 		return l.parseBurnEvent(ctx, logEntry)
 	default:
-		return nil, ierrors.Data("parse", fmt.Sprintf("block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
-			fmt.Errorf("unknown topic: %s", topic.Hex()))
+		return nil, &DataError{
+			Message: fmt.Sprintf("unknown topic at block=%d tx=%s: %s", logEntry.BlockNumber, logEntry.TxHash.Hex(), topic.Hex()),
+			Cause:   nil,
+		}
 	}
 }
 
 func (l *Listener) parseSwapEvent(ctx context.Context, logEntry types.Log) (events.SwapEvent, error) {
 	sender, recipient, amount0In, amount1In, amount0Out, amount1Out, err := parseSwapLog(logEntry)
 	if err != nil {
-		return events.SwapEvent{}, ierrors.Data("parse", fmt.Sprintf("swap block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()), err)
+		return events.SwapEvent{}, &DataError{
+			Message: fmt.Sprintf("failed to parse swap event at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
+			Cause:   err,
+		}
 	}
 
 	blockTimestamp, err := fetchBlockTimestamp(ctx, l.client, logEntry.BlockNumber)
@@ -173,7 +177,10 @@ func (l *Listener) parseSwapEvent(ctx context.Context, logEntry types.Log) (even
 func (l *Listener) parseMintEvent(ctx context.Context, logEntry types.Log) (events.MintEvent, error) {
 	sender, amount0, amount1, err := parseMintLog(logEntry)
 	if err != nil {
-		return events.MintEvent{}, ierrors.Data("parse", fmt.Sprintf("mint block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()), err)
+		return events.MintEvent{}, &DataError{
+			Message: fmt.Sprintf("failed to parse mint event at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
+			Cause:   err,
+		}
 	}
 
 	blockTimestamp, err := fetchBlockTimestamp(ctx, l.client, logEntry.BlockNumber)
@@ -194,7 +201,10 @@ func (l *Listener) parseMintEvent(ctx context.Context, logEntry types.Log) (even
 func (l *Listener) parseBurnEvent(ctx context.Context, logEntry types.Log) (events.BurnEvent, error) {
 	sender, recipient, amount0, amount1, err := parseBurnLog(logEntry)
 	if err != nil {
-		return events.BurnEvent{}, ierrors.Data("parse", fmt.Sprintf("burn block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()), err)
+		return events.BurnEvent{}, &DataError{
+			Message: fmt.Sprintf("failed to parse burn event at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
+			Cause:   err,
+		}
 	}
 
 	blockTimestamp, err := fetchBlockTimestamp(ctx, l.client, logEntry.BlockNumber)
@@ -383,7 +393,7 @@ func fetchBlockTimestamp(ctx context.Context, client *ethclient.Client, blockNum
 	blockNum := new(big.Int).SetUint64(blockNumber)
 	header, err := client.HeaderByNumber(ctx, blockNum)
 	if err != nil {
-		return 0, ierrors.Connection("rpc", err)
+		return 0, &ConnectionError{Message: "rpc block header fetch failed", Cause: err}
 	}
 	return int64(header.Time), nil
 }
@@ -391,7 +401,7 @@ func fetchBlockTimestamp(ctx context.Context, client *ethclient.Client, blockNum
 func fetchGasDetails(ctx context.Context, client *ethclient.Client, txHash common.Hash) (int64, string, error) {
 	receipt, err := client.TransactionReceipt(ctx, txHash)
 	if err != nil {
-		return 0, "", ierrors.Connection("rpc", err)
+		return 0, "", &ConnectionError{Message: "rpc transaction receipt fetch failed", Cause: err}
 	}
 
 	gasPrice := receipt.EffectiveGasPrice
@@ -410,7 +420,7 @@ func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddres
 		if ctx.Err() != nil {
 			return PairMetadata{}, ctx.Err()
 		}
-		return PairMetadata{}, ierrors.Connection("rpc", err)
+		return PairMetadata{}, &ConnectionError{Message: "rpc pair token0 fetch failed", Cause: err}
 	}
 	token0Address := *token0Results[0].(*common.Address)
 
@@ -419,7 +429,7 @@ func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddres
 		if ctx.Err() != nil {
 			return PairMetadata{}, ctx.Err()
 		}
-		return PairMetadata{}, ierrors.Connection("rpc", err)
+		return PairMetadata{}, &ConnectionError{Message: "rpc pair token1 fetch failed", Cause: err}
 	}
 	token1Address := *token1Results[0].(*common.Address)
 
@@ -445,7 +455,7 @@ func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddres
 func fetchTokenDecimals(ctx context.Context, client *ethclient.Client, tokenAddress common.Address) (uint8, error) {
 	decimalsABI, err := contract.GetABI(contract.ERC20Decimals)
 	if err != nil {
-		return 0, ierrors.Config("ABI", "failed to get ERC20 decimals ABI")
+		return 0, &ConfigError{Message: "failed to get ERC20 decimals ABI"}
 	}
 
 	// Create ContractCaller from ethclient
@@ -455,7 +465,7 @@ func fetchTokenDecimals(ctx context.Context, client *ethclient.Client, tokenAddr
 
 	var decimals uint8
 	if err := contract.CallContract(ctx, contractCaller, tokenAddress, decimalsABI, "decimals", &decimals); err != nil {
-		return 0, err
+		return 0, &ConnectionError{Message: fmt.Sprintf("rpc token decimals fetch failed for %s", tokenAddress.Hex()), Cause: err}
 	}
 
 	return decimals, nil

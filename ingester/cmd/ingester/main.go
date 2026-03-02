@@ -16,7 +16,7 @@ import (
 
 	"ingester/internal/blockchain"
 	"ingester/internal/config"
-	ierrors "ingester/internal/errors"
+	. "ingester/internal/errors"
 	"ingester/internal/events"
 	"ingester/internal/publisher"
 )
@@ -69,9 +69,10 @@ func run() error {
 
 	topicMapper := publisher.DefaultTopicMapper()
 	urlBuilder := publisher.DefaultURLBuilder()
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
 	httpDoer := func(req *http.Request) (*http.Response, error) {
-		client := &http.Client{Timeout: 10 * time.Second}
-		return client.Do(req)
+		return httpClient.Do(req)
 	}
 
 	listener, err := blockchain.NewListener(ctx, rpcURL, pairAddress)
@@ -128,7 +129,7 @@ func consumeEvents(
 
 func startHealthServer(appPort string) (*http.Server, error) {
 	if appPort == "" {
-		return nil, ierrors.Config("APP_PORT", "port is required")
+		return nil, &ConfigError{Message: "APP_PORT is required"}
 	}
 
 	healthServer := &http.Server{
@@ -151,7 +152,7 @@ func startHealthServer(appPort string) (*http.Server, error) {
 
 	select {
 	case err := <-errChan:
-		return nil, ierrors.Connection("health-server", err)
+		return nil, &ConnectionError{Message: "health server failed to start", Cause: err}
 	case <-time.After(100 * time.Millisecond):
 		// Server started successfully
 	}
@@ -178,20 +179,20 @@ func healthHandler() http.Handler {
 
 func parsePairAddress(text string) (common.Address, error) {
 	if !common.IsHexAddress(text) {
-		return common.Address{}, ierrors.Config("PAIR_ADDRESS", "must be valid hex address")
+		return common.Address{}, &ConfigError{Message: "PAIR_ADDRESS must be valid hex address"}
 	}
 	return common.HexToAddress(text), nil
 }
 
 func validateRPCURL(url string) error {
 	if url == "" {
-		return ierrors.Config("POLYGON_RPC_URL", "required (must be WebSocket: wss:// or ws://)")
+		return &ConfigError{Message: "POLYGON_RPC_URL required (must be WebSocket: wss:// or ws://)"}
 	}
 	if len(url) < 5 {
-		return ierrors.Config("POLYGON_RPC_URL", "URL too short")
+		return &ConfigError{Message: "POLYGON_RPC_URL too short"}
 	}
 	if strings.HasPrefix(url, "wss://") || strings.HasPrefix(url, "ws://") {
 		return nil
 	}
-	return ierrors.Config("POLYGON_RPC_URL", "must be WebSocket URL (wss:// or ws://)")
+	return &ConfigError{Message: "POLYGON_RPC_URL must be WebSocket URL (wss:// or ws://)"}
 }

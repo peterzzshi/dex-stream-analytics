@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -64,8 +65,10 @@ func TestPublish_SwapEvent(t *testing.T) {
 
 	// Track requests with closure
 	var capturedReq *http.Request
+	var capturedBody []byte
 	mockDoer := func(req *http.Request) (*http.Response, error) {
 		capturedReq = req
+		capturedBody, _ = io.ReadAll(req.Body)
 		return &http.Response{
 			StatusCode: 200,
 			Body:       io.NopCloser(strings.NewReader("")),
@@ -105,14 +108,42 @@ func TestPublish_SwapEvent(t *testing.T) {
 		t.Errorf("Expected POST, got %s", capturedReq.Method)
 	}
 
-	// Verify content type
-	if capturedReq.Header.Get("Content-Type") != "application/avro-binary" {
-		t.Errorf("Expected avro-binary content type, got %s", capturedReq.Header.Get("Content-Type"))
+	// Verify content type is CloudEvents JSON
+	if capturedReq.Header.Get("Content-Type") != "application/cloudevents+json" {
+		t.Errorf("Expected application/cloudevents+json content type, got %s", capturedReq.Header.Get("Content-Type"))
 	}
 
 	// Verify partition key
 	if capturedReq.Header.Get("partitionKey") != "0xpair" {
 		t.Errorf("Expected partitionKey 0xpair, got %s", capturedReq.Header.Get("partitionKey"))
+	}
+
+	// Verify CloudEvents structure
+	var cloudEvent map[string]interface{}
+	if err := json.Unmarshal(capturedBody, &cloudEvent); err != nil {
+		t.Fatalf("Failed to parse CloudEvents JSON: %v", err)
+	}
+
+	// Verify CloudEvents required fields
+	if cloudEvent["specversion"] != "1.0" {
+		t.Errorf("Expected specversion 1.0, got %v", cloudEvent["specversion"])
+	}
+	if cloudEvent["type"] != "com.dex.events.swap" {
+		t.Errorf("Expected type com.dex.events.swap, got %v", cloudEvent["type"])
+	}
+	if cloudEvent["source"] != "ingester/uniswap-v2" {
+		t.Errorf("Expected source ingester/uniswap-v2, got %v", cloudEvent["source"])
+	}
+	if cloudEvent["id"] != "tx-123-0" {
+		t.Errorf("Expected id tx-123-0, got %v", cloudEvent["id"])
+	}
+	if cloudEvent["datacontenttype"] != "application/avro-binary" {
+		t.Errorf("Expected datacontenttype application/avro-binary, got %v", cloudEvent["datacontenttype"])
+	}
+
+	// Verify data_base64 field exists
+	if _, ok := cloudEvent["data_base64"]; !ok {
+		t.Error("Expected data_base64 field in CloudEvents")
 	}
 }
 
@@ -199,7 +230,7 @@ func TestPublish_NetworkError(t *testing.T) {
 	Publish(context.Background(), event, codecs, mockTopicMapper, mockURLBuilder, mockDoer)
 }
 
-func TestPrepare(t *testing.T) {
+func TestCreateCloudEvent(t *testing.T) {
 	codecs, _ := CreateCodecMap()
 
 	tests := []struct {
@@ -236,7 +267,7 @@ func TestPrepare(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			codec, topic, err := prepare(tt.event, codecs, mockTopicMapper)
+			payload, topic, err := createCloudEvent(tt.event, codecs, mockTopicMapper)
 
 			if tt.expectError && err == nil {
 				t.Error("Expected error but got nil")
@@ -245,8 +276,8 @@ func TestPrepare(t *testing.T) {
 				t.Errorf("Unexpected error: %v", err)
 			}
 			if !tt.expectError {
-				if codec == nil {
-					t.Error("Expected non-nil codec")
+				if payload == nil {
+					t.Error("Expected non-nil payload")
 				}
 				if topic != tt.expectedTopic {
 					t.Errorf("Expected topic %s, got %s", tt.expectedTopic, topic)
@@ -268,14 +299,13 @@ func TestEncode(t *testing.T) {
 		Sender: "0xsender",
 	}
 
-	codec, _, _ := prepare(event, codecs, mockTopicMapper)
-	encoded, err := encode(codec, event)
+	payload, _, err := createCloudEvent(event, codecs, mockTopicMapper)
 
 	if err != nil {
-		t.Fatalf("encode() failed: %v", err)
+		t.Fatalf("createCloudEvent() failed: %v", err)
 	}
 
-	if len(encoded) == 0 {
+	if len(payload) == 0 {
 		t.Error("Expected non-empty encoded data")
 	}
 }

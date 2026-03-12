@@ -3,17 +3,18 @@ package publisher
 import (
 	"bytes"
 	"context"
-	"errors"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/linkedin/goavro/v2"
 
 	"ingester/internal/avro"
 	"ingester/internal/config"
-	. "ingester/internal/errors"
 	"ingester/internal/events"
 )
 
@@ -46,7 +47,7 @@ func DefaultTopicMapper() TopicMapper {
 		case events.EventTypeMint, events.EventTypeBurn:
 			return config.GetTopicLiquidityEvents(), nil
 		default:
-			return "", &ConfigError{Message: "no mapping for event type: " + string(eventType)}
+			return "", fmt.Errorf("no mapping for event type: %s", eventType)
 		}
 	}
 }
@@ -69,59 +70,47 @@ func Publish(
 	urlBuilder URLBuilder,
 	httpDoer HTTPDoer,
 ) {
-	codec, topic, err := prepare(event, codecs, topicMapper)
-	if err != nil {
-		logError(event, err)
-		return
-	}
-
-	encodedBody, err := encode(codec, event)
-	if err != nil {
-		logError(event, err)
-		return
-	}
-
-	url := urlBuilder(topic)
-	err = publish(ctx, encodedBody, url, event, httpDoer)
-	if err != nil {
-		logError(event, err)
-		return
-	}
-
-	logger.Info("Event published",
-		"event_id", event.GetEventID(),
-		"event_type", event.GetEventType(),
-		"pair", event.GetPairAddress())
-}
-
-func logError(event events.Event, err error) {
 	eventID := event.GetEventID()
 	eventType := event.GetEventType()
 	pair := event.GetPairAddress()
 
-	var connErr *ConnectionError
-	var publishErr *PublishError
-	var configErr *ConfigError
-	var dataErr *DataError
-
-	switch {
-	case errors.As(err, &connErr) || errors.As(err, &publishErr):
-		logger.Warn("Publish failed (retryable)", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
-	case errors.As(err, &configErr):
-		logger.Error("Fatal configuration error", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
-	case errors.As(err, &dataErr):
-		logger.Warn("Skipping bad data", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
-	default:
-		logger.Error("Publish failed", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
+	cloudEventJSON, topic, err := createCloudEvent(event, codecs, topicMapper)
+	if err != nil {
+		logger.Error("Failed to prepare payload", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
+		return
 	}
+
+	url := urlBuilder(topic)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(cloudEventJSON))
+	if err != nil {
+		logger.Error("Failed to create HTTP request", "event_id", eventID, "event_type", eventType, "pair", pair, "url", url, "error", err)
+		return
+	}
+
+	request.Header.Set("Content-Type", "application/cloudevents+json")
+	request.Header.Set("partitionKey", event.GetPairAddress())
+
+	response, err := httpDoer(request)
+	if err != nil {
+		logger.Warn("Publish failed (retryable)", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
+		return
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= 300 {
+		logger.Warn("Publish failed (retryable)", "event_id", eventID, "event_type", eventType, "pair", pair, "status", response.StatusCode)
+		return
+	}
+
+	logger.Info("Event published", "event_id", eventID, "event_type", eventType, "pair", pair)
 }
 
-func prepare(event events.Event, codecs CodecMap, topicMapper TopicMapper) (*goavro.Codec, string, error) {
+func createCloudEvent(event events.Event, codecs CodecMap, topicMapper TopicMapper) ([]byte, string, error) {
 	eventType := event.GetEventType()
 
 	codec, ok := codecs[eventType]
 	if !ok {
-		return nil, "", &ConfigError{Message: "codec not found for event type: " + string(eventType)}
+		return nil, "", fmt.Errorf("codec not found for event type: %s", eventType)
 	}
 
 	topic, err := topicMapper(eventType)
@@ -129,41 +118,26 @@ func prepare(event events.Event, codecs CodecMap, topicMapper TopicMapper) (*goa
 		return nil, "", err
 	}
 
-	return codec, topic, nil
-}
-
-func encode(codec *goavro.Codec, event events.Event) ([]byte, error) {
-	encodedBody, err := codec.BinaryFromNative(nil, event.ToMap())
+	avroPayload, err := codec.BinaryFromNative(nil, event.ToMap())
 	if err != nil {
-		return nil, &DataError{Message: "encode failed for " + string(event.GetEventType()), Cause: err}
+		return nil, "", fmt.Errorf("encode failed for %s: %w", eventType, err)
 	}
-	return encodedBody, nil
-}
 
-func publish(
-	ctx context.Context,
-	body []byte,
-	url string,
-	event events.Event,
-	httpDoer HTTPDoer,
-) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	cloudEvent := map[string]interface{}{
+		"specversion":     "1.0",
+		"id":              event.GetEventID(),
+		"source":          "ingester/uniswap-v2",
+		"type":            eventType.CloudEventType(),
+		"datacontenttype": "application/avro-binary",
+		"subject":         event.GetPairAddress(),
+		"time":            time.Unix(event.GetEventTimestamp(), 0).UTC().Format(time.RFC3339),
+		"data_base64":     base64.StdEncoding.EncodeToString(avroPayload),
+	}
+
+	cloudEventJSON, err := json.Marshal(cloudEvent)
 	if err != nil {
-		return &ConfigError{Message: fmt.Sprintf("failed to create request for URL %s: %v", url, err)}
+		return nil, "", fmt.Errorf("failed to serialize CloudEvent: %w", err)
 	}
 
-	request.Header.Set("Content-Type", "application/avro-binary")
-	request.Header.Set("partitionKey", event.GetPairAddress())
-
-	response, err := httpDoer(request)
-	if err != nil {
-		return &ConnectionError{Message: "dapr publish failed", Cause: err}
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode >= 300 {
-		return &PublishError{Message: fmt.Sprintf("%s returned HTTP %d: %s", url, response.StatusCode, response.Status), Cause: nil}
-	}
-
-	return nil
+	return cloudEventJSON, topic, nil
 }

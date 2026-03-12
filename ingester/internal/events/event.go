@@ -1,5 +1,7 @@
 package events
 
+import "strings"
+
 // EventType represents the type of DEX event
 type EventType string
 
@@ -8,6 +10,11 @@ const (
 	EventTypeMint EventType = "Mint"
 	EventTypeBurn EventType = "Burn"
 )
+
+// CloudEventType returns the CloudEvents type string for this event type
+func (et EventType) CloudEventType() string {
+	return "com.dex.events." + strings.ToLower(string(et))
+}
 
 // AllEventTypes contains all valid event types
 var AllEventTypes = []EventType{
@@ -21,6 +28,7 @@ type Event interface {
 	GetEventType() EventType
 	GetEventID() string
 	GetPairAddress() string
+	GetEventTimestamp() int64
 	ToMap() map[string]interface{}
 }
 
@@ -50,6 +58,10 @@ func (base BaseEvent) GetEventID() string {
 
 func (base BaseEvent) GetPairAddress() string {
 	return base.PairAddress
+}
+
+func (base BaseEvent) GetEventTimestamp() int64 {
+	return base.EventTimestamp
 }
 
 // ToMap converts BaseEvent fields to a map for Avro serialization

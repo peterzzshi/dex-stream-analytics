@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"ingester/internal/contract"
+	"ingester/internal/errors"
 )
 
 // UniswapV2PairABI is the parsed ABI for Uniswap V2 Pair contract
@@ -45,13 +46,13 @@ type PairMetadata struct {
 func parseSwapLog(logEntry types.Log) (sender, recipient common.Address, amount0In, amount1In, amount0Out, amount1Out *big.Int, err error) {
 	if len(logEntry.Topics) < 3 {
 		return common.Address{}, common.Address{}, nil, nil, nil, nil,
-			fmt.Errorf("swap log missing indexed topics: expected 3, got %d", len(logEntry.Topics))
+			&errors.DataError{Message: fmt.Sprintf("swap log missing indexed topics: expected 3, got %d", len(logEntry.Topics))}
 	}
 
 	decodedValues := map[string]any{}
 	if err := UniswapV2PairABI.UnpackIntoMap(decodedValues, "Swap", logEntry.Data); err != nil {
 		return common.Address{}, common.Address{}, nil, nil, nil, nil,
-			fmt.Errorf("unpack Swap data: %w", err)
+			&errors.DataError{Message: "unpack Swap data", Cause: err}
 	}
 
 	amount0In, err = readBigInt(decodedValues, "amount0In")
@@ -73,7 +74,7 @@ func parseSwapLog(logEntry types.Log) (sender, recipient common.Address, amount0
 
 	if amount0In.Sign() < 0 || amount1In.Sign() < 0 || amount0Out.Sign() < 0 || amount1Out.Sign() < 0 {
 		return common.Address{}, common.Address{}, nil, nil, nil, nil,
-			fmt.Errorf("swap amounts cannot be negative")
+			&errors.DataError{Message: "swap amounts cannot be negative"}
 	}
 
 	sender = common.BytesToAddress(logEntry.Topics[1].Bytes())
@@ -81,7 +82,7 @@ func parseSwapLog(logEntry types.Log) (sender, recipient common.Address, amount0
 
 	if sender == (common.Address{}) || recipient == (common.Address{}) {
 		return common.Address{}, common.Address{}, nil, nil, nil, nil,
-			fmt.Errorf("swap addresses cannot be zero")
+			&errors.DataError{Message: "swap addresses cannot be zero"}
 	}
 
 	return sender, recipient, amount0In, amount1In, amount0Out, amount1Out, nil
@@ -92,13 +93,13 @@ func parseSwapLog(logEntry types.Log) (sender, recipient common.Address, amount0
 func parseMintLog(logEntry types.Log) (sender common.Address, amount0, amount1 *big.Int, err error) {
 	if len(logEntry.Topics) < 2 {
 		return common.Address{}, nil, nil,
-			fmt.Errorf("mint log missing indexed topics: expected 2, got %d", len(logEntry.Topics))
+			&errors.DataError{Message: fmt.Sprintf("mint log missing indexed topics: expected 2, got %d", len(logEntry.Topics))}
 	}
 
 	decodedValues := map[string]any{}
 	if err := UniswapV2PairABI.UnpackIntoMap(decodedValues, "Mint", logEntry.Data); err != nil {
 		return common.Address{}, nil, nil,
-			fmt.Errorf("unpack Mint data: %w", err)
+			&errors.DataError{Message: "unpack Mint data", Cause: err}
 	}
 
 	amount0, err = readBigInt(decodedValues, "amount0")
@@ -112,14 +113,14 @@ func parseMintLog(logEntry types.Log) (sender common.Address, amount0, amount1 *
 
 	if amount0.Sign() < 0 || amount1.Sign() < 0 {
 		return common.Address{}, nil, nil,
-			fmt.Errorf("mint amounts cannot be negative")
+			&errors.DataError{Message: "mint amounts cannot be negative"}
 	}
 
 	sender = common.BytesToAddress(logEntry.Topics[1].Bytes())
 
 	if sender == (common.Address{}) {
 		return common.Address{}, nil, nil,
-			fmt.Errorf("mint sender address cannot be zero")
+			&errors.DataError{Message: "mint sender address cannot be zero"}
 	}
 
 	return sender, amount0, amount1, nil
@@ -130,13 +131,13 @@ func parseMintLog(logEntry types.Log) (sender common.Address, amount0, amount1 *
 func parseBurnLog(logEntry types.Log) (sender, recipient common.Address, amount0, amount1 *big.Int, err error) {
 	if len(logEntry.Topics) < 3 {
 		return common.Address{}, common.Address{}, nil, nil,
-			fmt.Errorf("burn log missing indexed topics: expected 3, got %d", len(logEntry.Topics))
+			&errors.DataError{Message: fmt.Sprintf("burn log missing indexed topics: expected 3, got %d", len(logEntry.Topics))}
 	}
 
 	decodedValues := map[string]any{}
 	if err := UniswapV2PairABI.UnpackIntoMap(decodedValues, "Burn", logEntry.Data); err != nil {
 		return common.Address{}, common.Address{}, nil, nil,
-			fmt.Errorf("unpack Burn data: %w", err)
+			&errors.DataError{Message: "unpack Burn data", Cause: err}
 	}
 
 	amount0, err = readBigInt(decodedValues, "amount0")
@@ -150,7 +151,7 @@ func parseBurnLog(logEntry types.Log) (sender, recipient common.Address, amount0
 
 	if amount0.Sign() < 0 || amount1.Sign() < 0 {
 		return common.Address{}, common.Address{}, nil, nil,
-			fmt.Errorf("burn amounts cannot be negative")
+			&errors.DataError{Message: "burn amounts cannot be negative"}
 	}
 
 	sender = common.BytesToAddress(logEntry.Topics[1].Bytes())
@@ -158,7 +159,7 @@ func parseBurnLog(logEntry types.Log) (sender, recipient common.Address, amount0
 
 	if sender == (common.Address{}) || recipient == (common.Address{}) {
 		return common.Address{}, common.Address{}, nil, nil,
-			fmt.Errorf("burn addresses cannot be zero")
+			&errors.DataError{Message: "burn addresses cannot be zero"}
 	}
 
 	return sender, recipient, amount0, amount1, nil

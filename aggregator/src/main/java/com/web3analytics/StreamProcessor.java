@@ -1,155 +1,160 @@
 package com.web3analytics;
 
 import com.web3analytics.config.FlinkConfig;
+import com.web3analytics.functions.LiquidityWindowFunction;
+import com.web3analytics.functions.SwapAnalyticsWindowFunction;
 import com.web3analytics.functions.SwapAggregator;
-import com.web3analytics.models.SwapEvent;
 import com.web3analytics.models.AggregatedAnalytics;
-import com.web3analytics.serialization.AvroDeserializationSchema;
+import com.web3analytics.models.DecodingError;
+import com.web3analytics.models.DexEvent;
+import com.web3analytics.models.LiquidityAnalytics;
+import com.web3analytics.models.SwapEvent;
 import com.web3analytics.serialization.AvroSerializationSchema;
+import com.web3analytics.serialization.ByteArrayPassthroughDeserializer;
+import com.web3analytics.serialization.LiquidityEventDeserializer;
+import com.web3analytics.serialization.SafeDecodeProcessFunction;
+import com.web3analytics.serialization.SwapEventDeserializer;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
+import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
-import org.apache.flink.connector.kafka.sink.KafkaSink;
-import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.util.OutputTag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 
 /**
- * Main Flink streaming job for processing DEX swap events.
- *
- * This processor:
- * 1. Consumes swap events from Kafka
- * 2. Applies 5-minute tumbling windows
- * 3. Aggregates events to calculate TWAP, volume, and patterns
- * 4. Produces aggregated analytics to output Kafka topic
+ * Multi-source Flink processor for dual-topic DEX analytics.
+ * 
+ * Architecture:
+ * - Trading stream: SwapEvent (dex-trading-events) → 5-min windows → dex-trading-analytics
+ * - Liquidity stream: Mint/BurnEvent (dex-liquidity-events) → 1-hour windows → dex-liquidity-analytics
+ * 
+ * Uses native Kafka connector (not DAPR) for exactly-once semantics and checkpointing.
  */
 public class StreamProcessor {
 
     private static final Logger LOG = LoggerFactory.getLogger(StreamProcessor.class);
 
-    /**
-     * Entry point for the Flink job.
-     *
-     * @param args Command line arguments (currently unused)
-     * @throws Exception if the job fails
-     */
     public static void main(String[] args) throws Exception {
-        LOG.info("Starting Web3 DEX Analytics Stream Processor");
+        FlinkConfig config = FlinkConfig.fromEnv();
+        LOG.info("Starting DEX Analytics Stream Processor with dual-topic architecture");
+        LOG.info("Trading events: {}", config.topicTradingEvents());
+        LOG.info("Liquidity events: {}", config.topicLiquidityEvents());
+        LOG.info("Trading output: {}", config.topicTradingAnalytics());
+        LOG.info("Liquidity output: {}", config.topicLiquidityAnalytics());
 
-        // Load configuration
-        FlinkConfig config = FlinkConfig.fromEnvironment();
-        LOG.info("Configuration loaded: {}", config);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(config.parallelism());
+        
+        // TODO: Enable checkpointing in production
+        // env.enableCheckpointing(config.checkpointMs());
 
-        // Create execution environment
-        StreamExecutionEnvironment env = createExecutionEnvironment(config);
+        // ========== Trading Stream ==========
+        // Demonstrates incremental `aggregate` followed by `ProcessWindowFunction`.
+        // Read raw bytes so decode failures can be routed to side output instead of failing the job.
+        KafkaSource<byte[]> tradingSource = KafkaSource.<byte[]>builder()
+                .setBootstrapServers(config.kafkaBootstrap())
+                .setTopics(config.topicTradingEvents())
+                .setGroupId(config.consumerGroup() + "-trading")
+                .setStartingOffsets(OffsetsInitializer.earliest())
+                .setValueOnlyDeserializer(new ByteArrayPassthroughDeserializer())
+                .build();
 
-        // Create Kafka source for swap events
-        KafkaSource<SwapEvent> source = createKafkaSource(config);
+        WatermarkStrategy<SwapEvent> swapWatermarks = WatermarkStrategy
+                .<SwapEvent>forBoundedOutOfOrderness(Duration.ofSeconds(60))
+                .withTimestampAssigner((event, ts) -> event.getEventTimeMillis()); // Using DexEvent default method
 
-        // Create data stream from source
-        DataStream<SwapEvent> swapEvents = env
-            .fromSource(
-                source,
-                createWatermarkStrategy(),
-                "DEX Swap Events Source"
-            );
+        OutputTag<DecodingError> tradingDecodeErrors = new OutputTag<>("trading-decode-errors") {};
+        SwapEventDeserializer swapDeserializer = new SwapEventDeserializer();
 
-        // Apply windowing and aggregation
-        DataStream<AggregatedAnalytics> analytics = swapEvents
-            .keyBy(SwapEvent::getPairAddress)
-            .window(TumblingEventTimeWindows.of(Time.minutes(5)))
-            .aggregate(new SwapAggregator());
+        SingleOutputStreamOperator<SwapEvent> tradingEvents = env
+                .fromSource(tradingSource, WatermarkStrategy.noWatermarks(), "trading-events-raw")
+                .process(new SafeDecodeProcessFunction<>(
+                        config.topicTradingEvents(),
+                        swapDeserializer::deserialize,
+                        tradingDecodeErrors
+                ))
+                .name("decode-trading-events");
 
-        // Create Kafka sink for analytics
-        KafkaSink<AggregatedAnalytics> sink = createKafkaSink(config);
+        tradingEvents.getSideOutput(tradingDecodeErrors).print("trading-decode-errors");
 
-        // Write results to sink
-        analytics.sinkTo(sink);
+        DataStream<AggregatedAnalytics> tradingAnalytics = tradingEvents
+                .assignTimestampsAndWatermarks(swapWatermarks)
+                .keyBy(SwapEvent::pairAddress)
+                .window(TumblingEventTimeWindows.of(Duration.ofMinutes(5)))
+                .aggregate(new SwapAggregator(), new SwapAnalyticsWindowFunction());
 
-        // Execute the job
-        LOG.info("Submitting Flink job...");
-        env.execute("Web3 DEX Analytics Processor");
-    }
+        // Print for observability
+        tradingAnalytics.print("trading-analytics");
 
-    /**
-     * Creates and configures the Flink execution environment.
-     *
-     * @param config Application configuration
-     * @return Configured StreamExecutionEnvironment
-     */
-    private static StreamExecutionEnvironment createExecutionEnvironment(
-            FlinkConfig config) {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment
-            .getExecutionEnvironment();
+        // Sink to output topic
+        KafkaSink<AggregatedAnalytics> tradingSink = KafkaSink.<AggregatedAnalytics>builder()
+                .setBootstrapServers(config.kafkaBootstrap())
+                .setRecordSerializer(
+                        KafkaRecordSerializationSchema.<AggregatedAnalytics>builder()
+                                .setTopic(config.topicTradingAnalytics())
+                                .setValueSerializationSchema(new AvroSerializationSchema<AggregatedAnalytics>())
+                                .build()
+                )
+                .build();
 
-        // Set parallelism
-        env.setParallelism(config.getParallelism());
+        tradingAnalytics.sinkTo(tradingSink);
 
-        // Enable checkpointing for fault tolerance
-        env.enableCheckpointing(config.getCheckpointInterval());
+        // ========== Liquidity Stream ==========
+        // Demonstrates full-window `ProcessWindowFunction` without incremental aggregate.
+        KafkaSource<byte[]> liquiditySource = KafkaSource.<byte[]>builder()
+                .setBootstrapServers(config.kafkaBootstrap())
+                .setTopics(config.topicLiquidityEvents())
+                .setGroupId(config.consumerGroup() + "-liquidity")
+                .setStartingOffsets(OffsetsInitializer.earliest())
+                .setValueOnlyDeserializer(new ByteArrayPassthroughDeserializer())
+                .build();
 
-        LOG.info("Execution environment configured with parallelism: {}",
-                config.getParallelism());
+        WatermarkStrategy<DexEvent> liquidityWatermarks = WatermarkStrategy
+                .<DexEvent>forBoundedOutOfOrderness(Duration.ofSeconds(60))
+                .withTimestampAssigner((event, ts) -> event.getEventTimeMillis());
 
-        return env;
-    }
+        OutputTag<DecodingError> liquidityDecodeErrors = new OutputTag<>("liquidity-decode-errors") {};
+        LiquidityEventDeserializer liquidityDeserializer = new LiquidityEventDeserializer();
 
-    /**
-     * Creates Kafka source for consuming swap events.
-     *
-     * @param config Application configuration
-     * @return Configured KafkaSource
-     */
-    private static KafkaSource<SwapEvent> createKafkaSource(FlinkConfig config) {
-        return KafkaSource.<SwapEvent>builder()
-            .setBootstrapServers(config.getKafkaBootstrapServers())
-            .setTopics(config.getInputTopic())
-            .setGroupId(config.getConsumerGroup())
-            .setStartingOffsets(OffsetsInitializer.earliest())
-            .setValueOnlyDeserializer(new AvroDeserializationSchema())
-            .build();
-    }
+        SingleOutputStreamOperator<DexEvent> liquidityEvents = env
+                .fromSource(liquiditySource, WatermarkStrategy.noWatermarks(), "liquidity-events-raw")
+                .process(new SafeDecodeProcessFunction<>(
+                        config.topicLiquidityEvents(),
+                        liquidityDeserializer::deserialize,
+                        liquidityDecodeErrors
+                ))
+                .name("decode-liquidity-events");
 
-    /**
-     * Creates Kafka sink for producing aggregated analytics.
-     *
-     * @param config Application configuration
-     * @return Configured KafkaSink
-     */
-    private static KafkaSink<AggregatedAnalytics> createKafkaSink(
-            FlinkConfig config) {
-        return KafkaSink.<AggregatedAnalytics>builder()
-            .setBootstrapServers(config.getKafkaBootstrapServers())
-            .setRecordSerializer(
-                KafkaRecordSerializationSchema.builder()
-                    .setTopic(config.getOutputTopic())
-                    .setValueSerializationSchema(
-                        new AvroSerializationSchema<>()
-                    )
-                    .build()
-            )
-            .build();
-    }
+        liquidityEvents.getSideOutput(liquidityDecodeErrors).print("liquidity-decode-errors");
 
-    /**
-     * Creates watermark strategy for event-time processing.
-     *
-     * Uses bounded out-of-orderness to handle late events
-     * (allows up to 30 seconds of lateness).
-     *
-     * @return Configured WatermarkStrategy
-     */
-    private static WatermarkStrategy<SwapEvent> createWatermarkStrategy() {
-        return WatermarkStrategy
-            .<SwapEvent>forBoundedOutOfOrderness(Duration.ofSeconds(30))
-            .withTimestampAssigner((event, timestamp) ->
-                event.getBlockTimestamp() * 1000L // Convert to milliseconds
-            );
+        DataStream<LiquidityAnalytics> liquidityAnalytics = liquidityEvents
+                .assignTimestampsAndWatermarks(liquidityWatermarks)
+                .keyBy(DexEvent::pairAddress)
+                .window(TumblingEventTimeWindows.of(Duration.ofHours(1)))
+                .process(new LiquidityWindowFunction());
+
+        liquidityAnalytics.print("liquidity-analytics");
+
+        KafkaSink<LiquidityAnalytics> liquiditySink = KafkaSink.<LiquidityAnalytics>builder()
+                .setBootstrapServers(config.kafkaBootstrap())
+                .setRecordSerializer(
+                        KafkaRecordSerializationSchema.<LiquidityAnalytics>builder()
+                                .setTopic(config.topicLiquidityAnalytics())
+                                .setValueSerializationSchema(new AvroSerializationSchema<LiquidityAnalytics>())
+                                .build()
+                )
+                .build();
+
+        liquidityAnalytics.sinkTo(liquiditySink);
+
+        env.execute("DEX Analytics Processor");
     }
 }

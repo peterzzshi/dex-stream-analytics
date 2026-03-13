@@ -450,7 +450,7 @@ func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddres
 func fetchTokenDecimals(ctx context.Context, client *ethclient.Client, tokenAddress common.Address) (uint8, error) {
 	decimalsABI, err := contract.GetABI(contract.ERC20Decimals)
 	if err != nil {
-		return 0, &ConfigError{Message: "failed to get ERC20 decimals ABI"}
+		return 0, &ConfigError{Message: "failed to get ERC20 decimals ABI", Cause: err}
 	}
 
 	// Create ContractCaller from ethclient

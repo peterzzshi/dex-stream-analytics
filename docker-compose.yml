@@ -122,7 +122,7 @@ services:
     profiles:
       - full-stack
 
-  # API: REST service for querying aggregated analytics
+  # API: Kotlin sink/query service for aggregated analytics
   api:
     build:
       context: ./api
@@ -130,8 +130,6 @@ services:
     container_name: api
     environment:
       - APP_PORT=8080
-      - ENVIRONMENT=development
-      - LOG_LEVEL=info
     ports:
       - "8080:8080"
     depends_on:

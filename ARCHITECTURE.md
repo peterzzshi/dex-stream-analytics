@@ -31,7 +31,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
         │
         ▼ Native Kafka connector (NOT DAPR)
 ┌──────────────────────────────────────────────┐
-│  stream-aggregator (Flink 2.0 + Java 21)     │
+│  stream-aggregator (Flink + Java 21, WIP)    │
 │  - Multi-source consumption                   │
 │  - Event-time watermarks                      │
 │  - Windowed aggregations                      │
@@ -41,7 +41,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
         │   • Source: SwapEvent (from dex-trading-events)
         │   • Metrics: TWAP, OHLC, volume USD, trader activity
         │
-        ├→ Liquidity Analytics (1-hour windows) → Kafka "dex-liquidity-analytics" [planned]
+        ├→ Liquidity Analytics (1-hour windows) → Kafka "dex-liquidity-analytics" [in progress]
         │   • Source: MintEvent + BurnEvent (from dex-liquidity-events)
         │   • Metrics: LP flows, TVL changes, provider behavior
         │
@@ -49,9 +49,9 @@ Polygon Blockchain (Uniswap V2 Pairs)
             • Source: ALL events (cross-event correlation)
             • Metrics: MEV detection, sandwich attacks, arbitrage
         │
-        ▼ DAPR pub/sub subscription [future]
+        ▼ DAPR pub/sub subscription
 ┌──────────────────────────────────────────────┐
-│     analytics-api (Go + DAPR sidecar)        │
+│  analytics sink/api (Kotlin + DAPR sidecar)  │
 │     - REST endpoints                          │
 │     - Time-series queries                     │
 └──────────────────────────────────────────────┘
@@ -66,7 +66,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
 | Input Topic            | Event Types               | Output Topic                        | Window          | Analytics Purpose                                      |
 |------------------------|---------------------------|-------------------------------------|-----------------|--------------------------------------------------------|
 | `dex-trading-events`   | **SwapEvent** only        | `dex-trading-analytics`             | 5-min tumbling  | Trading activity: TWAP, OHLC, volume, trader behavior  |
-| `dex-liquidity-events` | **MintEvent + BurnEvent** | `dex-liquidity-analytics` [planned] | 1-hour tumbling | LP behavior: TVL changes, provider flows, churn rate   |
+| `dex-liquidity-events` | **MintEvent + BurnEvent** | `dex-liquidity-analytics` [in progress] | 1-hour tumbling | LP behavior: TVL changes, provider flows, churn rate   |
 | Both topics            | **All events**            | `dex-pattern-analytics` [planned]   | Session windows | Cross-event patterns: MEV, sandwich attacks, arbitrage |
 
 **Why This Design:**
@@ -106,10 +106,14 @@ Polygon Blockchain (Uniswap V2 Pairs)
 - Flink pattern-matches on schema metadata headers
 - Demonstrates production multi-schema pattern
 
-**Implementation:**
-- DAPR publishes with `X-Schema-Type` header
-- Flink deserializer branches based on header value
-- Kafka partitioning by `pairAddress` maintains per-pool ordering
+**Implementation Direction (locked):**
+- DAPR publishes CloudEvents with explicit event `type` that maps to schema identity.
+- Aggregator resolves schema by CloudEvent `type` before Avro decode (no shape-guess fallback in target state).
+- Kafka partitioning by `pairAddress` maintains per-pool ordering.
+
+**Why this matters:**
+- Prevents decode ambiguity when schemas evolve.
+- Improves contract governance and replay/debug reliability.
 
 ### 3. Why Flink Uses Native Kafka Connector (Not DAPR)
 
@@ -198,6 +202,22 @@ Polygon Blockchain (Uniswap V2 Pairs)
 - LP operations: Lower frequency, strategic decisions → longer windows for patterns
 - Patterns: Variable timing → session windows capture related activities
 
+### 8. Finality and Reorg Strategy
+
+**Decision (agreed):** Use delayed publication with N-confirmation finality for analytics input.
+
+**Current state:**
+- Pipeline processes near-real-time logs and is suitable for prototype exploration.
+
+**Target implementation:**
+- Hold events until they reach configurable confirmation depth.
+- Publish only confirmed events into analytics topics.
+- Add explicit handling path for removed/reorged logs for future immediate-mode support.
+
+**Trade-off rationale:**
+- Sacrifices a small amount of freshness for significantly higher analytical correctness.
+- Aligns with business expectation that metrics are decision-support, not mempool-speed trading signals.
+
 ## Component Architecture
 
 ### event-ingester (Go)
@@ -215,8 +235,8 @@ Polygon Blockchain (Uniswap V2 Pairs)
 - Buffered channel prevents blocking on slow HTTP calls
 
 **Error Handling:**
-- WebSocket disconnects: Reconnect with exponential backoff
-- DAPR publish failures: Retry 3x with 1s delay
+- WebSocket disconnects: current behavior exits and restarts via container; planned improvement is reconnect with exponential backoff
+- DAPR publish failures: current behavior logs failures; planned improvement is bounded retry + DLQ
 - Fatal errors: Log and crash (container orchestrator restarts)
 
 **Configuration:**
@@ -225,14 +245,19 @@ Polygon Blockchain (Uniswap V2 Pairs)
 - `TOPIC_TRADING_EVENTS`: Default "dex-trading-events"
 - `TOPIC_LIQUIDITY_EVENTS`: Default "dex-liquidity-events"
 
-### stream-aggregator (Flink + Java 21)
+### stream-aggregator (Flink + Java 21) [In Progress]
 
 **Responsibilities:**
-1. Consume from Kafka topics (currently: dex-trading-events)
+1. Consume from Kafka topics (`dex-trading-events`, `dex-liquidity-events`)
 2. Deserialize Avro events (SwapEvent, MintEvent, BurnEvent)
 3. Apply event-time watermarks (60s bounded out-of-orderness)
-4. Execute windowed aggregations (5-min trading windows)
-5. Publish results to output topics
+4. Execute windowed aggregations (5-min trading windows, 1-hour liquidity windows in progress)
+5. Publish results to output topics (Avro contract)
+
+**CloudEvent/Schema Handling (target for refactor):**
+- Read CloudEvent metadata from Kafka payload.
+- Route to exact Avro schema via event `type`.
+- Decode with event-specific deserializer selected before payload decode.
 
 **Current Implementation:**
 
@@ -245,13 +270,13 @@ DataStream<SwapEvent> swaps = env
     .aggregate(new SwapAggregator())
     .sinkTo(tradingAnalyticsSink);
 
-// Liquidity Stream (planned for Phase 2)
-// Will consume from dex-liquidity-events topic
-// Process MintEvent and BurnEvent with 1-hour windows
+// Liquidity Stream (in progress)
+// Consumes dex-liquidity-events topic
+// Processes MintEvent and BurnEvent with 1-hour windows
 ```
 
 **Fault Tolerance:**
-- Checkpointing: Enabled with 5-minute intervals (filesystem for local dev)
+- Checkpointing: Planned for 5-minute intervals (filesystem for local dev)
   - Production: Configure S3/GCS backend via `state.checkpoints.dir`
   - Provides: State recovery after failures, exactly-once semantics
 - State backend: Memory (suitable for 5-min windows)
@@ -264,13 +289,15 @@ DataStream<SwapEvent> swaps = env
 - Window parallelism: 3 (optimal for 6 partitions ÷ 2 slots/TM)
 - Sink parallelism: 3
 
-### analytics-api (Go) [Planned]
+### analytics sink/api (Kotlin + DAPR) [In Progress]
 
 **Responsibilities:**
 1. Subscribe to analytics topics via DAPR
-2. Store in Redis time-series (or in-memory for POC)
+2. Store in Redis time-series (or in-memory during early phases)
 3. Expose REST endpoints for queries
 4. Handle time-range aggregations
+
+**Note:** `api/` now contains the Kotlin sink/API skeleton and will expand during implementation.
 
 **Endpoints:**
 ```
@@ -319,7 +346,7 @@ GET /analytics/summary
 | ingester | custom | Go blockchain listener | - |
 | ingester-dapr | daprio/daprd | DAPR sidecar for ingester | 3500, 3501 |
 | aggregator | custom | Flink stream processor | 8081 (Web UI) |
-| api | custom | REST API [planned] | 8080 |
+| api | custom | Kotlin sink/API skeleton | 8080 |
 | api-dapr | daprio/daprd | DAPR sidecar for API | 3502, 3503 |
 
 ## Performance Characteristics
@@ -392,6 +419,13 @@ GET /analytics/summary
 - Kafka consumer lag > 500 messages → Backpressure or Flink downtime
 
 ## Future Enhancements
+
+### Phase 1: Real-World Reliability Baseline
+- Implement N-confirmation finality gate for ingester output.
+- Replace heuristic liquidity decode with CloudEvent-type-driven schema resolution.
+- Enable checkpointing + durable state backend for stable restart semantics.
+- Introduce dedup/idempotency strategy keyed by `eventId` and `windowId`.
+- Add metrics + alerting for lag, decode failures, reconnect rate, and checkpoint health.
 
 ### Phase 2: Multi-Pool Support
 - Ingest from multiple pairs simultaneously

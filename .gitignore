@@ -100,8 +100,3 @@ nbdist/
 # Documentation build
 docs/_build/
 site/
-# AI tool context (not for Git)
-project-context.md
-dex-stream-analytics-prompt.md
-.interview-narrative.md
-.ai-context/

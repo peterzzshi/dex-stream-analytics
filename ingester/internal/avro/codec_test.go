@@ -193,6 +193,54 @@ func TestEncodeDecode_BurnEvent(t *testing.T) {
 	}
 }
 
+func TestEncodeDecode_TransferEvent(t *testing.T) {
+	codec, err := NewCodec(events.EventTypeTransfer)
+	if err != nil {
+		t.Fatalf("NewCodec failed: %v", err)
+	}
+
+	original := events.TransferEvent{
+		BaseEvent: events.BaseEvent{
+			EventType:       events.EventTypeTransfer,
+			EventID:         "tx-transfer-3",
+			BlockNumber:     4000,
+			BlockTimestamp:  1640003000,
+			TransactionHash: "0xtransfer",
+			LogIndex:        3,
+			PairAddress:     "0xpair4",
+			Token0:          "0xtoken0",
+			Token1:          "0xtoken1",
+			EventTimestamp:  1640003010,
+		},
+		From:  "0xfrom",
+		To:    "0xto",
+		Value: "999999",
+	}
+
+	encoded, err := codec.BinaryFromNative(nil, original.ToMap())
+	if err != nil {
+		t.Fatalf("BinaryFromNative failed: %v", err)
+	}
+
+	decoded, _, err := codec.NativeFromBinary(encoded)
+	if err != nil {
+		t.Fatalf("NativeFromBinary failed: %v", err)
+	}
+
+	decodedMap, ok := decoded.(map[string]interface{})
+	if !ok {
+		t.Fatal("Decoded value is not a map")
+	}
+
+	if decodedMap["eventId"] != "tx-transfer-3" {
+		t.Errorf("Expected eventId 'tx-transfer-3', got %v", decodedMap["eventId"])
+	}
+
+	if decodedMap["from"] != "0xfrom" {
+		t.Errorf("Expected from '0xfrom', got %v", decodedMap["from"])
+	}
+}
+
 func TestCodec_RoundTrip(t *testing.T) {
 	// Test that encoding and decoding preserves data
 	tests := []struct {
@@ -222,6 +270,14 @@ func TestCodec_RoundTrip(t *testing.T) {
 			events.BurnEvent{
 				BaseEvent: events.BaseEvent{EventID: "burn-1"},
 				Sender:    "0x3",
+			},
+		},
+		{
+			"TransferEvent",
+			events.EventTypeTransfer,
+			events.TransferEvent{
+				BaseEvent: events.BaseEvent{EventID: "transfer-1"},
+				From:      "0x4",
 			},
 		},
 	}

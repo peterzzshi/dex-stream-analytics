@@ -13,6 +13,7 @@ Canonical Avro schemas for the pipeline live in `schemas/avro/`.
 - `SwapEvent.avsc` -> `dex-trading-events`
 - `MintEvent.avsc` -> `dex-liquidity-events`
 - `BurnEvent.avsc` -> `dex-liquidity-events`
+- `TransferEvent.avsc` -> `dex-liquidity-events`
 - `AggregatedAnalytics.avsc` -> `dex-trading-analytics`
 
 ## Contract Notes

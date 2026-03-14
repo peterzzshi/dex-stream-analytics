@@ -4,7 +4,7 @@ Real-time DEX analytics pipeline for Polygon QuickSwap events.
 
 ## What This Repo Does
 
-- Ingests on-chain `Swap`, `Mint`, and `Burn` events.
+- Ingests on-chain `Swap`, `Mint`, `Burn`, and `Transfer` events.
 - Enriches events with metadata and pricing context.
 - Publishes Avro event payloads via DAPR/Kafka.
 - Aggregates trading and liquidity streams with Flink.

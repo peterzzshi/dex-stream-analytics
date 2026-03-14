@@ -1,6 +1,6 @@
 # Ingester
 
-Streams Uniswap V2-compatible Polygon events (`Swap`, `Mint`, `Burn`), enriches them, and publishes to Kafka through Dapr.
+Streams Uniswap V2-compatible Polygon events (`Swap`, `Mint`, `Burn`, `Transfer`), enriches them, and publishes to Kafka through Dapr.
 
 ## Scope
 
@@ -12,7 +12,7 @@ Streams Uniswap V2-compatible Polygon events (`Swap`, `Mint`, `Burn`), enriches 
   - USD volume (`Swap`, Chainlink + fallback)
 - Publishing:
   - `Swap` -> `TOPIC_TRADING_EVENTS`
-  - `Mint`/`Burn` -> `TOPIC_LIQUIDITY_EVENTS`
+- `Mint`/`Burn`/`Transfer` -> `TOPIC_LIQUIDITY_EVENTS`
 
 ## Data and Encoding
 

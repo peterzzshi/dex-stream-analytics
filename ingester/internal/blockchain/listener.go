@@ -74,7 +74,7 @@ func (l *Listener) PairMetadata() PairMetadata {
 func (l *Listener) Listen(ctx context.Context, outputChannel chan<- events.Event) error {
 	filterQuery := ethereum.FilterQuery{
 		Addresses: []common.Address{l.pairAddress},
-		Topics:    [][]common.Hash{{SwapEventTopic, MintEventTopic, BurnEventTopic}},
+		Topics:    [][]common.Hash{{SwapEventTopic, MintEventTopic, BurnEventTopic, TransferEventTopic}},
 	}
 
 	logChannel := make(chan types.Log, 100)
@@ -129,6 +129,8 @@ func (l *Listener) eventFromLog(ctx context.Context, logEntry types.Log) (events
 		return l.parseMintEvent(ctx, logEntry)
 	case BurnEventTopic:
 		return l.parseBurnEvent(ctx, logEntry)
+	case TransferEventTopic:
+		return l.parseTransferEvent(ctx, logEntry)
 	default:
 		return nil, &DataError{
 			Message: fmt.Sprintf("unknown topic at block=%d tx=%s: %s", logEntry.BlockNumber, logEntry.TxHash.Hex(), topic.Hex()),
@@ -214,6 +216,28 @@ func (l *Listener) parseBurnEvent(ctx context.Context, logEntry types.Log) (even
 		Recipient: recipient.Hex(),
 		Amount0:   amount0.String(),
 		Amount1:   amount1.String(),
+	}, nil
+}
+
+func (l *Listener) parseTransferEvent(ctx context.Context, logEntry types.Log) (events.TransferEvent, error) {
+	from, to, value, err := parseTransferLog(logEntry)
+	if err != nil {
+		return events.TransferEvent{}, &DataError{
+			Message: fmt.Sprintf("failed to parse transfer event at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
+			Cause:   err,
+		}
+	}
+
+	base, err := l.buildBase(ctx, logEntry, events.EventTypeTransfer)
+	if err != nil {
+		return events.TransferEvent{}, err
+	}
+
+	return events.TransferEvent{
+		BaseEvent: base,
+		From:      from.Hex(),
+		To:        to.Hex(),
+		Value:     value.String(),
 	}, nil
 }
 

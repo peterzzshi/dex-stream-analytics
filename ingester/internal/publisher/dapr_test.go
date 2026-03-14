@@ -15,7 +15,7 @@ func mockTopicMapper(eventType events.EventType) (string, error) {
 	switch eventType {
 	case events.EventTypeSwap:
 		return "dex-trading-events", nil
-	case events.EventTypeMint, events.EventTypeBurn:
+	case events.EventTypeMint, events.EventTypeBurn, events.EventTypeTransfer:
 		return "dex-liquidity-events", nil
 	default:
 		return "", nil
@@ -48,8 +48,8 @@ func TestCreateCodecMap(t *testing.T) {
 		t.Fatalf("CreateCodecMap() failed: %v", err)
 	}
 
-	if len(codecs) != 3 {
-		t.Errorf("Expected 3 codecs, got %d", len(codecs))
+	if len(codecs) != 4 {
+		t.Errorf("Expected 4 codecs, got %d", len(codecs))
 	}
 
 	// Verify all event types have codecs
@@ -200,6 +200,32 @@ func TestPublish_BurnEvent(t *testing.T) {
 	}
 }
 
+func TestPublish_TransferEvent(t *testing.T) {
+	codecs, _ := CreateCodecMap()
+	requestMade := false
+	mockDoer := func(req *http.Request) (*http.Response, error) {
+		requestMade = true
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	event := events.TransferEvent{
+		BaseEvent: events.BaseEvent{
+			EventType:   events.EventTypeTransfer,
+			EventID:     "tx-999-3",
+			PairAddress: "0xpair3",
+		},
+		From:  "0xfrom",
+		To:    "0xto",
+		Value: "777",
+	}
+
+	Publish(context.Background(), event, codecs, mockTopicMapper, mockURLBuilder, mockDoer)
+
+	if !requestMade {
+		t.Error("Expected HTTP request to be made")
+	}
+}
+
 func TestPublish_HTTPError(t *testing.T) {
 	codecs, _ := CreateCodecMap()
 	mockDoer := mockHTTPError(500)
@@ -259,6 +285,14 @@ func TestCreateCloudEvent(t *testing.T) {
 			name: "Burn event",
 			event: events.BurnEvent{
 				BaseEvent: events.BaseEvent{EventType: events.EventTypeBurn},
+			},
+			expectedTopic: "dex-liquidity-events",
+			expectError:   false,
+		},
+		{
+			name: "Transfer event",
+			event: events.TransferEvent{
+				BaseEvent: events.BaseEvent{EventType: events.EventTypeTransfer},
 			},
 			expectedTopic: "dex-liquidity-events",
 			expectError:   false,

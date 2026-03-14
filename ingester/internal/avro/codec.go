@@ -18,10 +18,14 @@ var mintEventSchemaText string
 //go:embed BurnEvent.avsc
 var burnEventSchemaText string
 
+//go:embed TransferEvent.avsc
+var transferEventSchemaText string
+
 var schemaRegistry = map[events.EventType]string{
-	events.EventTypeSwap: swapEventSchemaText,
-	events.EventTypeMint: mintEventSchemaText,
-	events.EventTypeBurn: burnEventSchemaText,
+	events.EventTypeSwap:     swapEventSchemaText,
+	events.EventTypeMint:     mintEventSchemaText,
+	events.EventTypeBurn:     burnEventSchemaText,
+	events.EventTypeTransfer: transferEventSchemaText,
 }
 
 func NewCodec(eventType events.EventType) (*goavro.Codec, error) {

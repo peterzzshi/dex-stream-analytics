@@ -1,4 +1,4 @@
-package com.web3analytics.serialization;
+package com.web3analytics.serde;
 
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;

@@ -110,6 +110,7 @@ services:
       - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
       - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
       - TOPIC_LIQUIDITY_ANALYTICS=dex-liquidity-analytics
+      - FLINK_CONSUMER_GROUP=dex-processor
       - FLINK_PARALLELISM=2
       - FLINK_CHECKPOINT_MS=10000
     depends_on:

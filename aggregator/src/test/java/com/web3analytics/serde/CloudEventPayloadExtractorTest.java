@@ -1,4 +1,4 @@
-package com.web3analytics.serialization;
+package com.web3analytics.serde;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;

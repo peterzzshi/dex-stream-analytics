@@ -25,7 +25,7 @@
 ## Architecture Snapshot
 
 ```text
-Polygon logs (Swap/Mint/Burn)
+Polygon logs (Swap/Mint/Burn/Transfer)
   -> ingester (Go + DAPR)
   -> Kafka topics:
        - dex-trading-events (Swap)
@@ -44,7 +44,7 @@ Polygon logs (Swap/Mint/Burn)
 - Use DAPR at service edges (ingester and sink/API), not inside Flink runtime.
 - Finality strategy: N-confirmation gate before publish (planned implementation).
 - Heterogeneous liquidity decode target: CloudEvent `type` -> exact schema before Avro decode.
-- Event coverage now: `Swap`, `Mint`, `Burn`; next high-value addition: `Transfer`.
+- Event coverage now: `Swap`, `Mint`, `Burn`, `Transfer`.
 
 ## Current Gaps (Concise)
 

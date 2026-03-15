@@ -6,7 +6,7 @@ package com.web3analytics.models;
  * Enables exhaustive pattern matching (Java 17+) and provides
  * common field access across all event types.
  */
-public sealed interface DexEvent permits SwapEvent, MintEvent, BurnEvent {
+public sealed interface DexEvent permits SwapEvent, MintEvent, BurnEvent, TransferEvent {
 
     // Common fields across all events
     String eventId();

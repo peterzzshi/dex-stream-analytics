@@ -16,13 +16,20 @@ Apache Flink job that consumes DEX events from Kafka and produces trading + liqu
   - Window: 1-hour tumbling event-time
   - Operators: `ProcessWindowFunction` (full-window scan)
   - Metrics: mint/burn counts, gross flows, net liquidity change, LP churn
+  - Current decode support: `MintEvent`, `BurnEvent`, `TransferEvent` (transfer currently ingested for correlation phases)
 
 ## Contract with Ingester
 
 - Ingester publishes through Dapr pub/sub, so Kafka values are CloudEvents envelopes.
-- This aggregator now unwraps CloudEvents and decodes Avro payload from `data_base64` or `data`.
+- Liquidity deserialization pattern-matches CloudEvent `type` before Avro deserialization.
+- This aggregator unwraps CloudEvents and decodes Avro payload from `data_base64` or `data`.
 - Raw Avro Kafka values are not accepted.
 - Avro schemas are loaded from `src/main/resources/avro`.
+
+Liquidity event type routing:
+- `com.dex.events.mint` -> `MintEvent`
+- `com.dex.events.burn` -> `BurnEvent`
+- `com.dex.events.transfer` -> `TransferEvent` (currently ingested for correlation phases)
 
 ## Requirements
 
@@ -32,14 +39,16 @@ Apache Flink job that consumes DEX events from Kafka and produces trading + liqu
 
 ## Configuration
 
-- `KAFKA_BOOTSTRAP_SERVERS` (fallback: `KAFKA_BOOTSTRAP`, default `localhost:9092`)
-- `TOPIC_TRADING_EVENTS` (default `dex-trading-events`)
-- `TOPIC_LIQUIDITY_EVENTS` (default `dex-liquidity-events`)
-- `TOPIC_TRADING_ANALYTICS` (default `dex-trading-analytics`)
-- `TOPIC_LIQUIDITY_ANALYTICS` (default `dex-liquidity-analytics`)
-- `FLINK_CONSUMER_GROUP` (default `dex-processor`)
-- `FLINK_PARALLELISM` (default `2`)
-- `FLINK_CHECKPOINT_MS` (default `10000`)
+All environment variables below are required:
+
+- `KAFKA_BOOTSTRAP_SERVERS`
+- `TOPIC_TRADING_EVENTS`
+- `TOPIC_LIQUIDITY_EVENTS`
+- `TOPIC_TRADING_ANALYTICS`
+- `TOPIC_LIQUIDITY_ANALYTICS`
+- `FLINK_CONSUMER_GROUP`
+- `FLINK_PARALLELISM`
+- `FLINK_CHECKPOINT_MS`
 
 ## Build and Test
 

@@ -2,6 +2,7 @@ package com.web3analytics.functions;
 
 import com.web3analytics.models.AggregatedAnalytics;
 import com.web3analytics.models.SwapEvent;
+import com.web3analytics.types.TriState;
 import org.apache.flink.api.common.functions.AggregateFunction;
 
 import java.math.BigDecimal;
@@ -26,8 +27,8 @@ public class SwapAggregator
 
     public static class Accumulator {
         String pairAddress;
-        String token0Symbol;
-        String token1Symbol;
+        TriState<String> token0Symbol = TriState.undefined();
+        TriState<String> token1Symbol = TriState.undefined();
 
         // TWAP: sum(price * volume) / sum(volume)
         double weightedPriceSum = 0.0;
@@ -48,7 +49,7 @@ public class SwapAggregator
         BigInteger totalVolume0 = BigInteger.ZERO;
         BigInteger totalVolume1 = BigInteger.ZERO;
         double volumeUSD = 0.0;
-        boolean hasUsdVolume = false;
+        TriState<Double> volumeUSDState = TriState.undefined();
 
         int swapCount = 0;
         Map<String, Integer> traderCounts = new HashMap<>();
@@ -83,9 +84,10 @@ public class SwapAggregator
     public Accumulator add(SwapEvent event, Accumulator acc) {
         if (acc.pairAddress == null) {
             acc.pairAddress = event.pairAddress();
-            acc.token0Symbol = event.token0Symbol();
-            acc.token1Symbol = event.token1Symbol();
         }
+
+        acc.token0Symbol = mergePreferred(acc.token0Symbol, event.token0Symbol());
+        acc.token1Symbol = mergePreferred(acc.token1Symbol, event.token1Symbol());
 
         double price = event.price();
         BigInteger vol0 = parseBigInt(event.amount0In()).add(parseBigInt(event.amount0Out()));
@@ -109,7 +111,7 @@ public class SwapAggregator
 
         if (event.volumeUSD() != null) {
             acc.volumeUSD += event.volumeUSD();
-            acc.hasUsdVolume = true;
+            acc.volumeUSDState = TriState.of(acc.volumeUSD);
         }
 
         String sender = normalizeAddress(event.sender());
@@ -161,8 +163,8 @@ public class SwapAggregator
                 acc.openEventTime,
                 acc.closeEventTime,
                 acc.pairAddress,
-                acc.token0Symbol,
-                acc.token1Symbol,
+                toNullableString(acc.token0Symbol),
+                toNullableString(acc.token1Symbol),
                 round(twap),
                 round(acc.openPrice),
                 round(acc.closePrice),
@@ -171,7 +173,7 @@ public class SwapAggregator
                 round(priceVolatility),
                 acc.totalVolume0.toString(),
                 acc.totalVolume1.toString(),
-                acc.hasUsdVolume ? round(acc.volumeUSD) : null,
+                toNullableDouble(acc.volumeUSDState),
                 acc.swapCount,
                 acc.traderCounts.size(),
                 formatLargestSwap(acc.largestSwap),
@@ -195,8 +197,8 @@ public class SwapAggregator
 
         Accumulator merged = new Accumulator();
         merged.pairAddress = a.pairAddress;
-        merged.token0Symbol = a.token0Symbol;
-        merged.token1Symbol = a.token1Symbol;
+        merged.token0Symbol = mergeTriState(a.token0Symbol, b.token0Symbol);
+        merged.token1Symbol = mergeTriState(a.token1Symbol, b.token1Symbol);
 
         merged.weightedPriceSum = a.weightedPriceSum + b.weightedPriceSum;
         merged.totalVolume = a.totalVolume + b.totalVolume;
@@ -213,7 +215,9 @@ public class SwapAggregator
         merged.totalVolume0 = a.totalVolume0.add(b.totalVolume0);
         merged.totalVolume1 = a.totalVolume1.add(b.totalVolume1);
         merged.volumeUSD = a.volumeUSD + b.volumeUSD;
-        merged.hasUsdVolume = a.hasUsdVolume || b.hasUsdVolume;
+        if (a.volumeUSDState.isDefined() || b.volumeUSDState.isDefined()) {
+            merged.volumeUSDState = TriState.of(merged.volumeUSD);
+        }
 
         merged.swapCount = a.swapCount + b.swapCount;
         merged.traderCounts = new HashMap<>(a.traderCounts);
@@ -344,8 +348,8 @@ public class SwapAggregator
                 now,
                 now,
                 acc.pairAddress != null ? acc.pairAddress : "",
-                acc.token0Symbol,
-                acc.token1Symbol,
+                toNullableString(acc.token0Symbol),
+                toNullableString(acc.token1Symbol),
                 0,
                 0,
                 0,
@@ -365,5 +369,36 @@ public class SwapAggregator
                 List.of(),
                 now
         );
+    }
+
+    private static TriState<String> mergePreferred(TriState<String> current, String candidate) {
+        if (current.isDefined()) {
+            return current;
+        }
+        if (candidate == null || candidate.isBlank()) {
+            return current;
+        }
+        return TriState.of(candidate);
+    }
+
+    private static <T> TriState<T> mergeTriState(TriState<T> left, TriState<T> right) {
+        if (left.isDefined()) {
+            return left;
+        }
+        if (right.isDefined()) {
+            return right;
+        }
+        if (left.isNull() || right.isNull()) {
+            return TriState.ofNull();
+        }
+        return TriState.undefined();
+    }
+
+    private static String toNullableString(TriState<String> state) {
+        return state.fold(v -> v, () -> null, () -> null);
+    }
+
+    private static Double toNullableDouble(TriState<Double> state) {
+        return state.fold(SwapAggregator::round, () -> null, () -> null);
     }
 }

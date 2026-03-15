@@ -9,11 +9,11 @@ import com.web3analytics.models.DecodingError;
 import com.web3analytics.models.DexEvent;
 import com.web3analytics.models.LiquidityAnalytics;
 import com.web3analytics.models.SwapEvent;
-import com.web3analytics.serialization.AvroSerializationSchema;
-import com.web3analytics.serialization.ByteArrayPassthroughDeserializer;
-import com.web3analytics.serialization.LiquidityEventDeserializer;
-import com.web3analytics.serialization.SafeDecodeProcessFunction;
-import com.web3analytics.serialization.SwapEventDeserializer;
+import com.web3analytics.serde.AvroSerializationSchema;
+import com.web3analytics.serde.ByteArrayPassthroughDeserializer;
+import com.web3analytics.serde.LiquidityEventDeserializer;
+import com.web3analytics.serde.SafeDecodeProcessFunction;
+import com.web3analytics.serde.SwapEventDeserializer;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
@@ -34,7 +34,7 @@ import java.time.Duration;
  * 
  * Architecture:
  * - Trading stream: SwapEvent (dex-trading-events) → 5-min windows → dex-trading-analytics
- * - Liquidity stream: Mint/BurnEvent (dex-liquidity-events) → 1-hour windows → dex-liquidity-analytics
+ * - Liquidity stream: Mint/Burn/Transfer events (dex-liquidity-events) → 1-hour windows → dex-liquidity-analytics
  * 
  * Uses native Kafka connector (not DAPR) for exactly-once semantics and checkpointing.
  */
@@ -109,6 +109,7 @@ public class StreamProcessor {
 
         // ========== Liquidity Stream ==========
         // Demonstrates full-window `ProcessWindowFunction` without incremental aggregate.
+        // Liquidity source is heterogeneous and routed by CloudEvent type before Avro deserialization.
         KafkaSource<byte[]> liquiditySource = KafkaSource.<byte[]>builder()
                 .setBootstrapServers(config.kafkaBootstrap())
                 .setTopics(config.topicLiquidityEvents())

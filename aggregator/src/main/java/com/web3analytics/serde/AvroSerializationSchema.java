@@ -1,4 +1,4 @@
-package com.web3analytics.serialization;
+package com.web3analytics.serde;
 
 import com.web3analytics.errors.SerializationException;
 import org.apache.flink.api.common.serialization.SerializationSchema;

@@ -1,9 +1,9 @@
-package com.web3analytics.serialization;
+package com.web3analytics.serde;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.web3analytics.errors.DeserializationException;
-import com.web3analytics.models.SwapEvent;
+import com.web3analytics.models.TransferEvent;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericDatumWriter;
@@ -20,14 +20,14 @@ import java.util.Base64;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class SwapEventDeserializerTest {
+class TransferEventDeserializerTest {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     @Test
     void shouldRejectRawAvroPayload() throws Exception {
-        byte[] avroPayload = buildSwapEventPayload();
-        SwapEventDeserializer deserializer = new SwapEventDeserializer();
+        byte[] avroPayload = buildTransferEventPayload();
+        TransferEventDeserializer deserializer = new TransferEventDeserializer();
 
         assertThatThrownBy(() -> deserializer.deserialize(avroPayload))
                 .isInstanceOf(DeserializationException.class)
@@ -36,37 +36,31 @@ class SwapEventDeserializerTest {
 
     @Test
     void shouldDeserializeCloudEventWithDataBase64() throws Exception {
-        byte[] avroPayload = buildSwapEventPayload();
-        SwapEventDeserializer deserializer = new SwapEventDeserializer();
+        byte[] avroPayload = buildTransferEventPayload();
+        TransferEventDeserializer deserializer = new TransferEventDeserializer();
 
         ObjectNode envelope = OBJECT_MAPPER.createObjectNode();
         envelope.put("specversion", "1.0");
-        envelope.put("type", "com.dapr.event.sent");
+        envelope.put("type", "com.dex.events.transfer");
         envelope.put("source", "ingester");
         envelope.put("id", "evt-1");
         envelope.put("datacontenttype", "application/avro-binary");
         envelope.put("data_base64", Base64.getEncoder().encodeToString(avroPayload));
 
-        SwapEvent event = deserializer.deserialize(
+        TransferEvent event = deserializer.deserialize(
                 OBJECT_MAPPER.writeValueAsString(envelope).getBytes(StandardCharsets.UTF_8)
         );
 
-        assertDecoded(event);
-    }
-
-    private static void assertDecoded(SwapEvent event) {
         assertThat(event).isNotNull();
         assertThat(event.eventId()).isEqualTo("tx-1:0");
         assertThat(event.pairAddress()).isEqualTo("0xpair");
-        assertThat(event.sender()).isEqualTo("0xsender");
-        assertThat(event.recipient()).isEqualTo("0xrecipient");
-        assertThat(event.price()).isEqualTo(1.23d);
-        assertThat(event.volumeUSD()).isEqualTo(123.45d);
-        assertThat(event.gasUsed()).isEqualTo(21000L);
+        assertThat(event.from()).isEqualTo("0xfrom");
+        assertThat(event.to()).isEqualTo("0xto");
+        assertThat(event.value()).isEqualTo("777");
     }
 
-    private static byte[] buildSwapEventPayload() throws IOException {
-        Schema schema = loadSchema("/avro/SwapEvent.avsc");
+    private static byte[] buildTransferEventPayload() throws IOException {
+        Schema schema = loadSchema("/avro/TransferEvent.avsc");
         GenericData.Record record = new GenericData.Record(schema);
 
         record.put("eventId", "tx-1:0");
@@ -79,16 +73,9 @@ class SwapEventDeserializerTest {
         record.put("token1", "0xtoken1");
         record.put("token0Symbol", "WMATIC");
         record.put("token1Symbol", "USDC");
-        record.put("sender", "0xsender");
-        record.put("recipient", "0xrecipient");
-        record.put("amount0In", "1000");
-        record.put("amount1In", "0");
-        record.put("amount0Out", "0");
-        record.put("amount1Out", "1230");
-        record.put("price", 1.23d);
-        record.put("volumeUSD", 123.45d);
-        record.put("gasUsed", 21000L);
-        record.put("gasPrice", "1000000000");
+        record.put("from", "0xfrom");
+        record.put("to", "0xto");
+        record.put("value", "777");
         record.put("eventTimestamp", 1700000001L);
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -99,7 +86,7 @@ class SwapEventDeserializerTest {
     }
 
     private static Schema loadSchema(String path) throws IOException {
-        try (InputStream input = SwapEventDeserializerTest.class.getResourceAsStream(path)) {
+        try (InputStream input = TransferEventDeserializerTest.class.getResourceAsStream(path)) {
             if (input == null) {
                 throw new IOException("Schema not found: " + path);
             }

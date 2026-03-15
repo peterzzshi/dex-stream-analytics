@@ -4,6 +4,7 @@ import com.web3analytics.models.BurnEvent;
 import com.web3analytics.models.DexEvent;
 import com.web3analytics.models.LiquidityAnalytics;
 import com.web3analytics.models.MintEvent;
+import com.web3analytics.models.TransferEvent;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -34,6 +35,11 @@ class LiquidityWindowFunctionTest {
                         "burn-2", 1L, 1200L, "0xtx4", 3,
                         "0xpair", "0xt0", "0xt1", null, null,
                         "0xCarol", "0xCarol", "20", "40", 1200L
+                ),
+                new TransferEvent(
+                        "transfer-1", 1L, 1250L, "0xtx5", 4,
+                        "0xpair", "0xt0", "0xt1", "WMATIC", "USDC",
+                        "0xAlice", "0xBob", "10", 1250L
                 )
         );
 

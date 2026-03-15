@@ -27,7 +27,7 @@ Use this file as a lightweight orientation for AI sessions. Keep details concise
 1. Implement finality-first ingestion (N-confirmation policy).
 2. Implement CloudEvent `type` -> exact schema selection before deserialization in aggregator.
 3. Implement durability/idempotency primitives (checkpointing + dedup strategy).
-4. Add next event type (`Transfer`) before advanced pattern analytics.
+4. Use `Transfer` event correlation in aggregator before advanced pattern analytics.
 
 ## Expected Documentation Boundaries
 
@@ -107,8 +107,6 @@ Defined in `schemas/avro/` (see `DATA_MODEL.md` for full specs):
 - `MintEvent.avsc` — LP provision → `dex-liquidity-events` topic
 - `BurnEvent.avsc` — LP removal → `dex-liquidity-events` topic
 - `AggregatedAnalytics.avsc` — Output from stream-aggregator
-
-**Events removed:** `SyncEvent` (redundant with Swap price data)
 
 ## Kafka Topics
 

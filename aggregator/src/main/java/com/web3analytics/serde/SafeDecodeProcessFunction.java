@@ -1,4 +1,4 @@
-package com.web3analytics.serialization;
+package com.web3analytics.serde;
 
 import com.web3analytics.models.DecodingError;
 import org.apache.flink.streaming.api.functions.ProcessFunction;

@@ -4,6 +4,7 @@ import com.web3analytics.models.BurnEvent;
 import com.web3analytics.models.DexEvent;
 import com.web3analytics.models.LiquidityAnalytics;
 import com.web3analytics.models.MintEvent;
+import com.web3analytics.models.TransferEvent;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
@@ -79,6 +80,9 @@ public class LiquidityWindowFunction
                 }
                 case com.web3analytics.models.SwapEvent ignored -> {
                     // Liquidity stream is Mint/Burn only; keep exhaustive switch for safety.
+                }
+                case TransferEvent ignored -> {
+                    // Transfer events are ingested for LP token correlation phases, not aggregated yet.
                 }
             }
         }

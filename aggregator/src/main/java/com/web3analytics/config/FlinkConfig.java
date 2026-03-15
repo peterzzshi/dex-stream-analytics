@@ -16,19 +16,40 @@ public record FlinkConfig(
 ) {
     public static FlinkConfig fromEnv() {
         return new FlinkConfig(
-                env("KAFKA_BOOTSTRAP_SERVERS", env("KAFKA_BOOTSTRAP", "localhost:9092")),
-                env("TOPIC_TRADING_EVENTS", "dex-trading-events"),
-                env("TOPIC_LIQUIDITY_EVENTS", "dex-liquidity-events"),
-                env("TOPIC_TRADING_ANALYTICS", "dex-trading-analytics"),
-                env("TOPIC_LIQUIDITY_ANALYTICS", "dex-liquidity-analytics"),
-                env("FLINK_CONSUMER_GROUP", "dex-processor"),
-                Integer.parseInt(env("FLINK_PARALLELISM", "2")),
-                Long.parseLong(env("FLINK_CHECKPOINT_MS", "10000"))
+                requiredEnv("KAFKA_BOOTSTRAP_SERVERS"),
+                requiredEnv("TOPIC_TRADING_EVENTS"),
+                requiredEnv("TOPIC_LIQUIDITY_EVENTS"),
+                requiredEnv("TOPIC_TRADING_ANALYTICS"),
+                requiredEnv("TOPIC_LIQUIDITY_ANALYTICS"),
+                requiredEnv("FLINK_CONSUMER_GROUP"),
+                parseInt("FLINK_PARALLELISM"),
+                parseLong("FLINK_CHECKPOINT_MS")
         );
     }
 
-    private static String env(String key, String def) {
+    private static String requiredEnv(String key) {
         String v = System.getenv(key);
-        return v == null || v.isBlank() ? def : v;
+        if (v == null || v.isBlank()) {
+            throw new IllegalArgumentException("Missing required environment variable: " + key);
+        }
+        return v;
+    }
+
+    private static int parseInt(String key) {
+        String value = requiredEnv(key);
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException err) {
+            throw new IllegalArgumentException("Invalid integer for " + key + ": " + value, err);
+        }
+    }
+
+    private static long parseLong(String key) {
+        String value = requiredEnv(key);
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException err) {
+            throw new IllegalArgumentException("Invalid long for " + key + ": " + value, err);
+        }
     }
 }

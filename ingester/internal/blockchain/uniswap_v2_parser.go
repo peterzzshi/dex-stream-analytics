@@ -19,9 +19,10 @@ var UniswapV2PairABI = mustLoadUniswapV2ABI()
 // Uniswap V2 standard event topic hashes
 // Computed from event signatures: Keccak256("EventName(types...)")
 var (
-	SwapEventTopic = crypto.Keccak256Hash([]byte("Swap(address,uint256,uint256,uint256,uint256,address)"))
-	MintEventTopic = crypto.Keccak256Hash([]byte("Mint(address,uint256,uint256)"))
-	BurnEventTopic = crypto.Keccak256Hash([]byte("Burn(address,uint256,uint256,address)"))
+	SwapEventTopic     = crypto.Keccak256Hash([]byte("Swap(address,uint256,uint256,uint256,uint256,address)"))
+	MintEventTopic     = crypto.Keccak256Hash([]byte("Mint(address,uint256,uint256)"))
+	BurnEventTopic     = crypto.Keccak256Hash([]byte("Burn(address,uint256,uint256,address)"))
+	TransferEventTopic = crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
 )
 
 func mustLoadUniswapV2ABI() abi.ABI {
@@ -163,6 +164,31 @@ func parseBurnLog(logEntry types.Log) (sender, recipient common.Address, amount0
 	}
 
 	return sender, recipient, amount0, amount1, nil
+}
+
+// parseTransferLog extracts transfer event data directly from log entry.
+// Returns: from, to, value.
+func parseTransferLog(logEntry types.Log) (from, to common.Address, value *big.Int, err error) {
+	if len(logEntry.Topics) < 3 {
+		return common.Address{}, common.Address{}, nil,
+			&errors.DataError{Message: fmt.Sprintf("transfer log missing indexed topics: expected 3, got %d", len(logEntry.Topics))}
+	}
+
+	value = new(big.Int).SetBytes(logEntry.Data)
+	if value.Sign() < 0 {
+		return common.Address{}, common.Address{}, nil,
+			&errors.DataError{Message: "transfer value cannot be negative"}
+	}
+
+	from = common.BytesToAddress(logEntry.Topics[1].Bytes())
+	to = common.BytesToAddress(logEntry.Topics[2].Bytes())
+
+	if from == (common.Address{}) || to == (common.Address{}) {
+		return common.Address{}, common.Address{}, nil,
+			&errors.DataError{Message: "transfer addresses cannot be zero"}
+	}
+
+	return from, to, value, nil
 }
 
 func readBigInt(values map[string]any, key string) (*big.Int, error) {

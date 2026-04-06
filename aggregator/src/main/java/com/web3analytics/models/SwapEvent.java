@@ -1,5 +1,9 @@
 package com.web3analytics.models;
 
+/**
+ * Swap event from dex-trading-events topic.
+ * Represents a token swap (trade) on the DEX pair.
+ */
 public record SwapEvent(
         String eventId,
         long blockNumber,
@@ -22,4 +26,4 @@ public record SwapEvent(
         long gasUsed,
         String gasPrice,
         long eventTimestamp
-) {}
+) implements DexEvent {}

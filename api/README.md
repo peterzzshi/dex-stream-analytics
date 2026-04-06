@@ -1,23 +1,28 @@
-# API
+# API (Kotlin Skeleton)
 
-REST API service for aggregated DEX analytics.
+Kotlin sink/API skeleton for aggregated DEX analytics using DAPR-compatible HTTP endpoints.
 
 ## Requirements
 
-- Go 1.21
+- JDK 21
+- Gradle 8+
 
 ## Run
 
 ```bash
 cd api
-APP_PORT="8080" \
-ENVIRONMENT="development" \
-LOG_LEVEL="info" \
-go run ./cmd/api
+APP_PORT=8080 gradle run
 ```
+
+## Endpoints
+
+- `GET /health`
+- `POST /events/analytics` (CloudEvent envelope with analytics payload)
+- `GET /pairs/{pair}/twap`
+- `GET /pairs/{pair}/volume`
+- `GET /analytics/summary`
+- `GET /dapr/subscribe`
 
 ## Configuration
 
 - `APP_PORT`: HTTP port for the API server (default: `8080`)
-- `ENVIRONMENT`: `development` or `production` (default: `development`)
-- `LOG_LEVEL`: `debug`, `info`, `warn`, or `error` (default: `info`)

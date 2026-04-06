@@ -1,0 +1,80 @@
+{
+  "namespace": "com.web3analytics.events",
+  "type": "record",
+  "name": "MintEvent",
+  "doc": "Represents a liquidity provision (mint) event from a DEX (Uniswap V2 compatible)",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": "string",
+      "doc": "Unique identifier for this event (txHash + logIndex)"
+    },
+    {
+      "name": "blockNumber",
+      "type": "long",
+      "doc": "Block number where the mint occurred"
+    },
+    {
+      "name": "blockTimestamp",
+      "type": "long",
+      "doc": "Unix timestamp of the block (in seconds)"
+    },
+    {
+      "name": "transactionHash",
+      "type": "string",
+      "doc": "Transaction hash containing this mint"
+    },
+    {
+      "name": "logIndex",
+      "type": "int",
+      "doc": "Index of the log entry in the transaction"
+    },
+    {
+      "name": "pairAddress",
+      "type": "string",
+      "doc": "Address of the Uniswap V2 pair contract"
+    },
+    {
+      "name": "token0",
+      "type": "string",
+      "doc": "Address of token0 in the pair"
+    },
+    {
+      "name": "token1",
+      "type": "string",
+      "doc": "Address of token1 in the pair"
+    },
+    {
+      "name": "token0Symbol",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token0 (e.g., WMATIC)"
+    },
+    {
+      "name": "token1Symbol",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token1 (e.g., USDC)"
+    },
+    {
+      "name": "sender",
+      "type": "string",
+      "doc": "Address that sent the tokens to mint liquidity"
+    },
+    {
+      "name": "amount0",
+      "type": "string",
+      "doc": "Amount of token0 added to the pair (as string to preserve precision)"
+    },
+    {
+      "name": "amount1",
+      "type": "string",
+      "doc": "Amount of token1 added to the pair (delta on pool reserves)"
+    },
+    {
+      "name": "eventTimestamp",
+      "type": "long",
+      "doc": "Timestamp when event was captured by producer"
+    }
+  ]
+}

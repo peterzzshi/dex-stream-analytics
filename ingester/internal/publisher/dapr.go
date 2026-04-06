@@ -44,7 +44,7 @@ func DefaultTopicMapper() TopicMapper {
 		switch eventType {
 		case events.EventTypeSwap:
 			return config.GetTopicTradingEvents(), nil
-		case events.EventTypeMint, events.EventTypeBurn:
+		case events.EventTypeMint, events.EventTypeBurn, events.EventTypeTransfer:
 			return config.GetTopicLiquidityEvents(), nil
 		default:
 			return "", fmt.Errorf("no mapping for event type: %s", eventType)

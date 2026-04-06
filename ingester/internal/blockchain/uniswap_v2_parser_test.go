@@ -31,6 +31,11 @@ func TestEventTopicHashes(t *testing.T) {
 			"Burn(address,uint256,uint256,address)",
 			crypto.Keccak256Hash([]byte("Burn(address,uint256,uint256,address)")),
 		},
+		{
+			"Transfer",
+			"Transfer(address,address,uint256)",
+			crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)")),
+		},
 	}
 
 	for _, tt := range tests {
@@ -43,6 +48,8 @@ func TestEventTopicHashes(t *testing.T) {
 				actual = MintEventTopic
 			case "Burn":
 				actual = BurnEventTopic
+			case "Transfer":
+				actual = TransferEventTopic
 			}
 
 			if actual != tt.expected {
@@ -186,6 +193,37 @@ func TestParseBurnLog_ValidLog(t *testing.T) {
 
 	if amount1.Cmp(big.NewInt(425)) != 0 {
 		t.Errorf("Expected amount1 425, got %s", amount1.String())
+	}
+}
+
+func TestParseTransferLog_ValidLog(t *testing.T) {
+	from := common.HexToAddress("0x6666666666666666666666666666666666666666")
+	to := common.HexToAddress("0x7777777777777777777777777777777777777777")
+
+	logEntry := types.Log{
+		Topics: []common.Hash{
+			TransferEventTopic,
+			common.BytesToHash(from.Bytes()),
+			common.BytesToHash(to.Bytes()),
+		},
+		Data: common.LeftPadBytes(big.NewInt(123456).Bytes(), 32),
+	}
+
+	parsedFrom, parsedTo, value, err := parseTransferLog(logEntry)
+	if err != nil {
+		t.Fatalf("parseTransferLog failed: %v", err)
+	}
+
+	if parsedFrom != from {
+		t.Errorf("Expected from %s, got %s", from.Hex(), parsedFrom.Hex())
+	}
+
+	if parsedTo != to {
+		t.Errorf("Expected to %s, got %s", to.Hex(), parsedTo.Hex())
+	}
+
+	if value.Cmp(big.NewInt(123456)) != 0 {
+		t.Errorf("Expected value 123456, got %s", value.String())
 	}
 }
 

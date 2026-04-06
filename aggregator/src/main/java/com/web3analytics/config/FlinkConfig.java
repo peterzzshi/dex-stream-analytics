@@ -1,26 +1,55 @@
 package com.web3analytics.config;
 
+/**
+ * Flink configuration for dual-topic architecture.
+ * Consumes from two input topics (trading and liquidity events).
+ */
 public record FlinkConfig(
         String kafkaBootstrap,
-        String inputTopic,
-        String outputTopic,
+        String topicTradingEvents,
+        String topicLiquidityEvents,
+        String topicTradingAnalytics,
+        String topicLiquidityAnalytics,
         String consumerGroup,
         int parallelism,
         long checkpointMs
 ) {
     public static FlinkConfig fromEnv() {
         return new FlinkConfig(
-                env("KAFKA_BOOTSTRAP", "kafka:9092"),
-                env("TOPIC_DEX_EVENTS", "dex-events"),
-                env("TOPIC_DEX_ANALYTICS", "dex-analytics"),
-                env("FLINK_CONSUMER_GROUP", "dex-processor"),
-                Integer.parseInt(env("FLINK_PARALLELISM", "2")),
-                Long.parseLong(env("FLINK_CHECKPOINT_MS", "10000"))
+                requiredEnv("KAFKA_BOOTSTRAP_SERVERS"),
+                requiredEnv("TOPIC_TRADING_EVENTS"),
+                requiredEnv("TOPIC_LIQUIDITY_EVENTS"),
+                requiredEnv("TOPIC_TRADING_ANALYTICS"),
+                requiredEnv("TOPIC_LIQUIDITY_ANALYTICS"),
+                requiredEnv("FLINK_CONSUMER_GROUP"),
+                parseInt("FLINK_PARALLELISM"),
+                parseLong("FLINK_CHECKPOINT_MS")
         );
     }
 
-    private static String env(String key, String def) {
+    private static String requiredEnv(String key) {
         String v = System.getenv(key);
-        return v == null || v.isBlank() ? def : v;
+        if (v == null || v.isBlank()) {
+            throw new IllegalArgumentException("Missing required environment variable: " + key);
+        }
+        return v;
+    }
+
+    private static int parseInt(String key) {
+        String value = requiredEnv(key);
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException err) {
+            throw new IllegalArgumentException("Invalid integer for " + key + ": " + value, err);
+        }
+    }
+
+    private static long parseLong(String key) {
+        String value = requiredEnv(key);
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException err) {
+            throw new IllegalArgumentException("Invalid long for " + key + ": " + value, err);
+        }
     }
 }

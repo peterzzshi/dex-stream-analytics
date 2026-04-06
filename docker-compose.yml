@@ -109,6 +109,8 @@ services:
       - TOPIC_TRADING_EVENTS=dex-trading-events
       - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
       - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
+      - TOPIC_LIQUIDITY_ANALYTICS=dex-liquidity-analytics
+      - FLINK_CONSUMER_GROUP=dex-processor
       - FLINK_PARALLELISM=2
       - FLINK_CHECKPOINT_MS=10000
     depends_on:
@@ -121,7 +123,7 @@ services:
     profiles:
       - full-stack
 
-  # API: REST service for querying aggregated analytics
+  # API: Kotlin sink/query service for aggregated analytics
   api:
     build:
       context: ./api
@@ -129,8 +131,6 @@ services:
     container_name: api
     environment:
       - APP_PORT=8080
-      - ENVIRONMENT=development
-      - LOG_LEVEL=info
     ports:
       - "8080:8080"
     depends_on:

@@ -13,10 +13,6 @@
         <property name="fileNamePattern" value="module\-info\.java$"/>
     </module>
 
-    <!-- Suppress warnings in generated code -->
-    <module name="SuppressionFilter">
-        <property name="file" value="${config_loc}/suppressions.xml" optional="true"/>
-    </module>
 
     <!-- File-level checks -->
     <module name="FileTabCharacter">

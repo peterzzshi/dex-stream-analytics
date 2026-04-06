@@ -13,6 +13,7 @@ func TestEventTypes(t *testing.T) {
 		{EventTypeSwap, "Swap"},
 		{EventTypeMint, "Mint"},
 		{EventTypeBurn, "Burn"},
+		{EventTypeTransfer, "Transfer"},
 	}
 
 	for _, tt := range tests {
@@ -26,15 +27,16 @@ func TestEventTypes(t *testing.T) {
 
 func TestAllEventTypes(t *testing.T) {
 	// Test that AllEventTypes contains all expected types
-	if len(AllEventTypes) != 3 {
-		t.Errorf("Expected 3 event types, got %d", len(AllEventTypes))
+	if len(AllEventTypes) != 4 {
+		t.Errorf("Expected 4 event types, got %d", len(AllEventTypes))
 	}
 
 	// Check each type is present
 	expected := map[EventType]bool{
-		EventTypeSwap: false,
-		EventTypeMint: false,
-		EventTypeBurn: false,
+		EventTypeSwap:     false,
+		EventTypeMint:     false,
+		EventTypeBurn:     false,
+		EventTypeTransfer: false,
 	}
 
 	for _, et := range AllEventTypes {
@@ -113,6 +115,28 @@ func TestBurnEvent_GetMethods(t *testing.T) {
 
 	if event.GetPairAddress() != "0x9abc" {
 		t.Errorf("Expected pair address '0x9abc', got %q", event.GetPairAddress())
+	}
+}
+
+func TestTransferEvent_GetMethods(t *testing.T) {
+	event := TransferEvent{
+		BaseEvent: BaseEvent{
+			EventType:   "Transfer",
+			EventID:     "transfer-id",
+			PairAddress: "0xface",
+		},
+	}
+
+	if event.GetEventType() != "Transfer" {
+		t.Errorf("Expected event type 'Transfer', got %q", event.GetEventType())
+	}
+
+	if event.GetEventID() != "transfer-id" {
+		t.Errorf("Expected event ID 'transfer-id', got %q", event.GetEventID())
+	}
+
+	if event.GetPairAddress() != "0xface" {
+		t.Errorf("Expected pair address '0xface', got %q", event.GetPairAddress())
 	}
 }
 
@@ -214,6 +238,35 @@ func TestBurnEvent_ToMap(t *testing.T) {
 
 	if m["recipient"] != "0xreceiver" {
 		t.Errorf("Expected recipient '0xreceiver', got %v", m["recipient"])
+	}
+}
+
+func TestTransferEvent_ToMap(t *testing.T) {
+	event := TransferEvent{
+		BaseEvent: BaseEvent{
+			EventID: "transfer-1",
+		},
+		From:  "0xfrom",
+		To:    "0xto",
+		Value: "123456789",
+	}
+
+	m := event.ToMap()
+
+	if m["eventId"] != "transfer-1" {
+		t.Errorf("Expected eventId 'transfer-1', got %v", m["eventId"])
+	}
+
+	if m["from"] != "0xfrom" {
+		t.Errorf("Expected from '0xfrom', got %v", m["from"])
+	}
+
+	if m["to"] != "0xto" {
+		t.Errorf("Expected to '0xto', got %v", m["to"])
+	}
+
+	if m["value"] != "123456789" {
+		t.Errorf("Expected value '123456789', got %v", m["value"])
 	}
 }
 

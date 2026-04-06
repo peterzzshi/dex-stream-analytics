@@ -6,9 +6,10 @@ import "strings"
 type EventType string
 
 const (
-	EventTypeSwap EventType = "Swap"
-	EventTypeMint EventType = "Mint"
-	EventTypeBurn EventType = "Burn"
+	EventTypeSwap     EventType = "Swap"
+	EventTypeMint     EventType = "Mint"
+	EventTypeBurn     EventType = "Burn"
+	EventTypeTransfer EventType = "Transfer"
 )
 
 // CloudEventType returns the CloudEvents type string for this event type
@@ -21,6 +22,7 @@ var AllEventTypes = []EventType{
 	EventTypeSwap,
 	EventTypeMint,
 	EventTypeBurn,
+	EventTypeTransfer,
 }
 
 // Event is the interface that all DEX events must implement
@@ -93,4 +95,5 @@ var (
 	_ Event = (*SwapEvent)(nil)
 	_ Event = (*MintEvent)(nil)
 	_ Event = (*BurnEvent)(nil)
+	_ Event = (*TransferEvent)(nil)
 )

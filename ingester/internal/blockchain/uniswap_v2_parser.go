@@ -13,11 +13,18 @@ import (
 	"ingester/internal/errors"
 )
 
-// UniswapV2PairABI is the parsed ABI for Uniswap V2 Pair contract
+// PairMetadata holds immutable token pair data resolved once at startup.
+type PairMetadata struct {
+	PairAddress    common.Address
+	Token0Address  common.Address
+	Token1Address  common.Address
+	Token0Decimals uint8
+	Token1Decimals uint8
+}
+
 var UniswapV2PairABI = mustLoadUniswapV2ABI()
 
-// Uniswap V2 standard event topic hashes
-// Computed from event signatures: Keccak256("EventName(types...)")
+// Topic hashes derived from Keccak256 of Uniswap V2 event signatures.
 var (
 	SwapEventTopic     = crypto.Keccak256Hash([]byte("Swap(address,uint256,uint256,uint256,uint256,address)"))
 	MintEventTopic     = crypto.Keccak256Hash([]byte("Mint(address,uint256,uint256)"))
@@ -33,17 +40,6 @@ func mustLoadUniswapV2ABI() abi.ABI {
 	return result
 }
 
-type PairMetadata struct {
-	PairAddress    common.Address
-	Token0Address  common.Address
-	Token1Address  common.Address
-	Token0Decimals uint8
-	Token1Decimals uint8
-}
-
-// parseLog is the unified log parsing function — validates topics, unpacks data, delegates to parser
-// parseSwapLog extracts swap event data directly from log entry
-// Returns: sender, recipient, amount0In, amount1In, amount0Out, amount1Out
 func parseSwapLog(logEntry types.Log) (sender, recipient common.Address, amount0In, amount1In, amount0Out, amount1Out *big.Int, err error) {
 	if len(logEntry.Topics) < 3 {
 		return common.Address{}, common.Address{}, nil, nil, nil, nil,
@@ -89,8 +85,6 @@ func parseSwapLog(logEntry types.Log) (sender, recipient common.Address, amount0
 	return sender, recipient, amount0In, amount1In, amount0Out, amount1Out, nil
 }
 
-// parseMintLog extracts mint event data directly from log entry
-// Returns: sender, amount0, amount1
 func parseMintLog(logEntry types.Log) (sender common.Address, amount0, amount1 *big.Int, err error) {
 	if len(logEntry.Topics) < 2 {
 		return common.Address{}, nil, nil,
@@ -127,8 +121,6 @@ func parseMintLog(logEntry types.Log) (sender common.Address, amount0, amount1 *
 	return sender, amount0, amount1, nil
 }
 
-// parseBurnLog extracts burn event data directly from log entry
-// Returns: sender, recipient, amount0, amount1
 func parseBurnLog(logEntry types.Log) (sender, recipient common.Address, amount0, amount1 *big.Int, err error) {
 	if len(logEntry.Topics) < 3 {
 		return common.Address{}, common.Address{}, nil, nil,
@@ -166,8 +158,6 @@ func parseBurnLog(logEntry types.Log) (sender, recipient common.Address, amount0
 	return sender, recipient, amount0, amount1, nil
 }
 
-// parseTransferLog extracts transfer event data directly from log entry.
-// Returns: from, to, value.
 func parseTransferLog(logEntry types.Log) (from, to common.Address, value *big.Int, err error) {
 	if len(logEntry.Topics) < 3 {
 		return common.Address{}, common.Address{}, nil,

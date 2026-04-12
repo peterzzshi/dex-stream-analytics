@@ -26,12 +26,11 @@ func TestEventTypes(t *testing.T) {
 }
 
 func TestAllEventTypes(t *testing.T) {
-	// Test that AllEventTypes contains all expected types
-	if len(AllEventTypes) != 4 {
-		t.Errorf("Expected 4 event types, got %d", len(AllEventTypes))
+	all := AllEventTypes()
+	if len(all) != 4 {
+		t.Errorf("Expected 4 event types, got %d", len(all))
 	}
 
-	// Check each type is present
 	expected := map[EventType]bool{
 		EventTypeSwap:     false,
 		EventTypeMint:     false,
@@ -39,7 +38,7 @@ func TestAllEventTypes(t *testing.T) {
 		EventTypeTransfer: false,
 	}
 
-	for _, et := range AllEventTypes {
+	for _, et := range all {
 		if _, exists := expected[et]; exists {
 			expected[et] = true
 		}
@@ -47,8 +46,17 @@ func TestAllEventTypes(t *testing.T) {
 
 	for et, found := range expected {
 		if !found {
-			t.Errorf("Event type %s not found in AllEventTypes", et)
+			t.Errorf("Event type %s not found in AllEventTypes()", et)
 		}
+	}
+}
+
+func TestAllEventTypes_ReturnsDefensiveCopy(t *testing.T) {
+	first := AllEventTypes()
+	first[0] = "Mutated"
+	second := AllEventTypes()
+	if second[0] == "Mutated" {
+		t.Error("AllEventTypes() should return a defensive copy, but mutation leaked")
 	}
 }
 
@@ -173,8 +181,9 @@ func TestSwapEvent_ToMap(t *testing.T) {
 		t.Errorf("Expected price 1.18, got %v", m["price"])
 	}
 
-	if m["volumeUSD"] != 123.45 {
-		t.Errorf("Expected volumeUSD 123.45, got %v", m["volumeUSD"])
+	volumeUnion, ok := m["volumeUSD"].(map[string]interface{})
+	if !ok || volumeUnion["double"] != 123.45 {
+		t.Errorf("Expected volumeUSD union map with double 123.45, got %v", m["volumeUSD"])
 	}
 }
 
@@ -282,12 +291,14 @@ func TestBaseEvent_ToMap_WithOptionalFields(t *testing.T) {
 
 	m := base.ToMap()
 
-	if m["token0Symbol"] != "WMATIC" {
-		t.Errorf("Expected token0Symbol 'WMATIC', got %v", m["token0Symbol"])
+	token0Union, ok := m["token0Symbol"].(map[string]interface{})
+	if !ok || token0Union["string"] != "WMATIC" {
+		t.Errorf("Expected token0Symbol union map with string 'WMATIC', got %v", m["token0Symbol"])
 	}
 
-	if m["token1Symbol"] != "USDC" {
-		t.Errorf("Expected token1Symbol 'USDC', got %v", m["token1Symbol"])
+	token1Union, ok := m["token1Symbol"].(map[string]interface{})
+	if !ok || token1Union["string"] != "USDC" {
+		t.Errorf("Expected token1Symbol union map with string 'USDC', got %v", m["token1Symbol"])
 	}
 }
 

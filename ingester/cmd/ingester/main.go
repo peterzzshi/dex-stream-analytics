@@ -16,7 +16,7 @@ import (
 
 	"ingester/internal/blockchain"
 	"ingester/internal/config"
-	. "ingester/internal/errors"
+	apperr "ingester/internal/errors"
 	"ingester/internal/events"
 	"ingester/internal/publisher"
 )
@@ -129,7 +129,7 @@ func consumeEvents(
 
 func startHealthServer(appPort string) (*http.Server, error) {
 	if appPort == "" {
-		return nil, &ConfigError{Message: "APP_PORT is required"}
+		return nil, &apperr.ConfigError{Message: "APP_PORT is required"}
 	}
 
 	healthServer := &http.Server{
@@ -152,7 +152,7 @@ func startHealthServer(appPort string) (*http.Server, error) {
 
 	select {
 	case err := <-errChan:
-		return nil, &ConnectionError{Message: "health server failed to start", Cause: err}
+		return nil, &apperr.ConnectionError{Message: "health server failed to start", Cause: err}
 	case <-time.After(100 * time.Millisecond):
 		// Server started successfully
 	}
@@ -179,20 +179,20 @@ func healthHandler() http.Handler {
 
 func parsePairAddress(text string) (common.Address, error) {
 	if !common.IsHexAddress(text) {
-		return common.Address{}, &ConfigError{Message: "PAIR_ADDRESS must be valid hex address"}
+		return common.Address{}, &apperr.ConfigError{Message: "PAIR_ADDRESS must be valid hex address"}
 	}
 	return common.HexToAddress(text), nil
 }
 
 func validateRPCURL(url string) error {
 	if url == "" {
-		return &ConfigError{Message: "POLYGON_RPC_URL required (must be WebSocket: wss:// or ws://)"}
+		return &apperr.ConfigError{Message: "POLYGON_RPC_URL required (must be WebSocket: wss:// or ws://)"}
 	}
 	if len(url) < 5 {
-		return &ConfigError{Message: "POLYGON_RPC_URL too short"}
+		return &apperr.ConfigError{Message: "POLYGON_RPC_URL too short"}
 	}
 	if strings.HasPrefix(url, "wss://") || strings.HasPrefix(url, "ws://") {
 		return nil
 	}
-	return &ConfigError{Message: "POLYGON_RPC_URL must be WebSocket URL (wss:// or ws://)"}
+	return &apperr.ConfigError{Message: "POLYGON_RPC_URL must be WebSocket URL (wss:// or ws://)"}
 }

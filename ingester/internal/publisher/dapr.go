@@ -18,24 +18,22 @@ import (
 	"ingester/internal/events"
 )
 
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
-
 type HTTPDoer func(req *http.Request) (*http.Response, error)
 type CodecMap map[events.EventType]*goavro.Codec
 type TopicMapper func(eventType events.EventType) (string, error)
 type URLBuilder func(topic string) string
 
+var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
 func CreateCodecMap() (CodecMap, error) {
 	codecs := make(CodecMap)
-
-	for _, eventType := range events.AllEventTypes {
+	for _, eventType := range events.AllEventTypes() {
 		codec, err := avro.NewCodec(eventType)
 		if err != nil {
 			return nil, err
 		}
 		codecs[eventType] = codec
 	}
-
 	return codecs, nil
 }
 
@@ -92,13 +90,13 @@ func Publish(
 
 	response, err := httpDoer(request)
 	if err != nil {
-		logger.Warn("Publish failed (retryable)", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
+		logger.Warn("Publish failed", "event_id", eventID, "event_type", eventType, "pair", pair, "error", err)
 		return
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode >= 300 {
-		logger.Warn("Publish failed (retryable)", "event_id", eventID, "event_type", eventType, "pair", pair, "status", response.StatusCode)
+		logger.Warn("Publish failed", "event_id", eventID, "event_type", eventType, "pair", pair, "status", response.StatusCode)
 		return
 	}
 

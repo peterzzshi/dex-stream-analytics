@@ -53,7 +53,7 @@ func TestCreateCodecMap(t *testing.T) {
 	}
 
 	// Verify all event types have codecs
-	for _, eventType := range events.AllEventTypes {
+	for _, eventType := range events.AllEventTypes() {
 		if _, ok := codecs[eventType]; !ok {
 			t.Errorf("Missing codec for event type: %s", eventType)
 		}

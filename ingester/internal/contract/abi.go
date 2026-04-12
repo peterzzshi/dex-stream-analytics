@@ -13,6 +13,28 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+type ABIName string
+
+// ContractCaller abstracts low-level contract reads.
+// *ethclient.Client satisfies this directly.
+type ContractCaller interface {
+	CallContract(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
+}
+
+// ContractCallerFunc adapts a plain function to ContractCaller (http.HandlerFunc pattern).
+type ContractCallerFunc func(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
+
+func (f ContractCallerFunc) CallContract(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+	return f(ctx, msg, blockNumber)
+}
+
+const (
+	ERC20Decimals       ABIName = "erc20_decimals"
+	ERC20Symbol         ABIName = "erc20_symbol"
+	ChainlinkAggregator ABIName = "chainlink_aggregator"
+	UniswapV2Pair       ABIName = "uniswap_v2_pair"
+)
+
 //go:embed erc20_decimals.abi.json
 var erc20DecimalsABIJSON string
 
@@ -25,17 +47,6 @@ var chainlinkAggregatorABIJSON string
 //go:embed uniswap_v2_pair.abi.json
 var uniswapV2PairABIJSON string
 
-type ABIName string
-
-const (
-	ERC20Decimals       ABIName = "erc20_decimals"
-	ERC20Symbol         ABIName = "erc20_symbol"
-	ChainlinkAggregator ABIName = "chainlink_aggregator"
-	UniswapV2Pair       ABIName = "uniswap_v2_pair"
-)
-
-type ContractCaller func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
-
 var (
 	erc20DecimalsABI        abi.ABI
 	erc20DecimalsOnce       sync.Once
@@ -47,39 +58,66 @@ var (
 	uniswapV2PairOnce       sync.Once
 )
 
+// GetABI returns a lazily parsed, thread-safe ABI by name.
 func GetABI(name ABIName) (abi.ABI, error) {
 	switch name {
 	case ERC20Decimals:
 		var err error
-		erc20DecimalsOnce.Do(func() {
-			erc20DecimalsABI, err = parseABI(ERC20Decimals)
-		})
+		erc20DecimalsOnce.Do(func() { erc20DecimalsABI, err = parseABI(ERC20Decimals) })
 		return erc20DecimalsABI, err
-
 	case ERC20Symbol:
 		var err error
-		erc20SymbolOnce.Do(func() {
-			erc20SymbolABI, err = parseABI(ERC20Symbol)
-		})
+		erc20SymbolOnce.Do(func() { erc20SymbolABI, err = parseABI(ERC20Symbol) })
 		return erc20SymbolABI, err
-
 	case ChainlinkAggregator:
 		var err error
-		chainlinkAggregatorOnce.Do(func() {
-			chainlinkAggregatorABI, err = parseABI(ChainlinkAggregator)
-		})
+		chainlinkAggregatorOnce.Do(func() { chainlinkAggregatorABI, err = parseABI(ChainlinkAggregator) })
 		return chainlinkAggregatorABI, err
-
 	case UniswapV2Pair:
 		var err error
-		uniswapV2PairOnce.Do(func() {
-			uniswapV2PairABI, err = parseABI(UniswapV2Pair)
-		})
+		uniswapV2PairOnce.Do(func() { uniswapV2PairABI, err = parseABI(UniswapV2Pair) })
 		return uniswapV2PairABI, err
-
 	default:
 		return abi.ABI{}, fmt.Errorf("unknown ABI: %s", name)
 	}
+}
+
+func CallContract[T any](
+	ctx context.Context,
+	caller ContractCaller,
+	contractAddress common.Address,
+	contractABI abi.ABI,
+	methodName string,
+	resultPtr *T,
+) error {
+	data, err := contractABI.Pack(methodName)
+	if err != nil {
+		return fmt.Errorf("pack method %s: %w", methodName, err)
+	}
+
+	result, err := caller.CallContract(ctx, ethereum.CallMsg{
+		To:   &contractAddress,
+		Data: data,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("call contract: %w", err)
+	}
+
+	method, ok := contractABI.Methods[methodName]
+	if !ok {
+		return fmt.Errorf("method %s not found in ABI", methodName)
+	}
+
+	values, err := method.Outputs.Unpack(result)
+	if err != nil {
+		return fmt.Errorf("unpack result: %w", err)
+	}
+
+	if err := method.Outputs.Copy(resultPtr, values); err != nil {
+		return fmt.Errorf("copy result: %w", err)
+	}
+
+	return nil
 }
 
 func parseABI(name ABIName) (abi.ABI, error) {
@@ -104,42 +142,4 @@ func parseABI(name ABIName) (abi.ABI, error) {
 	}
 
 	return parsed, nil
-}
-
-func CallContract[T any](
-	ctx context.Context,
-	callContract ContractCaller,
-	contractAddress common.Address,
-	contractABI abi.ABI,
-	methodName string,
-	resultPtr *T,
-) error {
-	data, err := contractABI.Pack(methodName)
-	if err != nil {
-		return fmt.Errorf("pack method %s: %w", methodName, err)
-	}
-
-	result, err := callContract(ctx, ethereum.CallMsg{
-		To:   &contractAddress,
-		Data: data,
-	}, nil)
-	if err != nil {
-		return fmt.Errorf("call contract: %w", err)
-	}
-
-	method, ok := contractABI.Methods[methodName]
-	if !ok {
-		return fmt.Errorf("method %s not found in ABI", methodName)
-	}
-
-	values, err := method.Outputs.Unpack(result)
-	if err != nil {
-		return fmt.Errorf("unpack result: %w", err)
-	}
-
-	if err := method.Outputs.Copy(resultPtr, values); err != nil {
-		return fmt.Errorf("copy result: %w", err)
-	}
-
-	return nil
 }

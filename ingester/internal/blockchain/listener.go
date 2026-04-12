@@ -20,28 +20,26 @@ import (
 
 	"ingester/internal/cache"
 	"ingester/internal/contract"
-	. "ingester/internal/errors"
+	apperr "ingester/internal/errors"
 	"ingester/internal/events"
 	"ingester/internal/oracle"
 )
 
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
-
-// symbolCache caches ERC20 token symbols (never expires since symbols are immutable)
-var symbolCache = cache.NewCache[common.Address, string](0)
-
 type Listener struct {
 	pairAddress  common.Address
-	client       *ethclient.Client
+	client       EthClient
 	pairMetadata PairMetadata
+	symbolCache  *cache.Cache[common.Address, string]
 	priceCache   *cache.Cache[common.Address, float64]
-	priceFetcher oracle.PriceFetcher
+	priceOracle  oracle.PriceOracle
 }
+
+var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 func NewListener(ctx context.Context, rpcURL string, pairAddress common.Address) (*Listener, error) {
 	client, err := ethclient.Dial(rpcURL)
 	if err != nil {
-		return nil, &ConnectionError{Message: "rpc dial failed", Cause: err}
+		return nil, &apperr.ConnectionError{Message: "rpc dial failed", Cause: err}
 	}
 
 	pairMetadata, err := fetchPairMetadata(ctx, client, pairAddress, UniswapV2PairABI)
@@ -50,21 +48,19 @@ func NewListener(ctx context.Context, rpcURL string, pairAddress common.Address)
 		return nil, err
 	}
 
-	contractCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
-		return client.CallContract(ctx, call, blockNumber)
-	}
+	return NewListenerWith(client, pairAddress, pairMetadata, oracle.NewChainlinkOracle(client)), nil
+}
 
-	priceFetcher := oracle.CreatePriceFetcherWithChainlink(contractCaller)
-
-	priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
-
+// NewListenerWith accepts pre-built dependencies for testability.
+func NewListenerWith(client EthClient, pairAddress common.Address, pairMetadata PairMetadata, priceOracle oracle.PriceOracle) *Listener {
 	return &Listener{
 		pairAddress:  pairAddress,
 		client:       client,
 		pairMetadata: pairMetadata,
-		priceCache:   priceCache,
-		priceFetcher: priceFetcher,
-	}, nil
+		symbolCache:  cache.NewCache[common.Address, string](0),
+		priceCache:   cache.NewCache[common.Address, float64](5 * time.Minute),
+		priceOracle:  priceOracle,
+	}
 }
 
 func (l *Listener) PairMetadata() PairMetadata {
@@ -72,15 +68,26 @@ func (l *Listener) PairMetadata() PairMetadata {
 }
 
 func (l *Listener) Listen(ctx context.Context, outputChannel chan<- events.Event) error {
+	latestBlock, err := l.client.BlockNumber(ctx)
+	if err != nil {
+		return &apperr.ConnectionError{Message: "rpc latest block fetch failed", Cause: err}
+	}
+	const backfillBlocks uint64 = 500
+	var fromBlock uint64
+	if latestBlock > backfillBlocks {
+		fromBlock = latestBlock - backfillBlocks
+	}
+
 	filterQuery := ethereum.FilterQuery{
 		Addresses: []common.Address{l.pairAddress},
 		Topics:    [][]common.Hash{{SwapEventTopic, MintEventTopic, BurnEventTopic, TransferEventTopic}},
+		FromBlock: new(big.Int).SetUint64(fromBlock),
 	}
 
 	logChannel := make(chan types.Log, 100)
 	subscription, err := l.client.SubscribeFilterLogs(ctx, filterQuery, logChannel)
 	if err != nil {
-		return &ConnectionError{Message: "event subscription failed", Cause: err}
+		return &apperr.ConnectionError{Message: "event subscription failed", Cause: err}
 	}
 
 	for {
@@ -88,11 +95,11 @@ func (l *Listener) Listen(ctx context.Context, outputChannel chan<- events.Event
 		case <-ctx.Done():
 			return ctx.Err()
 		case subscriptionErr := <-subscription.Err():
-			return &ConnectionError{Message: "event stream failed", Cause: subscriptionErr}
+			return &apperr.ConnectionError{Message: "event stream failed", Cause: subscriptionErr}
 		case logEntry := <-logChannel:
 			event, err := l.eventFromLog(ctx, logEntry)
 			if err != nil {
-				var dataErr *DataError
+				var dataErr *apperr.DataError
 				if errors.As(err, &dataErr) {
 					logger.Warn("Skipping bad event data", "error", err)
 					continue
@@ -114,15 +121,12 @@ func (l *Listener) Close() {
 
 func (l *Listener) eventFromLog(ctx context.Context, logEntry types.Log) (events.Event, error) {
 	if len(logEntry.Topics) == 0 {
-		return nil, &DataError{
+		return nil, &apperr.DataError{
 			Message: fmt.Sprintf("no topics in log at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
-			Cause:   nil,
 		}
 	}
 
-	topic := logEntry.Topics[0]
-
-	switch topic {
+	switch logEntry.Topics[0] {
 	case SwapEventTopic:
 		return l.parseSwapEvent(ctx, logEntry)
 	case MintEventTopic:
@@ -132,9 +136,8 @@ func (l *Listener) eventFromLog(ctx context.Context, logEntry types.Log) (events
 	case TransferEventTopic:
 		return l.parseTransferEvent(ctx, logEntry)
 	default:
-		return nil, &DataError{
-			Message: fmt.Sprintf("unknown topic at block=%d tx=%s: %s", logEntry.BlockNumber, logEntry.TxHash.Hex(), topic.Hex()),
-			Cause:   nil,
+		return nil, &apperr.DataError{
+			Message: fmt.Sprintf("unknown topic at block=%d tx=%s: %s", logEntry.BlockNumber, logEntry.TxHash.Hex(), logEntry.Topics[0].Hex()),
 		}
 	}
 }
@@ -142,7 +145,7 @@ func (l *Listener) eventFromLog(ctx context.Context, logEntry types.Log) (events
 func (l *Listener) parseSwapEvent(ctx context.Context, logEntry types.Log) (events.SwapEvent, error) {
 	sender, recipient, amount0In, amount1In, amount0Out, amount1Out, err := parseSwapLog(logEntry)
 	if err != nil {
-		return events.SwapEvent{}, &DataError{
+		return events.SwapEvent{}, &apperr.DataError{
 			Message: fmt.Sprintf("failed to parse swap event at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
 			Cause:   err,
 		}
@@ -168,7 +171,7 @@ func (l *Listener) parseSwapEvent(ctx context.Context, logEntry types.Log) (even
 		Amount0Out: amount0Out.String(),
 		Amount1Out: amount1Out.String(),
 		Price:      price,
-		VolumeUSD:  volumeUSDFromSwap(ctx, l.priceCache, l.priceFetcher, amount0In, amount1In, amount0Out, amount1Out, l.pairMetadata, price),
+		VolumeUSD:  volumeUSDFromSwap(ctx, l.priceCache, l.priceOracle, amount0In, amount1In, amount0Out, amount1Out, l.pairMetadata, price),
 		GasUsed:    gasUsed,
 		GasPrice:   gasPrice,
 	}, nil
@@ -177,7 +180,7 @@ func (l *Listener) parseSwapEvent(ctx context.Context, logEntry types.Log) (even
 func (l *Listener) parseMintEvent(ctx context.Context, logEntry types.Log) (events.MintEvent, error) {
 	sender, amount0, amount1, err := parseMintLog(logEntry)
 	if err != nil {
-		return events.MintEvent{}, &DataError{
+		return events.MintEvent{}, &apperr.DataError{
 			Message: fmt.Sprintf("failed to parse mint event at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
 			Cause:   err,
 		}
@@ -199,7 +202,7 @@ func (l *Listener) parseMintEvent(ctx context.Context, logEntry types.Log) (even
 func (l *Listener) parseBurnEvent(ctx context.Context, logEntry types.Log) (events.BurnEvent, error) {
 	sender, recipient, amount0, amount1, err := parseBurnLog(logEntry)
 	if err != nil {
-		return events.BurnEvent{}, &DataError{
+		return events.BurnEvent{}, &apperr.DataError{
 			Message: fmt.Sprintf("failed to parse burn event at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
 			Cause:   err,
 		}
@@ -222,7 +225,7 @@ func (l *Listener) parseBurnEvent(ctx context.Context, logEntry types.Log) (even
 func (l *Listener) parseTransferEvent(ctx context.Context, logEntry types.Log) (events.TransferEvent, error) {
 	from, to, value, err := parseTransferLog(logEntry)
 	if err != nil {
-		return events.TransferEvent{}, &DataError{
+		return events.TransferEvent{}, &apperr.DataError{
 			Message: fmt.Sprintf("failed to parse transfer event at block=%d tx=%s", logEntry.BlockNumber, logEntry.TxHash.Hex()),
 			Cause:   err,
 		}
@@ -247,8 +250,8 @@ func (l *Listener) buildBase(ctx context.Context, logEntry types.Log, eventType 
 		return events.BaseEvent{}, err
 	}
 
-	token0 := fetchTokenSymbol(ctx, l.client, l.pairMetadata.Token0Address)
-	token1 := fetchTokenSymbol(ctx, l.client, l.pairMetadata.Token1Address)
+	token0 := l.fetchTokenSymbol(ctx, l.pairMetadata.Token0Address)
+	token1 := l.fetchTokenSymbol(ctx, l.pairMetadata.Token1Address)
 
 	var token0Ptr, token1Ptr *string
 	if token0 != "" {
@@ -290,90 +293,47 @@ func priceFromSwapAmounts(amount0In, amount1In, amount0Out, amount1Out *big.Int,
 	return 0
 }
 
-// volumeUSDFromSwap calculates USD volume using Chainlink price oracle (FP style)
-// Pure function with injected price fetching behavior
+// volumeUSDFromSwap resolves via: stablecoin token1 -> stablecoin token0 -> oracle token0 -> oracle token1 -> swap price.
 func volumeUSDFromSwap(
 	ctx context.Context,
 	priceCache *cache.Cache[common.Address, float64],
-	priceFetcher oracle.PriceFetcher,
+	priceOracle oracle.PriceOracle,
 	amount0In, amount1In, amount0Out, amount1Out *big.Int,
 	pairMetadata PairMetadata,
 	price float64,
 ) *float64 {
-	// Calculate accurate USD volume using Chainlink price oracle
-	// Four-tier strategy: stablecoin direct → oracle token0 → oracle token1 → price estimation
+	token1Price, foundToken1 := oracle.GetTokenUSDPrice(ctx, pairMetadata.Token1Address, priceCache, priceOracle)
+	token0Price, foundToken0 := oracle.GetTokenUSDPrice(ctx, pairMetadata.Token0Address, priceCache, priceOracle)
 
-	// Strategy 1: If token1 is a stablecoin (most accurate, ~70% of pairs)
-	// Oracle returns $1.00 immediately for stablecoins (USDC/USDT/DAI)
-	token1Price, foundToken1 := oracle.GetTokenUSDPrice(ctx, pairMetadata.Token1Address, priceCache, priceFetcher)
-	if foundToken1 && token1Price == 1.0 {
-		// It's a stablecoin - use amount directly
-		var amount1 *big.Int
-		if amount1In.Sign() > 0 {
-			amount1 = amount1In
-		} else {
-			amount1 = amount1Out
-		}
-		volumeUSD := adjustForDecimals(amount1, pairMetadata.Token1Decimals)
-		return &volumeUSD
+	vol0 := nonZeroAmount(amount0In, amount0Out)
+	vol1 := nonZeroAmount(amount1In, amount1Out)
+
+	switch {
+	case foundToken1 && token1Price == 1.0:
+		return toUSD(vol1, pairMetadata.Token1Decimals, 1.0)
+	case foundToken0 && token0Price == 1.0:
+		return toUSD(vol0, pairMetadata.Token0Decimals, 1.0)
+	case foundToken0 && token0Price > 0:
+		return toUSD(vol0, pairMetadata.Token0Decimals, token0Price)
+	case foundToken1 && token1Price > 0:
+		return toUSD(vol1, pairMetadata.Token1Decimals, token1Price)
+	case price > 0:
+		return toUSD(vol0, pairMetadata.Token0Decimals, price)
+	default:
+		return nil
 	}
+}
 
-	// Strategy 2: If token0 is a stablecoin
-	token0Price, foundToken0 := oracle.GetTokenUSDPrice(ctx, pairMetadata.Token0Address, priceCache, priceFetcher)
-	if foundToken0 && token0Price == 1.0 {
-		// It's a stablecoin - use amount directly
-		var amount0 *big.Int
-		if amount0In.Sign() > 0 {
-			amount0 = amount0In
-		} else {
-			amount0 = amount0Out
-		}
-		volumeUSD := adjustForDecimals(amount0, pairMetadata.Token0Decimals)
-		return &volumeUSD
+func nonZeroAmount(amountIn, amountOut *big.Int) *big.Int {
+	if amountIn.Sign() > 0 {
+		return amountIn
 	}
+	return amountOut
+}
 
-	// Strategy 3: Use Chainlink oracle for non-stablecoin token0
-	if foundToken0 && token0Price > 0 {
-		var amount0 *big.Int
-		if amount0In.Sign() > 0 {
-			amount0 = amount0In
-		} else {
-			amount0 = amount0Out
-		}
-		token0Volume := adjustForDecimals(amount0, pairMetadata.Token0Decimals)
-		volumeUSD := token0Volume * token0Price
-		return &volumeUSD
-	}
-
-	// Strategy 4: Use Chainlink oracle for non-stablecoin token1
-	if foundToken1 && token1Price > 0 {
-		var amount1 *big.Int
-		if amount1In.Sign() > 0 {
-			amount1 = amount1In
-		} else {
-			amount1 = amount1Out
-		}
-		token1Volume := adjustForDecimals(amount1, pairMetadata.Token1Decimals)
-		volumeUSD := token1Volume * token1Price
-		return &volumeUSD
-	}
-
-	// Last resort: Use swap price (token1-denominated volume)
-	// This happens when neither token has a Chainlink feed
-	if price > 0 {
-		var amount0 *big.Int
-		if amount0In.Sign() > 0 {
-			amount0 = amount0In
-		} else {
-			amount0 = amount0Out
-		}
-		token0Volume := adjustForDecimals(amount0, pairMetadata.Token0Decimals)
-		volumeInToken1Terms := token0Volume * price
-		return &volumeInToken1Terms
-	}
-
-	// No pricing available
-	return nil
+func toUSD(amount *big.Int, decimals uint8, usdPrice float64) *float64 {
+	v := adjustForDecimals(amount, decimals) * usdPrice
+	return &v
 }
 
 func adjustForDecimals(amount *big.Int, decimals uint8) float64 {
@@ -383,22 +343,20 @@ func adjustForDecimals(amount *big.Int, decimals uint8) float64 {
 	return value
 }
 
-func ratioToFloat64(numerator *big.Int, denominator *big.Int, numeratorDecimals uint8, denominatorDecimals uint8) float64 {
+func ratioToFloat64(numerator, denominator *big.Int, numeratorDecimals, denominatorDecimals uint8) float64 {
 	if denominator.Sign() == 0 {
 		return 0
 	}
 
-	// Adjust for decimal differences: price = (numerator / 10^numDecimals) / (denominator / 10^denomDecimals)
-	// Simplifies to: price = numerator * 10^(denomDecimals - numDecimals) / denominator
+	// price = (numerator / 10^numDec) / (denominator / 10^denomDec)
+	//       = numerator * 10^(denomDec - numDec) / denominator
 	decimalDiff := int(denominatorDecimals) - int(numeratorDecimals)
 
 	adjustedNumerator := new(big.Int).Set(numerator)
 	if decimalDiff > 0 {
-		// Multiply numerator by 10^decimalDiff
 		multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimalDiff)), nil)
 		adjustedNumerator.Mul(adjustedNumerator, multiplier)
 	} else if decimalDiff < 0 {
-		// Multiply denominator by 10^(-decimalDiff)
 		multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-decimalDiff)), nil)
 		denominator = new(big.Int).Mul(denominator, multiplier)
 	}
@@ -408,19 +366,18 @@ func ratioToFloat64(numerator *big.Int, denominator *big.Int, numeratorDecimals 
 	return value
 }
 
-func fetchBlockTimestamp(ctx context.Context, client *ethclient.Client, blockNumber uint64) (int64, error) {
-	blockNum := new(big.Int).SetUint64(blockNumber)
-	header, err := client.HeaderByNumber(ctx, blockNum)
+func fetchBlockTimestamp(ctx context.Context, client EthClient, blockNumber uint64) (int64, error) {
+	header, err := client.HeaderByNumber(ctx, new(big.Int).SetUint64(blockNumber))
 	if err != nil {
-		return 0, &ConnectionError{Message: "rpc block header fetch failed", Cause: err}
+		return 0, &apperr.ConnectionError{Message: "rpc block header fetch failed", Cause: err}
 	}
 	return int64(header.Time), nil
 }
 
-func fetchGasDetails(ctx context.Context, client *ethclient.Client, txHash common.Hash) (int64, string, error) {
+func fetchGasDetails(ctx context.Context, client EthClient, txHash common.Hash) (int64, string, error) {
 	receipt, err := client.TransactionReceipt(ctx, txHash)
 	if err != nil {
-		return 0, "", &ConnectionError{Message: "rpc transaction receipt fetch failed", Cause: err}
+		return 0, "", &apperr.ConnectionError{Message: "rpc transaction receipt fetch failed", Cause: err}
 	}
 
 	gasPrice := receipt.EffectiveGasPrice
@@ -439,7 +396,7 @@ func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddres
 		if ctx.Err() != nil {
 			return PairMetadata{}, ctx.Err()
 		}
-		return PairMetadata{}, &ConnectionError{Message: "rpc pair token0 fetch failed", Cause: err}
+		return PairMetadata{}, &apperr.ConnectionError{Message: "rpc pair token0 fetch failed", Cause: err}
 	}
 	token0Address := *token0Results[0].(*common.Address)
 
@@ -448,7 +405,7 @@ func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddres
 		if ctx.Err() != nil {
 			return PairMetadata{}, ctx.Err()
 		}
-		return PairMetadata{}, &ConnectionError{Message: "rpc pair token1 fetch failed", Cause: err}
+		return PairMetadata{}, &apperr.ConnectionError{Message: "rpc pair token1 fetch failed", Cause: err}
 	}
 	token1Address := *token1Results[0].(*common.Address)
 
@@ -471,46 +428,34 @@ func fetchPairMetadata(ctx context.Context, client *ethclient.Client, pairAddres
 	}, nil
 }
 
-func fetchTokenDecimals(ctx context.Context, client *ethclient.Client, tokenAddress common.Address) (uint8, error) {
+func fetchTokenDecimals(ctx context.Context, client EthClient, tokenAddress common.Address) (uint8, error) {
 	decimalsABI, err := contract.GetABI(contract.ERC20Decimals)
 	if err != nil {
-		return 0, &ConfigError{Message: "failed to get ERC20 decimals ABI", Cause: err}
-	}
-
-	// Create ContractCaller from ethclient
-	contractCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
-		return client.CallContract(ctx, call, blockNumber)
+		return 0, &apperr.ConfigError{Message: "failed to get ERC20 decimals ABI", Cause: err}
 	}
 
 	var decimals uint8
-	if err := contract.CallContract(ctx, contractCaller, tokenAddress, decimalsABI, "decimals", &decimals); err != nil {
-		return 0, &ConnectionError{Message: fmt.Sprintf("rpc token decimals fetch failed for %s", tokenAddress.Hex()), Cause: err}
+	if err := contract.CallContract(ctx, client, tokenAddress, decimalsABI, "decimals", &decimals); err != nil {
+		return 0, &apperr.ConnectionError{Message: fmt.Sprintf("rpc token decimals fetch failed for %s", tokenAddress.Hex()), Cause: err}
 	}
 
 	return decimals, nil
 }
 
-// fetchTokenSymbol retrieves the ERC20 symbol for a token address with caching
-func fetchTokenSymbol(ctx context.Context, client *ethclient.Client, tokenAddress common.Address) string {
-	symbol, found := symbolCache.GetOrFetch(ctx, tokenAddress, func(ctx context.Context, addr common.Address) (string, bool) {
+func (l *Listener) fetchTokenSymbol(ctx context.Context, tokenAddress common.Address) string {
+	symbol, found := l.symbolCache.GetOrFetch(ctx, tokenAddress, func(ctx context.Context, addr common.Address) (string, bool) {
 		symbolABI, err := contract.GetABI(contract.ERC20Symbol)
 		if err != nil {
 			logger.Error("Failed to get symbol ABI", "error", err)
 			return "", false
 		}
 
-		// Create ContractCaller from ethclient
-		contractCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
-			return client.CallContract(ctx, call, blockNumber)
-		}
-
 		var symbol string
-		if err := contract.CallContract(ctx, contractCaller, addr, symbolABI, "symbol", &symbol); err != nil {
+		if err := contract.CallContract(ctx, l.client, addr, symbolABI, "symbol", &symbol); err != nil {
 			logger.Debug("Symbol fetch failed", "token", addr.Hex(), "error", err)
 			return "", false
 		}
 
-		// Validate symbol
 		if symbol == "" || len(symbol) > 20 {
 			logger.Debug("Invalid symbol", "token", addr.Hex(), "symbol", symbol)
 			return "", false

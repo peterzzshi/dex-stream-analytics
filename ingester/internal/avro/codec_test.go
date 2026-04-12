@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewCodec_AllEventTypes(t *testing.T) {
-	for _, eventType := range events.AllEventTypes {
+	for _, eventType := range events.AllEventTypes() {
 		t.Run(string(eventType), func(t *testing.T) {
 			codec, err := NewCodec(eventType)
 			if err != nil {

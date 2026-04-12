@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-func TestMapsTo(t *testing.T) {
+func TestMustEnv(t *testing.T) {
 	os.Setenv("TEST_VAR", "test-value")
 	defer os.Unsetenv("TEST_VAR")
 
-	getter := mapsTo("TEST_VAR")
+	getter := mustEnv("TEST_VAR")
 	value := getter()
 
 	if value != "test-value" {
@@ -17,11 +17,11 @@ func TestMapsTo(t *testing.T) {
 	}
 }
 
-func TestMapsTo_LazyEvaluation(t *testing.T) {
+func TestMustEnv_LazyEvaluation(t *testing.T) {
 	os.Setenv("TEST_VAR", "initial")
 	defer os.Unsetenv("TEST_VAR")
 
-	getter := mapsTo("TEST_VAR")
+	getter := mustEnv("TEST_VAR")
 
 	value1 := getter()
 	if value1 != "initial" {
@@ -35,17 +35,18 @@ func TestMapsTo_LazyEvaluation(t *testing.T) {
 	}
 }
 
-func TestGetEnvVariable_MissingVariable(t *testing.T) {
+func TestMustEnv_MissingVariable(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("Expected panic for missing variable")
 		}
 	}()
 
-	getEnvVariable("NONEXISTENT_VAR")
+	getter := mustEnv("NONEXISTENT_VAR")
+	getter()
 }
 
-func TestGetEnvVariable_WhitespaceOnly(t *testing.T) {
+func TestMustEnv_WhitespaceOnly(t *testing.T) {
 	os.Setenv("TEST_VAR", "   ")
 	defer os.Unsetenv("TEST_VAR")
 
@@ -55,14 +56,16 @@ func TestGetEnvVariable_WhitespaceOnly(t *testing.T) {
 		}
 	}()
 
-	getEnvVariable("TEST_VAR")
+	getter := mustEnv("TEST_VAR")
+	getter()
 }
 
-func TestGetEnvVariable_TrimsWhitespace(t *testing.T) {
+func TestMustEnv_TrimsWhitespace(t *testing.T) {
 	os.Setenv("TEST_VAR", "  value  ")
 	defer os.Unsetenv("TEST_VAR")
 
-	value := getEnvVariable("TEST_VAR")
+	getter := mustEnv("TEST_VAR")
+	value := getter()
 	if value != "value" {
 		t.Errorf("Expected 'value' (trimmed), got '%s'", value)
 	}

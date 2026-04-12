@@ -148,7 +148,7 @@ func TestCallContract_PopulatesResult(t *testing.T) {
 	}
 
 	// Mock ContractCaller that returns encoded uint8 value (18 decimals)
-	mockCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+	mockCaller := ContractCallerFunc(func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 		// Pack the return value: uint8(18)
 		method := decimalsABI.Methods["decimals"]
 		packed, err := method.Outputs.Pack(uint8(18))
@@ -156,7 +156,7 @@ func TestCallContract_PopulatesResult(t *testing.T) {
 			return nil, err
 		}
 		return packed, nil
-	}
+	})
 
 	var result uint8
 	mockAddress := common.HexToAddress("0x1234567890123456789012345678901234567890")
@@ -188,14 +188,14 @@ func TestCallContract_PopulatesStringResult(t *testing.T) {
 	}
 
 	// Mock ContractCaller that returns encoded string value
-	mockCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+	mockCaller := ContractCallerFunc(func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 		method := symbolABI.Methods["symbol"]
 		packed, err := method.Outputs.Pack("USDC")
 		if err != nil {
 			return nil, err
 		}
 		return packed, nil
-	}
+	})
 
 	var result string
 	mockAddress := common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
@@ -226,7 +226,7 @@ func TestCallContract_PopulatesComplexResult(t *testing.T) {
 	}
 
 	// Mock ContractCaller that returns encoded latestRoundData
-	mockCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+	mockCaller := ContractCallerFunc(func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 		method := chainlinkABI.Methods["latestRoundData"]
 		// latestRoundData returns (roundId, answer, startedAt, updatedAt, answeredInRound)
 		packed, err := method.Outputs.Pack(
@@ -240,7 +240,7 @@ func TestCallContract_PopulatesComplexResult(t *testing.T) {
 			return nil, err
 		}
 		return packed, nil
-	}
+	})
 
 	// Define result struct matching Chainlink output
 	type LatestRoundData struct {
@@ -289,9 +289,9 @@ func TestCallContract_ContractCallError(t *testing.T) {
 	}
 
 	// Mock ContractCaller that returns an error
-	mockCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+	mockCaller := ContractCallerFunc(func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 		return nil, fmt.Errorf("execution reverted")
-	}
+	})
 
 	var result uint8
 	mockAddress := common.HexToAddress("0x1234567890123456789012345678901234567890")
@@ -322,9 +322,9 @@ func TestCallContract_InvalidMethodName(t *testing.T) {
 		t.Fatalf("Failed to get decimals ABI: %v", err)
 	}
 
-	mockCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+	mockCaller := ContractCallerFunc(func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 		return []byte{}, nil
-	}
+	})
 
 	var result uint8
 	mockAddress := common.HexToAddress("0x1234567890123456789012345678901234567890")

@@ -12,7 +12,15 @@ import (
 	"ingester/internal/contract"
 )
 
-type PriceFetcher func(ctx context.Context, tokenAddr common.Address) (float64, bool)
+// PriceOracle fetches the USD price for a token address.
+type PriceOracle interface {
+	FetchPrice(ctx context.Context, tokenAddr common.Address) (float64, bool)
+}
+
+// ChainlinkOracle implements PriceOracle using on-chain Chainlink Data Feeds.
+type ChainlinkOracle struct {
+	caller contract.ContractCaller
+}
 
 var stablecoinSet = map[common.Address]bool{
 	common.HexToAddress("0x2791bca1f2de4661ed88a30c99a7a9449aa84174"): true, // USDC
@@ -29,26 +37,11 @@ var chainlinkPriceFeeds = map[common.Address]common.Address{
 	common.HexToAddress("0x8f3cf7ad23cd3cadbD9735aff958023239c6a063"): common.HexToAddress("0x4746dec9e833a82ec7c2c1356372ccf2cfcd2f3d"), // DAI/USD
 }
 
-func GetTokenUSDPrice(
-	ctx context.Context,
-	tokenAddress common.Address,
-	priceCache *cache.Cache[common.Address, float64],
-	priceFetcher PriceFetcher,
-) (float64, bool) {
-	if stablecoinSet[tokenAddress] {
-		return 1.0, true
-	}
-
-	return priceCache.GetOrFetch(ctx, tokenAddress, func(ctx context.Context, addr common.Address) (float64, bool) {
-		return priceFetcher(ctx, addr)
-	})
+func NewChainlinkOracle(caller contract.ContractCaller) *ChainlinkOracle {
+	return &ChainlinkOracle{caller: caller}
 }
 
-func FetchPriceFromChainlink(
-	ctx context.Context,
-	tokenAddress common.Address,
-	callContract contract.ContractCaller,
-) (float64, bool) {
+func (o *ChainlinkOracle) FetchPrice(ctx context.Context, tokenAddress common.Address) (float64, bool) {
 	priceFeedAddress, exists := chainlinkPriceFeeds[tokenAddress]
 	if !exists {
 		return 0, false
@@ -59,29 +52,17 @@ func FetchPriceFromChainlink(
 		return 0, false
 	}
 
-	// Fetch decimals using injected ContractCaller
 	var decimals uint8
-	if err := contract.CallContract(ctx, callContract, priceFeedAddress, aggregatorABI, "decimals", &decimals); err != nil {
+	if err := contract.CallContract(ctx, o.caller, priceFeedAddress, aggregatorABI, "decimals", &decimals); err != nil {
 		return 0, false
 	}
 
-	// Fetch latest round data using injected ContractCaller
-	var result struct {
-		RoundId         *big.Int
-		Answer          *big.Int
-		StartedAt       *big.Int
-		UpdatedAt       *big.Int
-		AnsweredInRound *big.Int
-	}
-
-	// Pack the latestRoundData call
 	data, err := aggregatorABI.Pack("latestRoundData")
 	if err != nil {
 		return 0, false
 	}
 
-	// Make the call using injected function
-	responseData, err := callContract(ctx, ethereum.CallMsg{
+	responseData, err := o.caller.CallContract(ctx, ethereum.CallMsg{
 		To:   &priceFeedAddress,
 		Data: data,
 	}, nil)
@@ -89,7 +70,6 @@ func FetchPriceFromChainlink(
 		return 0, false
 	}
 
-	// Unpack the response
 	values, err := aggregatorABI.Unpack("latestRoundData", responseData)
 	if err != nil {
 		return 0, false
@@ -99,17 +79,31 @@ func FetchPriceFromChainlink(
 		return 0, false
 	}
 
-	result.RoundId = values[0].(*big.Int)
-	result.Answer = values[1].(*big.Int)
-	result.StartedAt = values[2].(*big.Int)
-	result.UpdatedAt = values[3].(*big.Int)
-	result.AnsweredInRound = values[4].(*big.Int)
+	answer := values[1].(*big.Int)
+	updatedAt := values[3].(*big.Int)
 
-	if time.Now().Unix()-result.UpdatedAt.Int64() > 24*60*60 {
+	// Reject stale prices (>24h old)
+	if time.Now().Unix()-updatedAt.Int64() > 24*60*60 {
 		return 0, false
 	}
 
-	return priceWithDecimals(result.Answer, decimals), true
+	return priceWithDecimals(answer, decimals), true
+}
+
+// GetTokenUSDPrice resolves price via: stablecoin shortcut -> cache -> oracle.
+func GetTokenUSDPrice(
+	ctx context.Context,
+	tokenAddress common.Address,
+	priceCache *cache.Cache[common.Address, float64],
+	oracle PriceOracle,
+) (float64, bool) {
+	if stablecoinSet[tokenAddress] {
+		return 1.0, true
+	}
+
+	return priceCache.GetOrFetch(ctx, tokenAddress, func(ctx context.Context, addr common.Address) (float64, bool) {
+		return oracle.FetchPrice(ctx, addr)
+	})
 }
 
 func priceWithDecimals(answer *big.Int, decimals uint8) float64 {
@@ -118,10 +112,4 @@ func priceWithDecimals(answer *big.Int, decimals uint8) float64 {
 	price.Quo(price, divisor)
 	priceFloat, _ := price.Float64()
 	return priceFloat
-}
-
-func CreatePriceFetcherWithChainlink(callContract contract.ContractCaller) PriceFetcher {
-	return func(ctx context.Context, tokenAddr common.Address) (float64, bool) {
-		return FetchPriceFromChainlink(ctx, tokenAddr, callContract)
-	}
 }

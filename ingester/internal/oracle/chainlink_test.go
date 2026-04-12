@@ -11,16 +11,13 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"ingester/internal/cache"
+	"ingester/internal/contract"
+	"ingester/internal/oracle/mocks"
 )
 
 func TestGetTokenUSDPrice_StablecoinOptimization(t *testing.T) {
 	priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
-
-	fetcherCalled := false
-	mockFetcher := func(ctx context.Context, addr common.Address) (float64, bool) {
-		fetcherCalled = true
-		return 0, false
-	}
+	mockOracle := mocks.NewMockPriceOracle(t)
 
 	stablecoins := []struct {
 		name string
@@ -33,9 +30,8 @@ func TestGetTokenUSDPrice_StablecoinOptimization(t *testing.T) {
 
 	for _, tt := range stablecoins {
 		t.Run(tt.name, func(t *testing.T) {
-			fetcherCalled = false
 			addr := common.HexToAddress(tt.addr)
-			price, found := GetTokenUSDPrice(context.Background(), addr, priceCache, mockFetcher)
+			price, found := GetTokenUSDPrice(context.Background(), addr, priceCache, mockOracle)
 
 			if !found {
 				t.Errorf("Stablecoin %s should always be found", tt.name)
@@ -43,54 +39,19 @@ func TestGetTokenUSDPrice_StablecoinOptimization(t *testing.T) {
 			if price != 1.0 {
 				t.Errorf("Stablecoin %s should be $1.0, got %f", tt.name, price)
 			}
-			if fetcherCalled {
-				t.Errorf("Stablecoin %s should not call fetcher (optimization)", tt.name)
-			}
 		})
 	}
+	mockOracle.AssertNotCalled(t, "FetchPrice")
 }
 
 func TestGetTokenUSDPrice_NonStablecoin(t *testing.T) {
 	priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
-
-	nonStablecoins := []string{
-		"0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", // WMATIC
-		"0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", // WETH
-	}
-
-	for _, addrStr := range nonStablecoins {
-		addr := common.HexToAddress(addrStr)
-
-		fetcherCalled := false
-		mockFetcher := func(ctx context.Context, addr common.Address) (float64, bool) {
-			fetcherCalled = true
-			return 0.85, true
-		}
-
-		price, found := GetTokenUSDPrice(context.Background(), addr, priceCache, mockFetcher)
-
-		if !fetcherCalled {
-			t.Errorf("Non-stablecoin %s should call fetcher", addrStr)
-		}
-		if !found {
-			t.Error("Expected to find price")
-		}
-		if price != 0.85 {
-			t.Errorf("Expected $0.85, got $%f", price)
-		}
-	}
-}
-
-func TestGetTokenUSDPrice_WithMockFetcher(t *testing.T) {
-	priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
-
-	// Simple mock fetcher - just a function!
-	mockFetcher := func(ctx context.Context, addr common.Address) (float64, bool) {
-		return 0.85, true // Return $0.85 for all tokens
-	}
+	mockOracle := mocks.NewMockPriceOracle(t)
 
 	wmatic := common.HexToAddress("0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270")
-	price, found := GetTokenUSDPrice(context.Background(), wmatic, priceCache, mockFetcher)
+	mockOracle.EXPECT().FetchPrice(context.Background(), wmatic).Return(0.85, true).Once()
+
+	price, found := GetTokenUSDPrice(context.Background(), wmatic, priceCache, mockOracle)
 
 	if !found {
 		t.Error("Expected to find price")
@@ -102,43 +63,28 @@ func TestGetTokenUSDPrice_WithMockFetcher(t *testing.T) {
 
 func TestGetTokenUSDPrice_Caching(t *testing.T) {
 	priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
-
-	// Mock fetcher that counts calls
-	callCount := 0
-	mockFetcher := func(ctx context.Context, addr common.Address) (float64, bool) {
-		callCount++
-		return 0.85, true
-	}
+	mockOracle := mocks.NewMockPriceOracle(t)
 
 	wmatic := common.HexToAddress("0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270")
+	mockOracle.EXPECT().FetchPrice(context.Background(), wmatic).Return(0.85, true).Once()
 
-	// First call
-	price1, _ := GetTokenUSDPrice(context.Background(), wmatic, priceCache, mockFetcher)
-	if callCount != 1 {
-		t.Errorf("Expected 1 fetcher call, got %d", callCount)
-	}
-
-	// Second call should hit cache
-	price2, _ := GetTokenUSDPrice(context.Background(), wmatic, priceCache, mockFetcher)
-	if callCount != 1 {
-		t.Errorf("Cache not working: expected still 1 call, got %d", callCount)
-	}
+	price1, _ := GetTokenUSDPrice(context.Background(), wmatic, priceCache, mockOracle)
+	price2, _ := GetTokenUSDPrice(context.Background(), wmatic, priceCache, mockOracle)
 
 	if price1 != price2 {
 		t.Errorf("Prices should match: %f vs %f", price1, price2)
 	}
+	mockOracle.AssertNumberOfCalls(t, "FetchPrice", 1)
 }
 
 func TestGetTokenUSDPrice_UnknownToken(t *testing.T) {
 	priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
-
-	// Mock fetcher that returns not found
-	mockFetcher := func(ctx context.Context, addr common.Address) (float64, bool) {
-		return 0, false
-	}
+	mockOracle := mocks.NewMockPriceOracle(t)
 
 	unknown := common.HexToAddress("0x0000000000000000000000000000000000000001")
-	price, found := GetTokenUSDPrice(context.Background(), unknown, priceCache, mockFetcher)
+	mockOracle.EXPECT().FetchPrice(context.Background(), unknown).Return(0.0, false).Once()
+
+	price, found := GetTokenUSDPrice(context.Background(), unknown, priceCache, mockOracle)
 
 	if found {
 		t.Error("Unknown token should not be found")
@@ -148,28 +94,17 @@ func TestGetTokenUSDPrice_UnknownToken(t *testing.T) {
 	}
 }
 
-func TestCreatePriceFetcherWithChainlink(t *testing.T) {
-	// Simple mock ContractCaller - just a function!
-	mockCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
-		// This would return properly encoded data in real scenario
-		return nil, fmt.Errorf("not implemented in test")
-	}
+func TestChainlinkOracle_FetchPrice_RpcError(t *testing.T) {
+	caller := contract.ContractCallerFunc(func(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+		return nil, fmt.Errorf("rpc error")
+	})
 
-	// Create fetcher by partially applying the ContractCaller
-	fetcher := CreatePriceFetcherWithChainlink(mockCaller)
-
-	// Verify it's a function
-	if fetcher == nil {
-		t.Error("Expected non-nil fetcher")
-	}
-
-	// Verify it returns the right type
+	o := NewChainlinkOracle(caller)
 	wmatic := common.HexToAddress("0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270")
-	_, found := fetcher(context.Background(), wmatic)
+	_, found := o.FetchPrice(context.Background(), wmatic)
 
-	// Should not find since mock doesn't implement proper encoding
 	if found {
-		t.Error("Mock fetcher should return not found")
+		t.Error("RPC error should cause not-found")
 	}
 }
 
@@ -195,84 +130,36 @@ func TestPriceWithDecimals(t *testing.T) {
 	}
 }
 
-func TestFetchPriceFromChainlink_MockCaller(t *testing.T) {
-	// Test that FetchPriceFromChainlink properly uses the injected ContractCaller
-	callCount := 0
-	mockCaller := func(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
-		callCount++
-		// Return error to simulate failure
-		return nil, fmt.Errorf("mock error")
-	}
-
+func TestGetTokenUSDPrice_MultipleBehaviors(t *testing.T) {
 	wmatic := common.HexToAddress("0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270")
-	price, found := FetchPriceFromChainlink(context.Background(), wmatic, mockCaller)
 
-	// Should not find due to mock error
-	if found {
-		t.Error("Expected not found due to mock error")
-	}
-	if price != 0 {
-		t.Errorf("Expected price 0, got %f", price)
-	}
-
-	// Verify the mock was called (at least once for decimals)
-	if callCount == 0 {
-		t.Error("Expected mock caller to be invoked")
-	}
-}
-
-func TestGetTokenUSDPrice_BehaviorInjection(t *testing.T) {
-	// Test with different behavior functions
-	behaviors := []struct {
-		name     string
-		fetcher  PriceFetcher
-		expected float64
-		found    bool
+	tests := []struct {
+		name          string
+		price         float64
+		found         bool
+		expectedPrice float64
+		expectedFound bool
 	}{
-		{
-			name: "Always returns $1.50",
-			fetcher: func(ctx context.Context, addr common.Address) (float64, bool) {
-				return 1.50, true
-			},
-			expected: 1.50,
-			found:    true,
-		},
-		{
-			name: "Always returns not found",
-			fetcher: func(ctx context.Context, addr common.Address) (float64, bool) {
-				return 0, false
-			},
-			expected: 0,
-			found:    false,
-		},
-		{
-			name: "Returns price based on address",
-			fetcher: func(ctx context.Context, addr common.Address) (float64, bool) {
-				if addr.Hex() == "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270" {
-					return 0.85, true
-				}
-				return 0, false
-			},
-			expected: 0.85,
-			found:    true,
-		},
+		{"Returns $1.50", 1.50, true, 1.50, true},
+		{"Returns not found", 0, false, 0, false},
+		{"Returns $0.85", 0.85, true, 0.85, true},
 	}
 
-	wmatic := common.HexToAddress("0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270")
-
-	for _, tt := range behaviors {
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clear cache for each test
 			priceCache := cache.NewCache[common.Address, float64](5 * time.Minute)
+			mockOracle := mocks.NewMockPriceOracle(t)
+			mockOracle.EXPECT().FetchPrice(context.Background(), wmatic).Return(tt.price, tt.found).Maybe()
 
-			price, found := GetTokenUSDPrice(context.Background(), wmatic, priceCache, tt.fetcher)
+			price, found := GetTokenUSDPrice(context.Background(), wmatic, priceCache, mockOracle)
 
-			if found != tt.found {
-				t.Errorf("Expected found=%v, got %v", tt.found, found)
+			if found != tt.expectedFound {
+				t.Errorf("Expected found=%v, got %v", tt.expectedFound, found)
 			}
-			if price != tt.expected {
-				t.Errorf("Expected price=%f, got %f", tt.expected, price)
+			if price != tt.expectedPrice {
+				t.Errorf("Expected price=%f, got %f", tt.expectedPrice, price)
 			}
 		})
 	}
 }
+

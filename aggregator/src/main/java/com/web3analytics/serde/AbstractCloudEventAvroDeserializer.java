@@ -13,18 +13,19 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import java.io.IOException;
 
 /**
- * Shared CloudEvent + Avro deserialization flow.
- * Concrete deserializers provide only schema path and record mapping strategy.
+ * Template for CloudEvent envelope unwrap + Avro binary decode.
+ * Subclasses provide only the Avro-to-model mapping.
  */
 public abstract class AbstractCloudEventAvroDeserializer<T, S extends SpecificRecord> implements DeserializationSchema<T> {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    private final SpecificDatumReader<S> reader;
+    private final Class<S> recordClass;
     private final TypeInformation<T> producedType;
+    private transient SpecificDatumReader<S> reader;
     private transient BinaryDecoder decoder;
 
     protected AbstractCloudEventAvroDeserializer(Class<S> recordClass, Class<T> producedClass) {
-        this.reader = new SpecificDatumReader<>(recordClass);
+        this.recordClass = recordClass;
         this.producedType = TypeInformation.of(producedClass);
     }
 
@@ -40,6 +41,9 @@ public abstract class AbstractCloudEventAvroDeserializer<T, S extends SpecificRe
         }
 
         try {
+            if (reader == null) {
+                reader = new SpecificDatumReader<>(recordClass);
+            }
             decoder = DecoderFactory.get().binaryDecoder(payload, decoder);
             S record = reader.read(null, decoder);
             return map(record);
@@ -51,12 +55,8 @@ public abstract class AbstractCloudEventAvroDeserializer<T, S extends SpecificRe
     protected abstract T map(S record);
 
     @Override
-    public final boolean isEndOfStream(T nextElement) {
-        return false;
-    }
+    public final boolean isEndOfStream(T nextElement) { return false; }
 
     @Override
-    public final TypeInformation<T> getProducedType() {
-        return producedType;
-    }
+    public final TypeInformation<T> getProducedType() { return producedType; }
 }

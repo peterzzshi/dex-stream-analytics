@@ -37,7 +37,7 @@ func CreateCodecMap() (CodecMap, error) {
 	return codecs, nil
 }
 
-func DefaultTopicMapper() TopicMapper {
+func TopicMapperFromEnv() TopicMapper {
 	return func(eventType events.EventType) (string, error) {
 		switch eventType {
 		case events.EventTypeSwap:
@@ -50,7 +50,7 @@ func DefaultTopicMapper() TopicMapper {
 	}
 }
 
-func DefaultURLBuilder() URLBuilder {
+func DaprPublishURL() URLBuilder {
 	return func(topic string) string {
 		return fmt.Sprintf("http://%s:%s/v1.0/publish/%s/%s",
 			config.GetDaprHost(),

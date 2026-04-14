@@ -44,7 +44,7 @@ All schemas defined in `schemas/avro/` — single source of truth, embedded at b
 1. **Immutability**: All fields are read-only after creation
 2. **Optionality**: Only truly optional fields use `["null", "type"]` unions
 3. **Precision**: Financial values use `string` to avoid floating-point errors
-4. **Timestamps**: Milliseconds since epoch (`long`)
+4. **Timestamps**: Block timestamps in seconds since epoch (`long`); window/processing timestamps in milliseconds
 5. **Identifiers**: UUIDs for eventId, addresses as hex strings with 0x prefix
 
 ---
@@ -68,7 +68,7 @@ All schemas defined in `schemas/avro/` — single source of truth, embedded at b
     // Event Identification
     {"name": "eventId", "type": "string", "doc": "UUID for deduplication"},
     {"name": "blockNumber", "type": "long", "doc": "Ethereum block number"},
-    {"name": "blockTimestamp", "type": "long", "doc": "Block timestamp (ms since epoch)"},
+    {"name": "blockTimestamp", "type": "long", "doc": "Block timestamp (seconds since epoch)"},
     {"name": "transactionHash", "type": "string", "doc": "Transaction hash (0x...)"},
     {"name": "logIndex", "type": "int", "doc": "Log index within transaction"},
     
@@ -86,11 +86,13 @@ All schemas defined in `schemas/avro/` — single source of truth, embedded at b
     {"name": "amount1In", "type": "string", "doc": "Token1 input amount (Wei)"},
     {"name": "amount0Out", "type": "string", "doc": "Token0 output amount (Wei)"},
     {"name": "amount1Out", "type": "string", "doc": "Token1 output amount (Wei)"},
-    {"name": "price", "type": "string", "doc": "Execution price (token1/token0)"},
+    {"name": "price", "type": "double", "doc": "Execution price (token1/token0)"},
+    {"name": "volumeUSD", "type": ["null", "double"], "default": null, "doc": "USD volume via Chainlink oracle"},
     
     // Gas Metrics
     {"name": "gasUsed", "type": "long", "doc": "Gas consumed by transaction"},
-    {"name": "gasPrice", "type": "string", "doc": "Gas price in Wei"}
+    {"name": "gasPrice", "type": "string", "doc": "Gas price in Wei"},
+    {"name": "eventTimestamp", "type": "long", "doc": "Timestamp when captured by producer"}
   ]
 }
 ```
@@ -208,6 +210,24 @@ All schemas defined in `schemas/avro/` — single source of truth, embedded at b
 
 ---
 
+### TransferEvent.avsc
+
+**Purpose:** LP token movement for pair contract token correlation
+
+**Topic:** `dex-liquidity-events` (heterogeneous with MintEvent and BurnEvent)
+
+**Key Fields:**
+- **from**: LP token sender address
+- **to**: LP token receiver address
+- **value**: LP token amount moved (Wei string)
+
+**Analytics Use Cases:**
+- LP token accounting correlation with Mint/Burn activity
+- Whale LP tracking (large token transfers)
+- LP token distribution analysis
+
+---
+
 ## Output Analytics Schema
 
 ### AggregatedAnalytics.avsc
@@ -224,34 +244,30 @@ All schemas defined in `schemas/avro/` — single source of truth, embedded at b
   "name": "AggregatedAnalytics",
   "namespace": "com.web3analytics.analytics",
   "fields": [
-    // Window Identification
-    {"name": "windowId", "type": "string", "doc": "UUID for window"},
+    {"name": "windowId", "type": "string", "doc": "Deterministic window key (pair:start:end)"},
     {"name": "windowStart", "type": "long", "doc": "Window start (ms epoch)"},
     {"name": "windowEnd", "type": "long", "doc": "Window end (ms epoch)"},
     {"name": "pairAddress", "type": "string", "doc": "DEX pair aggregated"},
-    
-    // Price Metrics
-    {"name": "twap", "type": "double", "doc": "Time-weighted average price"},
+    {"name": "token0Symbol", "type": ["null", "string"], "default": null},
+    {"name": "token1Symbol", "type": ["null", "string"], "default": null},
+    {"name": "twap", "type": "double", "doc": "Volume-weighted average price"},
     {"name": "openPrice", "type": "double", "doc": "First swap price in window"},
     {"name": "closePrice", "type": "double", "doc": "Last swap price in window"},
     {"name": "highPrice", "type": "double", "doc": "Highest swap price"},
     {"name": "lowPrice", "type": "double", "doc": "Lowest swap price"},
     {"name": "priceVolatility", "type": "double", "doc": "(high - low) / twap"},
-    
-    // Volume Metrics
-    {"name": "totalVolume0", "type": "double", "doc": "Total token0 volume (converted from Wei)"},
-    {"name": "totalVolume1", "type": "double", "doc": "Total token1 volume (converted from Wei)"},
-    {"name": "swapCount", "type": "int", "doc": "Number of swaps in window"},
-    {"name": "uniqueTraders", "type": "int", "doc": "Distinct sender addresses"},
-    
-    // Pattern Detection
-    {"name": "arbitrageCount", "type": "int", "doc": "Swaps where sender == recipient"},
-    {"name": "repeatedTraders", "type": "int", "doc": "Traders with 2+ swaps in window"},
-    {"name": "largestSwapAddress", "type": ["null", "string"], "default": null, "doc": "Address of largest swap"},
-    
-    // Gas Metrics
-    {"name": "totalGasUsed", "type": "long", "doc": "Cumulative gas consumed"},
-    {"name": "averageGasPrice", "type": "double", "doc": "Mean gas price (Gwei)"}
+    {"name": "totalVolume0", "type": "string", "doc": "Total token0 volume (Wei string)"},
+    {"name": "totalVolume1", "type": "string", "doc": "Total token1 volume (Wei string)"},
+    {"name": "volumeUSD", "type": ["null", "double"], "default": null},
+    {"name": "swapCount", "type": "int"},
+    {"name": "uniqueTraders", "type": "int"},
+    {"name": "largestSwapValue", "type": "string"},
+    {"name": "largestSwapAddress", "type": "string"},
+    {"name": "totalGasUsed", "type": "long"},
+    {"name": "averageGasPrice", "type": "string", "doc": "Mean gas price (Wei)"},
+    {"name": "arbitrageCount", "type": "int"},
+    {"name": "repeatedTraders", "type": {"type": "array", "items": "string"}},
+    {"name": "processedAt", "type": "long"}
   ]
 }
 ```

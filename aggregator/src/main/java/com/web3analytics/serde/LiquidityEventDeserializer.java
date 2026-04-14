@@ -16,7 +16,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import java.io.IOException;
 
 /**
- * Deserializes heterogeneous liquidity stream (MintEvent + BurnEvent).
+ * Routes the heterogeneous liquidity topic by CloudEvent type before Avro decode.
  */
 public class LiquidityEventDeserializer implements DeserializationSchema<DexEvent> {
     private static final String EVENT_TYPE_MINT = "com.dex.events.mint";
@@ -24,19 +24,13 @@ public class LiquidityEventDeserializer implements DeserializationSchema<DexEven
     private static final String EVENT_TYPE_TRANSFER = "com.dex.events.transfer";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    private final SpecificDatumReader<com.web3analytics.events.MintEvent> mintReader;
-    private final SpecificDatumReader<com.web3analytics.events.BurnEvent> burnReader;
-    private final SpecificDatumReader<com.web3analytics.events.TransferEvent> transferReader;
+    private transient SpecificDatumReader<com.web3analytics.events.MintEvent> mintReader;
+    private transient SpecificDatumReader<com.web3analytics.events.BurnEvent> burnReader;
+    private transient SpecificDatumReader<com.web3analytics.events.TransferEvent> transferReader;
 
     private transient BinaryDecoder mintDecoder;
     private transient BinaryDecoder burnDecoder;
     private transient BinaryDecoder transferDecoder;
-
-    public LiquidityEventDeserializer() {
-        this.mintReader = new SpecificDatumReader<>(com.web3analytics.events.MintEvent.class);
-        this.burnReader = new SpecificDatumReader<>(com.web3analytics.events.BurnEvent.class);
-        this.transferReader = new SpecificDatumReader<>(com.web3analytics.events.TransferEvent.class);
-    }
 
     @Override
     public DexEvent deserialize(byte[] message) throws IOException {
@@ -53,7 +47,6 @@ public class LiquidityEventDeserializer implements DeserializationSchema<DexEven
                     "Invalid CloudEvent: missing type field");
         }
 
-        // Pattern match on CloudEvent type BEFORE Avro deserialization.
         return switch (eventType) {
             case EVENT_TYPE_MINT -> decodeMint(payload);
             case EVENT_TYPE_BURN -> decodeBurn(payload);
@@ -64,91 +57,59 @@ public class LiquidityEventDeserializer implements DeserializationSchema<DexEven
     }
 
     @Override
-    public boolean isEndOfStream(DexEvent nextElement) {
-        return false;
-    }
+    public boolean isEndOfStream(DexEvent nextElement) { return false; }
 
     @Override
-    public TypeInformation<DexEvent> getProducedType() {
-        return TypeInformation.of(DexEvent.class);
-    }
+    public TypeInformation<DexEvent> getProducedType() { return TypeInformation.of(DexEvent.class); }
 
     private MintEvent decodeMint(byte[] payload) throws IOException {
         try {
+            if (mintReader == null) {
+                mintReader = new SpecificDatumReader<>(com.web3analytics.events.MintEvent.class);
+            }
             mintDecoder = DecoderFactory.get().binaryDecoder(payload, mintDecoder);
-            com.web3analytics.events.MintEvent record = mintReader.read(null, mintDecoder);
+            com.web3analytics.events.MintEvent r = mintReader.read(null, mintDecoder);
             return new MintEvent(
-                    record.getEventId(),
-                    record.getBlockNumber(),
-                    record.getBlockTimestamp(),
-                    record.getTransactionHash(),
-                    record.getLogIndex(),
-                    record.getPairAddress(),
-                    record.getToken0(),
-                    record.getToken1(),
-                    record.getToken0Symbol(),
-                    record.getToken1Symbol(),
-                    record.getSender(),
-                    record.getAmount0(),
-                    record.getAmount1(),
-                    record.getEventTimestamp()
-            );
+                    r.getEventId(), r.getBlockNumber(), r.getBlockTimestamp(),
+                    r.getTransactionHash(), r.getLogIndex(), r.getPairAddress(),
+                    r.getToken0(), r.getToken1(), r.getToken0Symbol(), r.getToken1Symbol(),
+                    r.getSender(), r.getAmount0(), r.getAmount1(), r.getEventTimestamp());
         } catch (Exception err) {
-            throw new DeserializationException(DeserializationErrorCategory.AVRO_DECODE,
-                    "Failed to decode MintEvent", err);
+            throw new DeserializationException(DeserializationErrorCategory.AVRO_DECODE, "Failed to decode MintEvent", err);
         }
     }
 
     private BurnEvent decodeBurn(byte[] payload) throws IOException {
         try {
+            if (burnReader == null) {
+                burnReader = new SpecificDatumReader<>(com.web3analytics.events.BurnEvent.class);
+            }
             burnDecoder = DecoderFactory.get().binaryDecoder(payload, burnDecoder);
-            com.web3analytics.events.BurnEvent record = burnReader.read(null, burnDecoder);
+            com.web3analytics.events.BurnEvent r = burnReader.read(null, burnDecoder);
             return new BurnEvent(
-                    record.getEventId(),
-                    record.getBlockNumber(),
-                    record.getBlockTimestamp(),
-                    record.getTransactionHash(),
-                    record.getLogIndex(),
-                    record.getPairAddress(),
-                    record.getToken0(),
-                    record.getToken1(),
-                    record.getToken0Symbol(),
-                    record.getToken1Symbol(),
-                    record.getSender(),
-                    record.getRecipient(),
-                    record.getAmount0(),
-                    record.getAmount1(),
-                    record.getEventTimestamp()
-            );
+                    r.getEventId(), r.getBlockNumber(), r.getBlockTimestamp(),
+                    r.getTransactionHash(), r.getLogIndex(), r.getPairAddress(),
+                    r.getToken0(), r.getToken1(), r.getToken0Symbol(), r.getToken1Symbol(),
+                    r.getSender(), r.getRecipient(), r.getAmount0(), r.getAmount1(), r.getEventTimestamp());
         } catch (Exception err) {
-            throw new DeserializationException(DeserializationErrorCategory.AVRO_DECODE,
-                    "Failed to decode BurnEvent", err);
+            throw new DeserializationException(DeserializationErrorCategory.AVRO_DECODE, "Failed to decode BurnEvent", err);
         }
     }
 
     private TransferEvent decodeTransfer(byte[] payload) throws IOException {
         try {
+            if (transferReader == null) {
+                transferReader = new SpecificDatumReader<>(com.web3analytics.events.TransferEvent.class);
+            }
             transferDecoder = DecoderFactory.get().binaryDecoder(payload, transferDecoder);
-            com.web3analytics.events.TransferEvent record = transferReader.read(null, transferDecoder);
+            com.web3analytics.events.TransferEvent r = transferReader.read(null, transferDecoder);
             return new TransferEvent(
-                    record.getEventId(),
-                    record.getBlockNumber(),
-                    record.getBlockTimestamp(),
-                    record.getTransactionHash(),
-                    record.getLogIndex(),
-                    record.getPairAddress(),
-                    record.getToken0(),
-                    record.getToken1(),
-                    record.getToken0Symbol(),
-                    record.getToken1Symbol(),
-                    record.getFrom(),
-                    record.getTo(),
-                    record.getValue(),
-                    record.getEventTimestamp()
-            );
+                    r.getEventId(), r.getBlockNumber(), r.getBlockTimestamp(),
+                    r.getTransactionHash(), r.getLogIndex(), r.getPairAddress(),
+                    r.getToken0(), r.getToken1(), r.getToken0Symbol(), r.getToken1Symbol(),
+                    r.getFrom(), r.getTo(), r.getValue(), r.getEventTimestamp());
         } catch (Exception err) {
-            throw new DeserializationException(DeserializationErrorCategory.AVRO_DECODE,
-                    "Failed to decode TransferEvent", err);
+            throw new DeserializationException(DeserializationErrorCategory.AVRO_DECODE, "Failed to decode TransferEvent", err);
         }
     }
 }

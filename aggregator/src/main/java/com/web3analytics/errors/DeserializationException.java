@@ -1,8 +1,8 @@
 package com.web3analytics.errors;
 
 /**
- * Category-based deserialization exception.
- * Use pattern matching on category to decide retry/crash/continue strategy.
+ * Carries a {@link DeserializationErrorCategory} so downstream handlers
+ * can decide retry/skip/crash strategy per category.
  */
 public final class DeserializationException extends RuntimeException {
     private final DeserializationErrorCategory category;

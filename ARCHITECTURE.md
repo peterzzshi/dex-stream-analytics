@@ -10,7 +10,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
         ▼ WebSocket subscription
 ┌──────────────────────────────────────────────┐
 │   event-ingester (Go + DAPR sidecar)         │
-│   - Listen to Swap/Mint/Burn events          │
+│   - Listen to Swap/Mint/Burn/Transfer events  │
 │   - Enrich with RPC data + Chainlink oracle  │
 │   - Transform to Avro                        │
 │   - Route by event type                      │
@@ -27,7 +27,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
         │
         ├→ SwapEvent → Kafka "dex-trading-events" (high freq ~100s/min)
         │
-        └→ Mint/BurnEvent → Kafka "dex-liquidity-events" (low freq ~10s/min)
+        └→ Mint/Burn/TransferEvent → Kafka "dex-liquidity-events" (low freq ~10s/min)
         │
         ▼ Native Kafka connector (NOT DAPR)
 ┌──────────────────────────────────────────────┐
@@ -42,7 +42,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
         │   • Metrics: TWAP, OHLC, volume USD, trader activity
         │
         ├→ Liquidity Analytics (1-hour windows) → Kafka "dex-liquidity-analytics" [in progress]
-        │   • Source: MintEvent + BurnEvent (from dex-liquidity-events)
+        │   • Source: Mint + Burn + Transfer (from dex-liquidity-events)
         │   • Metrics: LP flows, TVL changes, provider behavior
         │
         └→ Pattern Analytics (session windows) → Kafka "dex-pattern-analytics" [planned]
@@ -66,7 +66,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
 | Input Topic            | Event Types               | Output Topic                        | Window          | Analytics Purpose                                      |
 |------------------------|---------------------------|-------------------------------------|-----------------|--------------------------------------------------------|
 | `dex-trading-events`   | **SwapEvent** only        | `dex-trading-analytics`             | 5-min tumbling  | Trading activity: TWAP, OHLC, volume, trader behavior  |
-| `dex-liquidity-events` | **MintEvent + BurnEvent** | `dex-liquidity-analytics` [in progress] | 1-hour tumbling | LP behavior: TVL changes, provider flows, churn rate   |
+| `dex-liquidity-events` | **Mint + Burn + Transfer** | `dex-liquidity-analytics`           | 1-hour tumbling | LP behavior: TVL changes, provider flows, churn rate   |
 | Both topics            | **All events**            | `dex-pattern-analytics` [planned]   | Session windows | Cross-event patterns: MEV, sandwich attacks, arbitrage |
 
 **Why This Design:**
@@ -98,7 +98,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
 
 ### 2. Heterogeneous Liquidity Topic
 
-**Decision:** MintEvent + BurnEvent share one topic despite different schemas.
+**Decision:** MintEvent + BurnEvent + TransferEvent share one topic despite different schemas.
 
 **Rationale:**
 - Semantically related: both are LP operations
@@ -147,7 +147,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
 
 | Event                     | Reason                                           | Future Consideration                    |
 |---------------------------|--------------------------------------------------|-----------------------------------------|
-| **Transfer (ERC-20)**     | Extremely high volume (every token movement)     | 🔮 Phase 2: LP token amount correlation |
+| **Transfer (ERC-20)**     | LP token transfers ingested for correlation       | Currently captured on liquidity topic   |
 | **PairCreated (Factory)** | Different contract (Uniswap V2 Factory)          | 🔮 Phase 2: Multi-pool discovery        |
 | **Flash loans**           | Derived pattern (large swap + immediate reverse) | 🔮 Phase 3: Session window detection    |
 
@@ -249,7 +249,7 @@ Polygon Blockchain (Uniswap V2 Pairs)
 
 **Responsibilities:**
 1. Consume from Kafka topics (`dex-trading-events`, `dex-liquidity-events`)
-2. Deserialize Avro events (SwapEvent, MintEvent, BurnEvent)
+2. Deserialize Avro events (SwapEvent, MintEvent, BurnEvent, TransferEvent)
 3. Apply event-time watermarks (60s bounded out-of-orderness)
 4. Execute windowed aggregations (5-min trading windows, 1-hour liquidity windows in progress)
 5. Publish results to output topics (Avro contract)
@@ -314,7 +314,7 @@ GET /analytics/summary
 | Topic | Purpose | Schemas | Partitions | Retention |
 |-------|---------|---------|------------|-----------|
 | `dex-trading-events` | High-frequency swap events | SwapEvent | 6 | 7 days |
-| `dex-liquidity-events` | LP provision/removal (heterogeneous) | MintEvent, BurnEvent | 6 | 30 days |
+| `dex-liquidity-events` | LP provision/removal (heterogeneous) | MintEvent, BurnEvent, TransferEvent | 6 | 30 days |
 | `dex-trading-analytics` | 5-min trading aggregations | AggregatedAnalytics | 3 | 30 days |
 | `dex-liquidity-analytics` | 1-hour LP aggregations | LiquidityAnalytics | 3 | 90 days |
 | `dex-pattern-analytics` | MEV/pattern detection | PatternAnalytics | 3 | 30 days |

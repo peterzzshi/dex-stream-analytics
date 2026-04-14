@@ -2,10 +2,6 @@ package com.web3analytics.serde;
 
 import com.web3analytics.models.SwapEvent;
 
-/**
- * Deserializes SwapEvent from Kafka payload.
- * Expects Dapr CloudEvents envelopes with Avro payload in data/data_base64.
- */
 public class SwapEventDeserializer extends AbstractCloudEventAvroDeserializer<SwapEvent, com.web3analytics.events.SwapEvent> {
 
     public SwapEventDeserializer() {

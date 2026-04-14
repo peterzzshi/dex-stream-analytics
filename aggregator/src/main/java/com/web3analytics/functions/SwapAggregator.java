@@ -5,22 +5,20 @@ import com.web3analytics.models.SwapEvent;
 import com.web3analytics.types.TriState;
 import org.apache.flink.api.common.functions.AggregateFunction;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
+import static com.web3analytics.functions.Web3Math.normalizeAddress;
+import static com.web3analytics.functions.Web3Math.parseBigInt;
+import static com.web3analytics.functions.Web3Math.round8;
+
 /**
- * Incremental aggregation logic for SwapEvent windows.
- *
- * This function computes pair-level trading metrics while events stream in.
- * Window metadata (authoritative window boundaries and deterministic window id)
- * is attached later by ProcessWindowFunction.
+ * Incremental swap aggregation. Window metadata is attached later by
+ * {@link SwapAnalyticsWindowFunction}.
  */
 public class SwapAggregator
         implements AggregateFunction<SwapEvent, SwapAggregator.Accumulator, AggregatedAnalytics> {
@@ -30,11 +28,10 @@ public class SwapAggregator
         TriState<String> token0Symbol = TriState.undefined();
         TriState<String> token1Symbol = TriState.undefined();
 
-        // TWAP: sum(price * volume) / sum(volume)
         double weightedPriceSum = 0.0;
         double totalVolume = 0.0;
 
-        // Event-time accurate OHLC (with logIndex tie-breaker)
+        // OHLC with logIndex tie-breaker for same-block ordering
         double openPrice = Double.NaN;
         long openEventTime = Long.MAX_VALUE;
         int openLogIndex = Integer.MAX_VALUE;
@@ -97,8 +94,8 @@ public class SwapAggregator
         long eventTime = event.getEventTimeMillis();
         int logIndex = event.logIndex();
 
-        updateOpen(acc, price, eventTime, logIndex);
-        updateClose(acc, price, eventTime, logIndex);
+        applyOpen(acc, price, eventTime, logIndex);
+        applyClose(acc, price, eventTime, logIndex);
 
         acc.weightedPriceSum += price * swapVolume;
         acc.totalVolume += swapVolume;
@@ -129,8 +126,8 @@ public class SwapAggregator
         acc.totalGasUsed += event.gasUsed();
         acc.totalGasPrice = acc.totalGasPrice.add(parseBigInt(event.gasPrice()));
 
-        LargestSwapCandidate candidate = LargestSwapCandidate.fromEvent(event, vol0, sender);
-        acc.largestSwap = chooseLargest(acc.largestSwap, candidate);
+        acc.largestSwap = chooseLargest(acc.largestSwap,
+                LargestSwapCandidate.fromEvent(event, vol0, sender));
 
         acc.swapCount++;
         return acc;
@@ -165,12 +162,12 @@ public class SwapAggregator
                 acc.pairAddress,
                 toNullableString(acc.token0Symbol),
                 toNullableString(acc.token1Symbol),
-                round(twap),
-                round(acc.openPrice),
-                round(acc.closePrice),
-                round(acc.highPrice),
-                round(acc.lowPrice),
-                round(priceVolatility),
+                round8(twap),
+                round8(acc.openPrice),
+                round8(acc.closePrice),
+                round8(acc.highPrice),
+                round8(acc.lowPrice),
+                round8(priceVolatility),
                 acc.totalVolume0.toString(),
                 acc.totalVolume1.toString(),
                 toNullableDouble(acc.volumeUSDState),
@@ -188,12 +185,8 @@ public class SwapAggregator
 
     @Override
     public Accumulator merge(Accumulator a, Accumulator b) {
-        if (isEmpty(a)) {
-            return b;
-        }
-        if (isEmpty(b)) {
-            return a;
-        }
+        if (isEmpty(a)) return b;
+        if (isEmpty(b)) return a;
 
         Accumulator merged = new Accumulator();
         merged.pairAddress = a.pairAddress;
@@ -205,7 +198,6 @@ public class SwapAggregator
 
         applyOpen(merged, a.openPrice, a.openEventTime, a.openLogIndex);
         applyOpen(merged, b.openPrice, b.openEventTime, b.openLogIndex);
-
         applyClose(merged, a.closePrice, a.closeEventTime, a.closeLogIndex);
         applyClose(merged, b.closePrice, b.closeEventTime, b.closeLogIndex);
 
@@ -232,30 +224,18 @@ public class SwapAggregator
         return merged;
     }
 
-    private static void updateOpen(Accumulator acc, double price, long eventTime, int logIndex) {
-        applyOpen(acc, price, eventTime, logIndex);
-    }
-
     private static void applyOpen(Accumulator acc, double price, long eventTime, int logIndex) {
-        boolean isEarlier = eventTime < acc.openEventTime
-                || (eventTime == acc.openEventTime && logIndex < acc.openLogIndex);
-
-        if (isEarlier) {
+        if (eventTime < acc.openEventTime
+                || (eventTime == acc.openEventTime && logIndex < acc.openLogIndex)) {
             acc.openPrice = price;
             acc.openEventTime = eventTime;
             acc.openLogIndex = logIndex;
         }
     }
 
-    private static void updateClose(Accumulator acc, double price, long eventTime, int logIndex) {
-        applyClose(acc, price, eventTime, logIndex);
-    }
-
     private static void applyClose(Accumulator acc, double price, long eventTime, int logIndex) {
-        boolean isLater = eventTime > acc.closeEventTime
-                || (eventTime == acc.closeEventTime && logIndex >= acc.closeLogIndex);
-
-        if (isLater) {
+        if (eventTime > acc.closeEventTime
+                || (eventTime == acc.closeEventTime && logIndex >= acc.closeLogIndex)) {
             acc.closePrice = price;
             acc.closeEventTime = eventTime;
             acc.closeLogIndex = logIndex;
@@ -263,134 +243,44 @@ public class SwapAggregator
     }
 
     private static LargestSwapCandidate chooseLargest(LargestSwapCandidate a, LargestSwapCandidate b) {
-        if (a == null) {
-            return b;
-        }
-        if (b == null) {
-            return a;
-        }
-
-        if (a.hasUsdValue() && b.hasUsdValue()) {
-            return a.usdValue() >= b.usdValue() ? a : b;
-        }
-
-        if (a.hasUsdValue() != b.hasUsdValue()) {
-            return a.hasUsdValue() ? a : b;
-        }
-
+        if (a == null) return b;
+        if (b == null) return a;
+        if (a.hasUsdValue() && b.hasUsdValue()) return a.usdValue() >= b.usdValue() ? a : b;
+        if (a.hasUsdValue() != b.hasUsdValue()) return a.hasUsdValue() ? a : b;
         return a.token0Volume().compareTo(b.token0Volume()) >= 0 ? a : b;
-    }
-
-    private static String normalizeAddress(String address) {
-        if (address == null) {
-            return "";
-        }
-        return address.toLowerCase(Locale.ROOT);
     }
 
     private static boolean isEmpty(Accumulator acc) {
         return acc == null || acc.swapCount == 0;
     }
 
-    private static BigInteger parseBigInt(String value) {
-        if (!isSignedInteger(value)) {
-            return BigInteger.ZERO;
-        }
-        return new BigInteger(value);
-    }
-
-    private static boolean isSignedInteger(String value) {
-        if (value == null) {
-            return false;
-        }
-
-        String trimmed = value.trim();
-        if (trimmed.isEmpty()) {
-            return false;
-        }
-
-        int start = trimmed.charAt(0) == '-' ? 1 : 0;
-        if (start == trimmed.length()) {
-            return false;
-        }
-
-        for (int i = start; i < trimmed.length(); i++) {
-            if (!Character.isDigit(trimmed.charAt(i))) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static double round(double value) {
-        return BigDecimal.valueOf(value)
-                .setScale(8, RoundingMode.HALF_UP)
-                .doubleValue();
-    }
-
-    private static String formatLargestSwap(LargestSwapCandidate largestSwap) {
-        if (largestSwap == null) {
-            return "0";
-        }
-
-        if (largestSwap.usdValue() != null) {
-            return String.format("%.2f USD", largestSwap.usdValue());
-        }
-
-        return largestSwap.token0Volume().toString();
+    private static String formatLargestSwap(LargestSwapCandidate c) {
+        if (c == null) return "0";
+        if (c.usdValue() != null) return String.format("%.2f USD", c.usdValue());
+        return c.token0Volume().toString();
     }
 
     private static AggregatedAnalytics emptyResult(Accumulator acc) {
         long now = Instant.now().toEpochMilli();
         return new AggregatedAnalytics(
-                UUID.randomUUID().toString(),
-                now,
-                now,
+                UUID.randomUUID().toString(), now, now,
                 acc.pairAddress != null ? acc.pairAddress : "",
-                toNullableString(acc.token0Symbol),
-                toNullableString(acc.token1Symbol),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                "0",
-                "0",
-                null,
-                0,
-                0,
-                "0",
-                "",
-                0,
-                "0",
-                0,
-                List.of(),
-                now
+                toNullableString(acc.token0Symbol), toNullableString(acc.token1Symbol),
+                0, 0, 0, 0, 0, 0,
+                "0", "0", null, 0, 0, "0", "", 0, "0", 0, List.of(), now
         );
     }
 
     private static TriState<String> mergePreferred(TriState<String> current, String candidate) {
-        if (current.isDefined()) {
-            return current;
-        }
-        if (candidate == null || candidate.isBlank()) {
-            return current;
-        }
+        if (current.isDefined()) return current;
+        if (candidate == null || candidate.isBlank()) return current;
         return TriState.of(candidate);
     }
 
     private static <T> TriState<T> mergeTriState(TriState<T> left, TriState<T> right) {
-        if (left.isDefined()) {
-            return left;
-        }
-        if (right.isDefined()) {
-            return right;
-        }
-        if (left.isNull() || right.isNull()) {
-            return TriState.ofNull();
-        }
+        if (left.isDefined()) return left;
+        if (right.isDefined()) return right;
+        if (left.isNull() || right.isNull()) return TriState.ofNull();
         return TriState.undefined();
     }
 
@@ -399,6 +289,6 @@ public class SwapAggregator
     }
 
     private static Double toNullableDouble(TriState<Double> state) {
-        return state.fold(SwapAggregator::round, () -> null, () -> null);
+        return state.fold(Web3Math::round8, () -> null, () -> null);
     }
 }

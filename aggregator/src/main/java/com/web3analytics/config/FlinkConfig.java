@@ -1,9 +1,5 @@
 package com.web3analytics.config;
 
-/**
- * Flink configuration for dual-topic architecture.
- * Consumes from two input topics (trading and liquidity events).
- */
 public record FlinkConfig(
         String kafkaBootstrap,
         String topicTradingEvents,

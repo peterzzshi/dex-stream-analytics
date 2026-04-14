@@ -4,10 +4,9 @@ WORKDIR /build
 COPY pom.xml .
 RUN mvn -q -B dependency:go-offline
 COPY src src
-COPY ../schemas/avro ../schemas/avro
 RUN mvn -q -B package -DskipTests
 
-FROM flink:2.0.1-scala_2.12-java21
+FROM flink:2.0-scala_2.12-java21
 COPY --from=build /build/target/aggregator-1.0-SNAPSHOT.jar /opt/flink/usrlib/aggregator.jar
 ENV FLINK_PARALLELISM=2
 CMD ["/docker-entrypoint.sh", "taskmanager"]

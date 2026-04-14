@@ -12,13 +12,15 @@ import org.apache.flink.util.Collector;
 import java.math.BigInteger;
 import java.time.Instant;
 import java.util.HashSet;
-import java.util.Locale;
 import java.util.Set;
 
+import static com.web3analytics.functions.Web3Math.normalizeAddress;
+import static com.web3analytics.functions.Web3Math.parseBigInt;
+
 /**
- * Full-window processor for LP behavior metrics.
- *
- * This intentionally demonstrates a window-only operator for lower-frequency streams.
+ * Full-window scan for LP behavior metrics (1-hour windows).
+ * Intentionally non-incremental: lower-frequency stream where buffering the full
+ * window is acceptable and simplifies the churn/provider-set logic.
  */
 public class LiquidityWindowFunction
         extends ProcessWindowFunction<DexEvent, LiquidityAnalytics, String, TimeWindow> {
@@ -78,12 +80,8 @@ public class LiquidityWindowFunction
                     token0Symbol = preferSymbol(token0Symbol, burn.token0Symbol());
                     token1Symbol = preferSymbol(token1Symbol, burn.token1Symbol());
                 }
-                case com.web3analytics.models.SwapEvent ignored -> {
-                    // Liquidity stream is Mint/Burn only; keep exhaustive switch for safety.
-                }
-                case TransferEvent ignored -> {
-                    // Transfer events are ingested for LP token correlation phases, not aggregated yet.
-                }
+                case com.web3analytics.models.SwapEvent ignored -> { }
+                case TransferEvent ignored -> { }
             }
         }
 
@@ -95,23 +93,15 @@ public class LiquidityWindowFunction
 
         return new LiquidityAnalytics(
                 buildWindowId(pairAddress, windowStart, windowEnd),
-                windowStart,
-                windowEnd,
-                pairAddress,
-                token0Symbol,
-                token1Symbol,
-                mintCount,
-                burnCount,
-                totalMintAmount0.toString(),
-                totalMintAmount1.toString(),
-                totalBurnAmount0.toString(),
-                totalBurnAmount1.toString(),
+                windowStart, windowEnd, pairAddress,
+                token0Symbol, token1Symbol,
+                mintCount, burnCount,
+                totalMintAmount0.toString(), totalMintAmount1.toString(),
+                totalBurnAmount0.toString(), totalBurnAmount1.toString(),
                 totalMintAmount0.subtract(totalBurnAmount0).toString(),
                 totalMintAmount1.subtract(totalBurnAmount1).toString(),
-                mintProviders.size(),
-                burnProviders.size(),
-                uniqueProviders.size(),
-                churnedProviders.size(),
+                mintProviders.size(), burnProviders.size(),
+                uniqueProviders.size(), churnedProviders.size(),
                 processedAt
         );
     }
@@ -121,50 +111,8 @@ public class LiquidityWindowFunction
     }
 
     private static String preferSymbol(String current, String candidate) {
-        if (current != null && !current.isBlank()) {
-            return current;
-        }
-        if (candidate == null || candidate.isBlank()) {
-            return current;
-        }
+        if (current != null && !current.isBlank()) return current;
+        if (candidate == null || candidate.isBlank()) return current;
         return candidate;
-    }
-
-    private static BigInteger parseBigInt(String value) {
-        if (!isSignedInteger(value)) {
-            return BigInteger.ZERO;
-        }
-        return new BigInteger(value.trim());
-    }
-
-    private static boolean isSignedInteger(String value) {
-        if (value == null) {
-            return false;
-        }
-
-        String trimmed = value.trim();
-        if (trimmed.isEmpty()) {
-            return false;
-        }
-
-        int start = trimmed.charAt(0) == '-' ? 1 : 0;
-        if (start == trimmed.length()) {
-            return false;
-        }
-
-        for (int i = start; i < trimmed.length(); i++) {
-            if (!Character.isDigit(trimmed.charAt(i))) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static String normalizeAddress(String address) {
-        if (address == null) {
-            return "";
-        }
-        return address.toLowerCase(Locale.ROOT);
     }
 }

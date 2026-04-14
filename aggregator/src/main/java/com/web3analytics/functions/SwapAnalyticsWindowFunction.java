@@ -7,9 +7,7 @@ import org.apache.flink.util.Collector;
 
 import java.time.Instant;
 
-/**
- * Adds authoritative window metadata after incremental aggregation.
- */
+/** Replaces placeholder window metadata with authoritative Flink window boundaries. */
 public class SwapAnalyticsWindowFunction
         extends ProcessWindowFunction<AggregatedAnalytics, AggregatedAnalytics, String, TimeWindow> {
 
@@ -26,28 +24,16 @@ public class SwapAnalyticsWindowFunction
 
         out.collect(new AggregatedAnalytics(
                 buildWindowId(pairAddress, windowStart, windowEnd),
-                windowStart,
-                windowEnd,
+                windowStart, windowEnd,
                 metrics.pairAddress(),
-                metrics.token0Symbol(),
-                metrics.token1Symbol(),
-                metrics.twap(),
-                metrics.openPrice(),
-                metrics.closePrice(),
-                metrics.highPrice(),
-                metrics.lowPrice(),
-                metrics.priceVolatility(),
-                metrics.totalVolume0(),
-                metrics.totalVolume1(),
-                metrics.volumeUSD(),
-                metrics.swapCount(),
-                metrics.uniqueTraders(),
-                metrics.largestSwapValue(),
-                metrics.largestSwapAddress(),
-                metrics.totalGasUsed(),
-                metrics.averageGasPrice(),
-                metrics.arbitrageCount(),
-                metrics.repeatedTraders(),
+                metrics.token0Symbol(), metrics.token1Symbol(),
+                metrics.twap(), metrics.openPrice(), metrics.closePrice(),
+                metrics.highPrice(), metrics.lowPrice(), metrics.priceVolatility(),
+                metrics.totalVolume0(), metrics.totalVolume1(), metrics.volumeUSD(),
+                metrics.swapCount(), metrics.uniqueTraders(),
+                metrics.largestSwapValue(), metrics.largestSwapAddress(),
+                metrics.totalGasUsed(), metrics.averageGasPrice(),
+                metrics.arbitrageCount(), metrics.repeatedTraders(),
                 Instant.now().toEpochMilli()
         ));
     }

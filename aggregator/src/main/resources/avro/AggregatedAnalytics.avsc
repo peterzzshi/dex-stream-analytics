@@ -26,13 +26,15 @@
     },
     {
       "name": "token0Symbol",
-      "type": "string",
-      "doc": "Symbol of token0"
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token0 (null if not resolved)"
     },
     {
       "name": "token1Symbol",
-      "type": "string",
-      "doc": "Symbol of token1"
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token1 (null if not resolved)"
     },
     {
       "name": "twap",

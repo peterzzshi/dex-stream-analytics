@@ -9,12 +9,13 @@ import com.web3analytics.models.DecodingError;
 import com.web3analytics.models.DexEvent;
 import com.web3analytics.models.LiquidityAnalytics;
 import com.web3analytics.models.SwapEvent;
-import com.web3analytics.serde.AvroSerializationSchema;
+import com.web3analytics.serde.JsonSerializationSchema;
 import com.web3analytics.serde.ByteArrayPassthroughDeserializer;
 import com.web3analytics.serde.LiquidityEventDeserializer;
 import com.web3analytics.serde.SafeDecodeProcessFunction;
 import com.web3analytics.serde.SwapEventDeserializer;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
@@ -30,13 +31,11 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 
 /**
- * Multi-source Flink processor for dual-topic DEX analytics.
- * 
- * Architecture:
- * - Trading stream: SwapEvent (dex-trading-events) → 5-min windows → dex-trading-analytics
- * - Liquidity stream: Mint/Burn/Transfer events (dex-liquidity-events) → 1-hour windows → dex-liquidity-analytics
- * 
- * Uses native Kafka connector (not DAPR) for exactly-once semantics and checkpointing.
+ * Dual-topic Flink processor:
+ * SwapEvent -> 5-min trading windows -> dex-trading-analytics
+ * Mint/Burn/Transfer -> 1-hour liquidity windows -> dex-liquidity-analytics
+ *
+ * Uses native Kafka connector (not DAPR) for exactly-once semantics.
  */
 public class StreamProcessor {
 
@@ -44,22 +43,22 @@ public class StreamProcessor {
 
     public static void main(String[] args) throws Exception {
         FlinkConfig config = FlinkConfig.fromEnv();
-        LOG.info("Starting DEX Analytics Stream Processor with dual-topic architecture");
-        LOG.info("Trading events: {}", config.topicTradingEvents());
-        LOG.info("Liquidity events: {}", config.topicLiquidityEvents());
-        LOG.info("Trading output: {}", config.topicTradingAnalytics());
-        LOG.info("Liquidity output: {}", config.topicLiquidityAnalytics());
+        LOG.info("Starting DEX Analytics Stream Processor");
+        LOG.info("Trading: {} -> {}", config.topicTradingEvents(), config.topicTradingAnalytics());
+        LOG.info("Liquidity: {} -> {}", config.topicLiquidityEvents(), config.topicLiquidityAnalytics());
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(config.parallelism());
-        
-        // TODO: Enable checkpointing in production
-        // env.enableCheckpointing(config.checkpointMs());
+        env.enableCheckpointing(config.checkpointMs());
 
-        // ========== Trading Stream ==========
-        // Demonstrates incremental `aggregate` followed by `ProcessWindowFunction`.
-        // Read raw bytes so decode failures can be routed to side output instead of failing the job.
-        KafkaSource<byte[]> tradingSource = KafkaSource.<byte[]>builder()
+        buildTradingStream(env, config);
+        buildLiquidityStream(env, config);
+
+        env.execute("DEX Analytics Processor");
+    }
+
+    private static void buildTradingStream(StreamExecutionEnvironment env, FlinkConfig config) {
+        KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
                 .setBootstrapServers(config.kafkaBootstrap())
                 .setTopics(config.topicTradingEvents())
                 .setGroupId(config.consumerGroup() + "-trading")
@@ -67,50 +66,46 @@ public class StreamProcessor {
                 .setValueOnlyDeserializer(new ByteArrayPassthroughDeserializer())
                 .build();
 
-        WatermarkStrategy<SwapEvent> swapWatermarks = WatermarkStrategy
-                .<SwapEvent>forBoundedOutOfOrderness(Duration.ofSeconds(60))
-                .withTimestampAssigner((event, ts) -> event.getEventTimeMillis()); // Using DexEvent default method
+        OutputTag<DecodingError> decodeErrors = new OutputTag<>("trading-decode-errors") {};
+        SwapEventDeserializer deserializer = new SwapEventDeserializer();
 
-        OutputTag<DecodingError> tradingDecodeErrors = new OutputTag<>("trading-decode-errors") {};
-        SwapEventDeserializer swapDeserializer = new SwapEventDeserializer();
-
-        SingleOutputStreamOperator<SwapEvent> tradingEvents = env
-                .fromSource(tradingSource, WatermarkStrategy.noWatermarks(), "trading-events-raw")
+        SingleOutputStreamOperator<SwapEvent> events = env
+                .fromSource(source, WatermarkStrategy.noWatermarks(), "trading-events-raw")
                 .process(new SafeDecodeProcessFunction<>(
                         config.topicTradingEvents(),
-                        swapDeserializer::deserialize,
-                        tradingDecodeErrors
+                        deserializer::deserialize,
+                        decodeErrors
                 ))
+                .returns(TypeInformation.of(SwapEvent.class))
                 .name("decode-trading-events");
 
-        tradingEvents.getSideOutput(tradingDecodeErrors).print("trading-decode-errors");
+        events.getSideOutput(decodeErrors).print("trading-decode-errors");
 
-        DataStream<AggregatedAnalytics> tradingAnalytics = tradingEvents
-                .assignTimestampsAndWatermarks(swapWatermarks)
+        WatermarkStrategy<SwapEvent> watermarks = WatermarkStrategy
+                .<SwapEvent>forBoundedOutOfOrderness(Duration.ofSeconds(60))
+                .withTimestampAssigner((event, ts) -> event.getEventTimeMillis());
+
+        DataStream<AggregatedAnalytics> analytics = events
+                .assignTimestampsAndWatermarks(watermarks)
                 .keyBy(SwapEvent::pairAddress)
                 .window(TumblingEventTimeWindows.of(Duration.ofMinutes(5)))
                 .aggregate(new SwapAggregator(), new SwapAnalyticsWindowFunction());
 
-        // Print for observability
-        tradingAnalytics.print("trading-analytics");
+        analytics.print("trading-analytics");
 
-        // Sink to output topic
-        KafkaSink<AggregatedAnalytics> tradingSink = KafkaSink.<AggregatedAnalytics>builder()
+        analytics.sinkTo(KafkaSink.<AggregatedAnalytics>builder()
                 .setBootstrapServers(config.kafkaBootstrap())
                 .setRecordSerializer(
                         KafkaRecordSerializationSchema.<AggregatedAnalytics>builder()
                                 .setTopic(config.topicTradingAnalytics())
-                                .setValueSerializationSchema(new AvroSerializationSchema<AggregatedAnalytics>())
+                                .setValueSerializationSchema(new JsonSerializationSchema<>())
                                 .build()
                 )
-                .build();
+                .build());
+    }
 
-        tradingAnalytics.sinkTo(tradingSink);
-
-        // ========== Liquidity Stream ==========
-        // Demonstrates full-window `ProcessWindowFunction` without incremental aggregate.
-        // Liquidity source is heterogeneous and routed by CloudEvent type before Avro deserialization.
-        KafkaSource<byte[]> liquiditySource = KafkaSource.<byte[]>builder()
+    private static void buildLiquidityStream(StreamExecutionEnvironment env, FlinkConfig config) {
+        KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
                 .setBootstrapServers(config.kafkaBootstrap())
                 .setTopics(config.topicLiquidityEvents())
                 .setGroupId(config.consumerGroup() + "-liquidity")
@@ -118,44 +113,41 @@ public class StreamProcessor {
                 .setValueOnlyDeserializer(new ByteArrayPassthroughDeserializer())
                 .build();
 
-        WatermarkStrategy<DexEvent> liquidityWatermarks = WatermarkStrategy
+        OutputTag<DecodingError> decodeErrors = new OutputTag<>("liquidity-decode-errors") {};
+        LiquidityEventDeserializer deserializer = new LiquidityEventDeserializer();
+
+        SingleOutputStreamOperator<DexEvent> events = env
+                .fromSource(source, WatermarkStrategy.noWatermarks(), "liquidity-events-raw")
+                .process(new SafeDecodeProcessFunction<>(
+                        config.topicLiquidityEvents(),
+                        deserializer::deserialize,
+                        decodeErrors
+                ))
+                .returns(TypeInformation.of(DexEvent.class))
+                .name("decode-liquidity-events");
+
+        events.getSideOutput(decodeErrors).print("liquidity-decode-errors");
+
+        WatermarkStrategy<DexEvent> watermarks = WatermarkStrategy
                 .<DexEvent>forBoundedOutOfOrderness(Duration.ofSeconds(60))
                 .withTimestampAssigner((event, ts) -> event.getEventTimeMillis());
 
-        OutputTag<DecodingError> liquidityDecodeErrors = new OutputTag<>("liquidity-decode-errors") {};
-        LiquidityEventDeserializer liquidityDeserializer = new LiquidityEventDeserializer();
-
-        SingleOutputStreamOperator<DexEvent> liquidityEvents = env
-                .fromSource(liquiditySource, WatermarkStrategy.noWatermarks(), "liquidity-events-raw")
-                .process(new SafeDecodeProcessFunction<>(
-                        config.topicLiquidityEvents(),
-                        liquidityDeserializer::deserialize,
-                        liquidityDecodeErrors
-                ))
-                .name("decode-liquidity-events");
-
-        liquidityEvents.getSideOutput(liquidityDecodeErrors).print("liquidity-decode-errors");
-
-        DataStream<LiquidityAnalytics> liquidityAnalytics = liquidityEvents
-                .assignTimestampsAndWatermarks(liquidityWatermarks)
+        DataStream<LiquidityAnalytics> analytics = events
+                .assignTimestampsAndWatermarks(watermarks)
                 .keyBy(DexEvent::pairAddress)
                 .window(TumblingEventTimeWindows.of(Duration.ofHours(1)))
                 .process(new LiquidityWindowFunction());
 
-        liquidityAnalytics.print("liquidity-analytics");
+        analytics.print("liquidity-analytics");
 
-        KafkaSink<LiquidityAnalytics> liquiditySink = KafkaSink.<LiquidityAnalytics>builder()
+        analytics.sinkTo(KafkaSink.<LiquidityAnalytics>builder()
                 .setBootstrapServers(config.kafkaBootstrap())
                 .setRecordSerializer(
                         KafkaRecordSerializationSchema.<LiquidityAnalytics>builder()
                                 .setTopic(config.topicLiquidityAnalytics())
-                                .setValueSerializationSchema(new AvroSerializationSchema<LiquidityAnalytics>())
+                                .setValueSerializationSchema(new JsonSerializationSchema<>())
                                 .build()
                 )
-                .build();
-
-        liquidityAnalytics.sinkTo(liquiditySink);
-
-        env.execute("DEX Analytics Processor");
+                .build());
     }
 }

@@ -1,14 +1,8 @@
 package com.web3analytics.models;
 
-/**
- * Sealed interface for all DEX events from blockchain.
- *
- * Enables exhaustive pattern matching (Java 17+) and provides
- * common field access across all event types.
- */
+/** Sealed sum type for all blockchain events. Enables exhaustive pattern matching. */
 public sealed interface DexEvent permits SwapEvent, MintEvent, BurnEvent, TransferEvent {
 
-    // Common fields across all events
     String eventId();
     long blockNumber();
     long blockTimestamp();
@@ -19,9 +13,7 @@ public sealed interface DexEvent permits SwapEvent, MintEvent, BurnEvent, Transf
     String token1();
     long eventTimestamp();
 
-    /**
-     * Get event timestamp in milliseconds (for Flink watermarks).
-     */
+    /** Block timestamp in millis for Flink watermarks (blocks are in seconds). */
     default long getEventTimeMillis() {
         return blockTimestamp() * 1000L;
     }

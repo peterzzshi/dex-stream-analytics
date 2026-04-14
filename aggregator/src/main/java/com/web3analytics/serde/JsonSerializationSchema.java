@@ -4,7 +4,10 @@ import com.web3analytics.errors.SerializationException;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
-public class AvroSerializationSchema<T> implements SerializationSchema<T> {
+/**
+ * Serializes records as JSON for Kafka output topics.
+ */
+public class JsonSerializationSchema<T> implements SerializationSchema<T> {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Override

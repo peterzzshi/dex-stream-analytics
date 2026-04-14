@@ -67,8 +67,8 @@ func run() error {
 		return err
 	}
 
-	topicMapper := publisher.DefaultTopicMapper()
-	urlBuilder := publisher.DefaultURLBuilder()
+	topicMapper := publisher.TopicMapperFromEnv()
+	urlBuilder := publisher.DaprPublishURL()
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	httpDoer := func(req *http.Request) (*http.Response, error) {

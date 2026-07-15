@@ -1,0 +1,321 @@
+package events
+
+import (
+	"testing"
+)
+
+func TestEventTypes(t *testing.T) {
+	// Test that event type constants have expected values
+	tests := []struct {
+		eventType EventType
+		expected  string
+	}{
+		{EventTypeSwap, "Swap"},
+		{EventTypeMint, "Mint"},
+		{EventTypeBurn, "Burn"},
+		{EventTypeTransfer, "Transfer"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.eventType), func(t *testing.T) {
+			if string(tt.eventType) != tt.expected {
+				t.Errorf("Expected %q, got %q", tt.expected, string(tt.eventType))
+			}
+		})
+	}
+}
+
+func TestAllEventTypes(t *testing.T) {
+	all := AllEventTypes()
+	if len(all) != 4 {
+		t.Errorf("Expected 4 event types, got %d", len(all))
+	}
+
+	expected := map[EventType]bool{
+		EventTypeSwap:     false,
+		EventTypeMint:     false,
+		EventTypeBurn:     false,
+		EventTypeTransfer: false,
+	}
+
+	for _, et := range all {
+		if _, exists := expected[et]; exists {
+			expected[et] = true
+		}
+	}
+
+	for et, found := range expected {
+		if !found {
+			t.Errorf("Event type %s not found in AllEventTypes()", et)
+		}
+	}
+}
+
+func TestAllEventTypes_ReturnsDefensiveCopy(t *testing.T) {
+	first := AllEventTypes()
+	first[0] = "Mutated"
+	second := AllEventTypes()
+	if second[0] == "Mutated" {
+		t.Error("AllEventTypes() should return a defensive copy, but mutation leaked")
+	}
+}
+
+func TestSwapEvent_GetMethods(t *testing.T) {
+	event := SwapEvent{
+		BaseEvent: BaseEvent{
+			EventType:   "Swap",
+			EventID:     "test-event-id",
+			PairAddress: "0x1234",
+		},
+	}
+
+	if event.GetEventType() != "Swap" {
+		t.Errorf("Expected event type 'Swap', got %q", event.GetEventType())
+	}
+
+	if event.GetEventID() != "test-event-id" {
+		t.Errorf("Expected event ID 'test-event-id', got %q", event.GetEventID())
+	}
+
+	if event.GetPairAddress() != "0x1234" {
+		t.Errorf("Expected pair address '0x1234', got %q", event.GetPairAddress())
+	}
+}
+
+func TestMintEvent_GetMethods(t *testing.T) {
+	event := MintEvent{
+		BaseEvent: BaseEvent{
+			EventType:   "Mint",
+			EventID:     "mint-id",
+			PairAddress: "0x5678",
+		},
+	}
+
+	if event.GetEventType() != "Mint" {
+		t.Errorf("Expected event type 'Mint', got %q", event.GetEventType())
+	}
+
+	if event.GetEventID() != "mint-id" {
+		t.Errorf("Expected event ID 'mint-id', got %q", event.GetEventID())
+	}
+
+	if event.GetPairAddress() != "0x5678" {
+		t.Errorf("Expected pair address '0x5678', got %q", event.GetPairAddress())
+	}
+}
+
+func TestBurnEvent_GetMethods(t *testing.T) {
+	event := BurnEvent{
+		BaseEvent: BaseEvent{
+			EventType:   "Burn",
+			EventID:     "burn-id",
+			PairAddress: "0x9abc",
+		},
+	}
+
+	if event.GetEventType() != "Burn" {
+		t.Errorf("Expected event type 'Burn', got %q", event.GetEventType())
+	}
+
+	if event.GetEventID() != "burn-id" {
+		t.Errorf("Expected event ID 'burn-id', got %q", event.GetEventID())
+	}
+
+	if event.GetPairAddress() != "0x9abc" {
+		t.Errorf("Expected pair address '0x9abc', got %q", event.GetPairAddress())
+	}
+}
+
+func TestTransferEvent_GetMethods(t *testing.T) {
+	event := TransferEvent{
+		BaseEvent: BaseEvent{
+			EventType:   "Transfer",
+			EventID:     "transfer-id",
+			PairAddress: "0xface",
+		},
+	}
+
+	if event.GetEventType() != "Transfer" {
+		t.Errorf("Expected event type 'Transfer', got %q", event.GetEventType())
+	}
+
+	if event.GetEventID() != "transfer-id" {
+		t.Errorf("Expected event ID 'transfer-id', got %q", event.GetEventID())
+	}
+
+	if event.GetPairAddress() != "0xface" {
+		t.Errorf("Expected pair address '0xface', got %q", event.GetPairAddress())
+	}
+}
+
+func TestSwapEvent_ToMap(t *testing.T) {
+	volumeUSD := 123.45
+	event := SwapEvent{
+		BaseEvent: BaseEvent{
+			EventID:     "event-1",
+			BlockNumber: 100,
+		},
+		Sender:     "0xsender",
+		Recipient:  "0xrecipient",
+		Amount0In:  "1000",
+		Amount1In:  "0",
+		Amount0Out: "0",
+		Amount1Out: "850",
+		Price:      1.18,
+		VolumeUSD:  &volumeUSD,
+		GasUsed:    21000,
+		GasPrice:   "50000000000",
+	}
+
+	m := event.ToMap()
+
+	if m["eventId"] != "event-1" {
+		t.Errorf("Expected eventId 'event-1', got %v", m["eventId"])
+	}
+
+	if m["sender"] != "0xsender" {
+		t.Errorf("Expected sender '0xsender', got %v", m["sender"])
+	}
+
+	if m["price"] != 1.18 {
+		t.Errorf("Expected price 1.18, got %v", m["price"])
+	}
+
+	volumeUnion, ok := m["volumeUSD"].(map[string]interface{})
+	if !ok || volumeUnion["double"] != 123.45 {
+		t.Errorf("Expected volumeUSD union map with double 123.45, got %v", m["volumeUSD"])
+	}
+}
+
+func TestSwapEvent_ToMap_NilVolumeUSD(t *testing.T) {
+	event := SwapEvent{
+		BaseEvent: BaseEvent{
+			EventID: "event-2",
+		},
+		VolumeUSD: nil, // Not calculated
+	}
+
+	m := event.ToMap()
+
+	if m["volumeUSD"] != nil {
+		t.Errorf("Expected volumeUSD nil, got %v", m["volumeUSD"])
+	}
+}
+
+func TestMintEvent_ToMap(t *testing.T) {
+	event := MintEvent{
+		BaseEvent: BaseEvent{
+			EventID:     "mint-1",
+			BlockNumber: 200,
+		},
+		Sender:  "0xminter",
+		Amount0: "5000",
+		Amount1: "4250",
+	}
+
+	m := event.ToMap()
+
+	if m["eventId"] != "mint-1" {
+		t.Errorf("Expected eventId 'mint-1', got %v", m["eventId"])
+	}
+
+	if m["sender"] != "0xminter" {
+		t.Errorf("Expected sender '0xminter', got %v", m["sender"])
+	}
+
+	if m["amount0"] != "5000" {
+		t.Errorf("Expected amount0 '5000', got %v", m["amount0"])
+	}
+}
+
+func TestBurnEvent_ToMap(t *testing.T) {
+	event := BurnEvent{
+		BaseEvent: BaseEvent{
+			EventID: "burn-1",
+		},
+		Sender:    "0xburner",
+		Recipient: "0xreceiver",
+		Amount0:   "2500",
+		Amount1:   "2125",
+	}
+
+	m := event.ToMap()
+
+	if m["eventId"] != "burn-1" {
+		t.Errorf("Expected eventId 'burn-1', got %v", m["eventId"])
+	}
+
+	if m["recipient"] != "0xreceiver" {
+		t.Errorf("Expected recipient '0xreceiver', got %v", m["recipient"])
+	}
+}
+
+func TestTransferEvent_ToMap(t *testing.T) {
+	event := TransferEvent{
+		BaseEvent: BaseEvent{
+			EventID: "transfer-1",
+		},
+		From:  "0xfrom",
+		To:    "0xto",
+		Value: "123456789",
+	}
+
+	m := event.ToMap()
+
+	if m["eventId"] != "transfer-1" {
+		t.Errorf("Expected eventId 'transfer-1', got %v", m["eventId"])
+	}
+
+	if m["from"] != "0xfrom" {
+		t.Errorf("Expected from '0xfrom', got %v", m["from"])
+	}
+
+	if m["to"] != "0xto" {
+		t.Errorf("Expected to '0xto', got %v", m["to"])
+	}
+
+	if m["value"] != "123456789" {
+		t.Errorf("Expected value '123456789', got %v", m["value"])
+	}
+}
+
+func TestBaseEvent_ToMap_WithOptionalFields(t *testing.T) {
+	token0Symbol := "WMATIC"
+	token1Symbol := "USDC"
+
+	base := BaseEvent{
+		EventID:      "base-1",
+		Token0Symbol: &token0Symbol,
+		Token1Symbol: &token1Symbol,
+	}
+
+	m := base.ToMap()
+
+	token0Union, ok := m["token0Symbol"].(map[string]interface{})
+	if !ok || token0Union["string"] != "WMATIC" {
+		t.Errorf("Expected token0Symbol union map with string 'WMATIC', got %v", m["token0Symbol"])
+	}
+
+	token1Union, ok := m["token1Symbol"].(map[string]interface{})
+	if !ok || token1Union["string"] != "USDC" {
+		t.Errorf("Expected token1Symbol union map with string 'USDC', got %v", m["token1Symbol"])
+	}
+}
+
+func TestBaseEvent_ToMap_WithoutOptionalFields(t *testing.T) {
+	base := BaseEvent{
+		EventID:      "base-2",
+		Token0Symbol: nil,
+		Token1Symbol: nil,
+	}
+
+	m := base.ToMap()
+
+	if m["token0Symbol"] != nil {
+		t.Errorf("Expected token0Symbol nil, got %v", m["token0Symbol"])
+	}
+
+	if m["token1Symbol"] != nil {
+		t.Errorf("Expected token1Symbol nil, got %v", m["token1Symbol"])
+	}
+}

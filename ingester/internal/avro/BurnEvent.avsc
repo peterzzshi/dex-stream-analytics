@@ -1,0 +1,85 @@
+{
+  "namespace": "com.web3analytics.events",
+  "type": "record",
+  "name": "BurnEvent",
+  "doc": "Represents a liquidity removal (burn) event from a DEX (Uniswap V2 compatible)",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": "string",
+      "doc": "Unique identifier for this event (txHash + logIndex)"
+    },
+    {
+      "name": "blockNumber",
+      "type": "long",
+      "doc": "Block number where the burn occurred"
+    },
+    {
+      "name": "blockTimestamp",
+      "type": "long",
+      "doc": "Unix timestamp of the block (in seconds)"
+    },
+    {
+      "name": "transactionHash",
+      "type": "string",
+      "doc": "Transaction hash containing this burn"
+    },
+    {
+      "name": "logIndex",
+      "type": "int",
+      "doc": "Index of the log entry in the transaction"
+    },
+    {
+      "name": "pairAddress",
+      "type": "string",
+      "doc": "Address of the Uniswap V2 pair contract"
+    },
+    {
+      "name": "token0",
+      "type": "string",
+      "doc": "Address of token0 in the pair"
+    },
+    {
+      "name": "token1",
+      "type": "string",
+      "doc": "Address of token1 in the pair"
+    },
+    {
+      "name": "token0Symbol",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token0 (e.g., WMATIC)"
+    },
+    {
+      "name": "token1Symbol",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token1 (e.g., USDC)"
+    },
+    {
+      "name": "sender",
+      "type": "string",
+      "doc": "Address that burned the LP tokens"
+    },
+    {
+      "name": "recipient",
+      "type": "string",
+      "doc": "Address that received the underlying tokens"
+    },
+    {
+      "name": "amount0",
+      "type": "string",
+      "doc": "Amount of token0 removed from the pair (as string to preserve precision)"
+    },
+    {
+      "name": "amount1",
+      "type": "string",
+      "doc": "Amount of token1 removed from the pair (delta on pool reserves)"
+    },
+    {
+      "name": "eventTimestamp",
+      "type": "long",
+      "doc": "Timestamp when event was captured by producer"
+    }
+  ]
+}

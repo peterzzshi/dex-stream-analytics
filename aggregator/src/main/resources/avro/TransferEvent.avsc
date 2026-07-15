@@ -1,0 +1,80 @@
+{
+  "namespace": "com.web3analytics.events",
+  "type": "record",
+  "name": "TransferEvent",
+  "doc": "Represents LP token transfer activity emitted by the pair contract",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": "string",
+      "doc": "Unique identifier for this event (txHash + logIndex)"
+    },
+    {
+      "name": "blockNumber",
+      "type": "long",
+      "doc": "Block number where the transfer occurred"
+    },
+    {
+      "name": "blockTimestamp",
+      "type": "long",
+      "doc": "Unix timestamp of the block (in seconds)"
+    },
+    {
+      "name": "transactionHash",
+      "type": "string",
+      "doc": "Transaction hash containing this transfer"
+    },
+    {
+      "name": "logIndex",
+      "type": "int",
+      "doc": "Index of the log entry in the transaction"
+    },
+    {
+      "name": "pairAddress",
+      "type": "string",
+      "doc": "Address of the Uniswap V2 pair contract"
+    },
+    {
+      "name": "token0",
+      "type": "string",
+      "doc": "Address of token0 in the pair"
+    },
+    {
+      "name": "token1",
+      "type": "string",
+      "doc": "Address of token1 in the pair"
+    },
+    {
+      "name": "token0Symbol",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token0 (e.g., WMATIC)"
+    },
+    {
+      "name": "token1Symbol",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Symbol of token1 (e.g., USDC)"
+    },
+    {
+      "name": "from",
+      "type": "string",
+      "doc": "LP token sender address"
+    },
+    {
+      "name": "to",
+      "type": "string",
+      "doc": "LP token receiver address"
+    },
+    {
+      "name": "value",
+      "type": "string",
+      "doc": "LP token amount moved (as string to preserve precision)"
+    },
+    {
+      "name": "eventTimestamp",
+      "type": "long",
+      "doc": "Timestamp when event was captured by producer"
+    }
+  ]
+}

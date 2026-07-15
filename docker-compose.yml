@@ -1,0 +1,228 @@
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      CLUSTER_ID: "Yi30LVX8TlCMOk1KHapf-A"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://kafka:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - dex-analytics-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # DAPR placement service for actor runtime
+  dapr-placement:
+    image: daprio/dapr:1.12.0
+    container_name: dapr-placement
+    command: ["./placement", "-port", "50006", "-log-level", "debug"]
+    ports:
+      - "50006:50006"
+    networks:
+      - dex-analytics-network
+
+  # Ingester: Go service listening to blockchain events
+  ingester:
+    build:
+      context: ./ingester
+      dockerfile: Dockerfile
+    container_name: ingester
+    environment:
+      - POLYGON_RPC_URL=${POLYGON_RPC_URL}
+      - PAIR_ADDRESS=${PAIR_ADDRESS}
+      - DAPR_HOST=ingester-dapr
+      - DAPR_HTTP_PORT=3500
+      - DAPR_GRPC_PORT=50001
+      - PUBSUB_NAME=kafka-pubsub
+      - TOPIC_TRADING_EVENTS=dex-trading-events
+      - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
+      - PRODUCER_BATCH_SIZE=100
+      - PRODUCER_RETRY_MAX=3
+      - PRODUCER_FLUSH_INTERVAL=5s
+      - APP_PORT=3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      dapr-placement:
+        condition: service_started
+    networks:
+      - dex-analytics-network
+    restart: unless-stopped
+
+  # DAPR sidecar for ingester
+  ingester-dapr:
+    image: daprio/daprd:1.12.0
+    container_name: ingester-dapr
+    command: [
+      "./daprd",
+      "-app-id", "ingester",
+      "-app-port", "3000",
+      "-app-protocol", "http",
+      "-dapr-http-port", "3500",
+      "-dapr-grpc-port", "50001",
+      "-components-path", "/components",
+      "-config", "/config/config.yaml",
+      "-log-level", "info",
+      "-placement-host-address", "dapr-placement:50006"
+    ]
+    volumes:
+      - ./dapr/components:/components
+      - ./dapr/config:/config
+    depends_on:
+      - ingester
+    networks:
+      - dex-analytics-network
+    environment:
+      - DAPR_HOST_IP=ingester
+
+  # Flink JobManager for standalone cluster mode
+  flink-jobmanager:
+    image: flink:2.0-scala_2.12-java21
+    container_name: flink-jobmanager
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC_TRADING_EVENTS=dex-trading-events
+      - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
+      - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
+      - TOPIC_LIQUIDITY_ANALYTICS=dex-liquidity-analytics
+      - FLINK_CONSUMER_GROUP=dex-processor
+      - FLINK_PARALLELISM=2
+      - FLINK_CHECKPOINT_MS=10000
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./aggregator/target:/opt/flink/usrlib
+    networks:
+      - dex-analytics-network
+    restart: unless-stopped
+    profiles:
+      - full-stack
+      - flink-cluster
+
+  # Flink TaskManager workers for standalone cluster mode
+  flink-taskmanager:
+    image: flink:2.0-scala_2.12-java21
+    container_name: flink-taskmanager
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC_TRADING_EVENTS=dex-trading-events
+      - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
+      - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
+      - TOPIC_LIQUIDITY_ANALYTICS=dex-liquidity-analytics
+      - FLINK_CONSUMER_GROUP=dex-processor
+      - FLINK_PARALLELISM=2
+      - FLINK_CHECKPOINT_MS=10000
+    depends_on:
+      - flink-jobmanager
+    networks:
+      - dex-analytics-network
+    restart: unless-stopped
+    profiles:
+      - full-stack
+      - flink-cluster
+
+  # Redis for analytics persistence
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - dex-analytics-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Analytics Service: Kotlin sink/query service for aggregated analytics
+  analytics-service:
+    build:
+      context: ./analytics-service
+      dockerfile: Dockerfile
+    container_name: analytics-service
+    environment:
+      - APP_PORT=8080
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      dapr-placement:
+        condition: service_started
+    networks:
+      - dex-analytics-network
+    restart: unless-stopped
+
+  # DAPR sidecar for analytics-service
+  analytics-service-dapr:
+    image: daprio/daprd:1.12.0
+    container_name: analytics-service-dapr
+    command: [
+      "./daprd",
+      "-app-id", "analytics-service",
+      "-app-port", "8080",
+      "-app-protocol", "http",
+      "-dapr-http-port", "3501",
+      "-dapr-grpc-port", "50002",
+      "-components-path", "/components",
+      "-config", "/config/config.yaml",
+      "-log-level", "info",
+      "-placement-host-address", "dapr-placement:50006"
+    ]
+    volumes:
+      - ./dapr/components:/components
+      - ./dapr/config:/config
+      - ./dapr/subscriptions:/subscriptions
+    depends_on:
+      - analytics-service
+    networks:
+      - dex-analytics-network
+    environment:
+      - DAPR_HOST_IP=analytics-service
+
+networks:
+  dex-analytics-network:
+    driver: bridge
+
+volumes:
+  kafka-data:

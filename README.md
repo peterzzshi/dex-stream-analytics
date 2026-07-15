@@ -49,7 +49,7 @@ cd ingester && go build -o ingester ./cmd/ingester && go test ./...
 # Aggregator (55 tests)
 cd aggregator && mvn test
 
-# Analytics Service (30 tests)
+# Analytics Service (29 tests)
 cd analytics-service && ./gradlew test
 ```
 

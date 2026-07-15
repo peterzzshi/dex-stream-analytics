@@ -59,6 +59,9 @@ coverage.json
 *.pid
 docker-compose.override.yml
 
+# AI tooling context (local-only)
+.ai-context/
+
 # Logs
 logs/
 npm-debug.log*

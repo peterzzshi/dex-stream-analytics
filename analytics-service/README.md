@@ -87,5 +87,5 @@ The `/pools/{pair}/health` endpoint computes a weighted composite score (0–1):
 ## Test
 
 ```bash
-./gradlew test   # 30 tests
+./gradlew test   # 29 tests
 ```

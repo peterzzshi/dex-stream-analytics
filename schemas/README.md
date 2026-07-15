@@ -6,7 +6,7 @@ Canonical Avro schemas for the pipeline live in `schemas/avro/`.
 
 - Define wire contracts between `ingester`, `aggregator`, and `analytics-service`.
 - Keep schema evolution explicit and version-controlled in this repo.
-- Avoid runtime schema-registry dependency for local and interview-friendly setup.
+- Avoid runtime schema-registry dependency for a simple local setup.
 
 ## Active Schemas
 

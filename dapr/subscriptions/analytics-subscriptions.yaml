@@ -4,10 +4,13 @@ metadata:
   name: trading-analytics-subscription
 spec:
   topic: dex-trading-analytics
-  route: /events/trading-analytics
+  routes:
+    default: /events/trading-analytics
   pubsubname: kafka-pubsub
-  scopes:
-    - analytics-service
+  metadata:
+    rawPayload: "true"
+scopes:
+  - analytics-service
 ---
 apiVersion: dapr.io/v2alpha1
 kind: Subscription
@@ -15,10 +18,13 @@ metadata:
   name: liquidity-analytics-subscription
 spec:
   topic: dex-liquidity-analytics
-  route: /events/liquidity-analytics
+  routes:
+    default: /events/liquidity-analytics
   pubsubname: kafka-pubsub
-  scopes:
-    - analytics-service
+  metadata:
+    rawPayload: "true"
+scopes:
+  - analytics-service
 ---
 apiVersion: dapr.io/v2alpha1
 kind: Subscription
@@ -26,10 +32,13 @@ metadata:
   name: pattern-analytics-subscription
 spec:
   topic: dex-pattern-analytics
-  route: /events/pattern-analytics
+  routes:
+    default: /events/pattern-analytics
   pubsubname: kafka-pubsub
-  scopes:
-    - analytics-service
+  metadata:
+    rawPayload: "true"
+scopes:
+  - analytics-service
 ---
 apiVersion: dapr.io/v2alpha1
 kind: Subscription
@@ -37,7 +46,10 @@ metadata:
   name: market-trends-subscription
 spec:
   topic: dex-market-trends
-  route: /events/market-trends
+  routes:
+    default: /events/market-trends
   pubsubname: kafka-pubsub
-  scopes:
-    - analytics-service
+  metadata:
+    rawPayload: "true"
+scopes:
+  - analytics-service

@@ -86,7 +86,7 @@ BURN_SCHEMA = fastavro.parse_schema({
         {"name": "token0Symbol", "type": ["null", "string"], "default": None},
         {"name": "token1Symbol", "type": ["null", "string"], "default": None},
         {"name": "sender", "type": "string"},
-        {"name": "to", "type": "string"},
+        {"name": "recipient", "type": "string"},
         {"name": "amount0", "type": "string"},
         {"name": "amount1", "type": "string"},
         {"name": "eventTimestamp", "type": "long"},
@@ -272,7 +272,7 @@ def main():
         "token0Symbol": "WMATIC",
         "token1Symbol": "USDC",
         "sender": "0xAlice",
-        "to": "0xAlice",
+        "recipient": "0xAlice",
         "amount0": "1000000000000000000",
         "amount1": "800000",
         "eventTimestamp": (base_ts + 180) * 1000,
@@ -301,6 +301,65 @@ def main():
     producer.send("dex-liquidity-events",
                   value=cloud_event("com.dex.events.transfer", avro_encode(TRANSFER_SCHEMA, transfer3)))
     print("  Sent transfer-3 (LP burn, tx=0xtxburn1, value=894427190)")
+
+    # --- Watermark-advancing flush events ---
+    # Windows are event-time with a 60s out-of-orderness watermark, so a window
+    # only closes once a NEWER event pushes the watermark past its end. Without
+    # these, the script would produce no observable output.
+    print("\nProducing flush events to close windows...")
+
+    # Swap at base_ts+400: closes the 5-min trading window (ends base_ts+100),
+    # all MEV session windows, and elapsed 30-min trend windows.
+    flush_swap_ts = base_ts + 400
+    flush_swap = {
+        "eventId": "swap-flush",
+        "blockNumber": 50000400,
+        "blockTimestamp": flush_swap_ts,
+        "transactionHash": "0xtxflush",
+        "logIndex": 0,
+        "pairAddress": pair,
+        "token0": token0,
+        "token1": token1,
+        "token0Symbol": "WMATIC",
+        "token1Symbol": "USDC",
+        "sender": "0xsenderflush",
+        "recipient": "0xrecipientflush",
+        "amount0In": "1000000000000000000",
+        "amount1In": "0",
+        "amount0Out": "0",
+        "amount1Out": "800000",
+        "price": 0.8,
+        "volumeUSD": 0.8,
+        "gasUsed": 150000,
+        "gasPrice": "30000000000",
+        "eventTimestamp": flush_swap_ts * 1000,
+    }
+    producer.send("dex-trading-events",
+                  value=cloud_event("com.dex.events.swap", avro_encode(SWAP_SCHEMA, flush_swap)))
+    print(f"  Sent swap-flush (ts={flush_swap_ts}) — closes trading/MEV/trend windows")
+
+    # Mint at base_ts+3000: pushes the liquidity watermark past the 1-hour
+    # window end (base_ts aligned to the hour + 3600s, plus the 60s watermark).
+    flush_mint_ts = base_ts + 3000
+    flush_mint = {
+        "eventId": "mint-flush",
+        "blockNumber": 50003000,
+        "blockTimestamp": flush_mint_ts,
+        "transactionHash": "0xtxmintflush",
+        "logIndex": 0,
+        "pairAddress": pair,
+        "token0": token0,
+        "token1": token1,
+        "token0Symbol": "WMATIC",
+        "token1Symbol": "USDC",
+        "sender": "0xFlush",
+        "amount0": "1000000000000000000",
+        "amount1": "800000",
+        "eventTimestamp": flush_mint_ts * 1000,
+    }
+    producer.send("dex-liquidity-events",
+                  value=cloud_event("com.dex.events.mint", avro_encode(MINT_SCHEMA, flush_mint)))
+    print(f"  Sent mint-flush (ts={flush_mint_ts}) — closes the 1-hour liquidity window")
 
     producer.flush()
     print(f"\nAll events produced successfully!")

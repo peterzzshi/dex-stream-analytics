@@ -254,7 +254,7 @@ private val DASHBOARD_JS = """
 
     // Initial data load from REST API
     fetch('/analytics/summary').then(r => r.json()).then(s => {
-        appendLog('system', 'Loaded: ' + (s.tradingPairCount||0) + ' trading pairs, ' +
+        appendLog('system', 'Loaded: ' + (s.tradingPairsTracked||0) + ' trading pairs, ' +
             (s.totalTradingWindows||0) + ' windows');
     }).catch(() => {});
 

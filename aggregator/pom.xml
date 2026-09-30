@@ -31,25 +31,29 @@
     </properties>
 
     <dependencies>
-        <!-- Flink Core -->
+        <!-- Flink Core (provided by the Flink dist at runtime — must not be
+             bundled, or user-jar copies of Flink classes shadow the cluster's
+             and Java-serialized lambdas fail with ClassCastException) -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-streaming-java</artifactId>
             <version>${flink.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Flink Kafka Connector (native, avoids DAPR) -->
+        <!-- Flink Kafka Connector (native, avoids DAPR) — not in the dist, stays bundled -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-kafka</artifactId>
             <version>4.0.0-2.0</version>
         </dependency>
 
-        <!-- Flink Avro -->
+        <!-- Flink Avro (unused at runtime — provided for compilation only) -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-avro</artifactId>
             <version>${flink.version}</version>
+            <scope>provided</scope>
         </dependency>
 
         <!-- Avro -->
@@ -209,6 +213,7 @@
                                     <exclude>org.apache.flink:flink-core</exclude>
                                     <exclude>org.apache.flink:flink-core-api</exclude>
                                     <exclude>org.apache.flink:flink-datastream-api</exclude>
+                                    <exclude>org.apache.flink:flink-datastream</exclude>
                                     <exclude>org.apache.flink:flink-metrics-core</exclude>
                                     <exclude>org.apache.flink:flink-annotations</exclude>
                                     <exclude>org.apache.flink:flink-rpc-core</exclude>

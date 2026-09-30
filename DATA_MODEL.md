@@ -33,8 +33,11 @@ graph LR
 
 ## Blockchain Source
 
-**Contract:** Uniswap V2 Pair (`IUniswapV2Pair`) on Polygon  
-**Target Pair:** WMATIC/USDC (`0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827`)
+**Contracts:** Uniswap V2 Pair (`IUniswapV2Pair`) across Polygon, Arbitrum, Base  
+**Target Pairs:** 
+- Polygon: WMATIC/USDC (`0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827`)
+- Arbitrum: WETH/USDC
+- Base: WETH/USDC
 
 Monitored Solidity events: 
 - `Swap(address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to)`
@@ -47,6 +50,7 @@ Monitored Solidity events:
 - **Financial precision**: token amounts stored as `string` (Wei) to avoid floating-point loss.
 - **Timestamps**: block timestamps in seconds; window and processing timestamps in milliseconds.
 - **Identifiers**: `eventId` = `blockNumber-txHash-logIndex` for idempotency; addresses as `0x`-prefixed hex.
+- **Multi-chain**: all events include `chainId` (int) and `chainName` (string) for routing and partitioning.
 - **Optionality**: only truly optional fields use Avro `["null", "type"]` unions.
 
 ## Input Event Schemas
@@ -58,6 +62,7 @@ Represents a token trade on the pair.
 | Field | Type | Notes |
 |---|---|---|
 | eventId | string | Deduplication key |
+| chainId / chainName | int / string | Source chain (137=Polygon, 42161=Arbitrum, 8453=Base) |
 | blockNumber / blockTimestamp | long | Block context (timestamp in seconds) |
 | transactionHash / logIndex | string / int | Log location |
 | pairAddress | string | Pair contract |
@@ -76,7 +81,7 @@ Liquidity added to the pool.
 
 | Field | Type | Notes |
 |---|---|---|
-| eventId, blockNumber, blockTimestamp, transactionHash, logIndex | — | Same as SwapEvent |
+| eventId, chainId, chainName, blockNumber, blockTimestamp, transactionHash, logIndex | — | Same as SwapEvent |
 | pairAddress, token0, token1, token0Symbol?, token1Symbol? | — | Pair context |
 | sender | string | Router address (not the actual LP) |
 | amount0 / amount1 | string | Tokens added (Wei) |
@@ -110,8 +115,9 @@ LP token movement for correlation with Mint/Burn.
 
 | Field | Type | Notes |
 |---|---|---|
-| windowId | string | `pair:start:end` |
+| windowId | string | `chainId:pair:start:end` |
 | windowStart / windowEnd | long | Millisecond epoch |
+| chainId / chainName | int / string | Source chain |
 | pairAddress, token0Symbol?, token1Symbol? | — | Pair context |
 | twap | double | Volume-weighted average price: $\frac{\sum(price \times volume)}{\sum volume}$ |
 | openPrice / closePrice / highPrice / lowPrice | double | OHLC from first, last, max, min swap prices |
@@ -131,7 +137,7 @@ LP token movement for correlation with Mint/Burn.
 
 | Field | Type | Notes |
 |---|---|---|
-| windowId, windowStart, windowEnd, pairAddress | — | Same pattern as above |
+| windowId, windowStart, windowEnd, chainId, chainName, pairAddress | — | Same pattern as above |
 | mintCount / burnCount | int | Event counts |
 | totalLpTokensMinted / totalLpTokensBurned / netLpTokenChange | string | LP token accounting (Wei) |
 | uniqueProviders | int | Distinct LP addresses |
@@ -146,6 +152,7 @@ Session window (3 s gap) detecting MEV patterns across all event types.
 | alertId | string | UUID |
 | alertType | string | `SANDWICH_ATTACK` or `JIT_LIQUIDITY` |
 | windowStart / windowEnd | long | Session boundaries |
+| chainId / chainName | int / string | Source chain |
 | pairAddress, token0Symbol?, token1Symbol? | — | Pair context |
 | blockNumber | long | Primary block of activity |
 | attackerAddress | string? | Detected attacker |
@@ -162,8 +169,9 @@ Session window (3 s gap) detecting MEV patterns across all event types.
 
 | Field | Type | Notes |
 |---|---|---|
-| windowId | string | `pair:trend:start:end` |
+| windowId | string | `chainId:pair:trend:start:end` |
 | windowStart / windowEnd | long | Window boundaries |
+| chainId / chainName | int / string | Source chain |
 | pairAddress, token0Symbol?, token1Symbol? | — | Pair context |
 | avgPrice / openPrice / closePrice | double | Price summary |
 | priceChangePercent | double | $(close - open) / open \times 100$ |
@@ -179,6 +187,7 @@ Not persisted — computed by the analytics service from stored data.
 
 | Field | Type | Notes |
 |---|---|---|
+| chainId / chainName | int / string | Source chain |
 | pairAddress | string | Pool identifier |
 | overallScore | double | Weighted composite (0–1) |
 | tradingScore | double | 35 % weight — volume, activity, trader diversity |

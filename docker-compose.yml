@@ -32,6 +32,27 @@ services:
       timeout: 10s
       retries: 5
 
+  # One-shot topic provisioning (auto-create is disabled on the broker)
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -c
+      - >
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-trading-events --partitions 6 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-liquidity-events --partitions 6 --replication-factor 1 --config retention.ms=2592000000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-trading-analytics --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-liquidity-analytics --partitions 3 --replication-factor 1 --config retention.ms=7776000000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-pattern-analytics --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-market-trends --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
+        echo "All topics created"
+    networks:
+      - dex-analytics-network
+
   # DAPR placement service for actor runtime
   dapr-placement:
     image: daprio/dapr:1.12.0
@@ -57,20 +78,19 @@ services:
       - PUBSUB_NAME=kafka-pubsub
       - TOPIC_TRADING_EVENTS=dex-trading-events
       - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
-      - PRODUCER_BATCH_SIZE=100
-      - PRODUCER_RETRY_MAX=3
-      - PRODUCER_FLUSH_INTERVAL=5s
       - APP_PORT=3000
     ports:
       - "3000:3000"
     depends_on:
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       dapr-placement:
         condition: service_started
     networks:
       - dex-analytics-network
     restart: unless-stopped
+    profiles:
+      - live
 
   # DAPR sidecar for ingester
   ingester-dapr:
@@ -81,6 +101,7 @@ services:
       "-app-id", "ingester",
       "-app-port", "3000",
       "-app-protocol", "http",
+      "-app-channel-address", "ingester",
       "-dapr-http-port", "3500",
       "-dapr-grpc-port", "50001",
       "-components-path", "/components",
@@ -95,15 +116,21 @@ services:
       - ingester
     networks:
       - dex-analytics-network
-    environment:
-      - DAPR_HOST_IP=ingester
+    profiles:
+      - live
 
-  # Flink JobManager for standalone cluster mode
+  # Flink JobManager in application mode: builds the aggregator jar and runs
+  # the StreamProcessor job on startup (no manual `flink run` needed).
   flink-jobmanager:
-    image: flink:2.0-scala_2.12-java21
+    build:
+      context: ./aggregator
+      dockerfile: Dockerfile
+    image: dex-analytics-aggregator:latest
     container_name: flink-jobmanager
-    command: jobmanager
+    command: standalone-job --job-classname com.web3analytics.StreamProcessor
     environment:
+      # TaskManagers connect via this hostname — without it the JM announces
+      # its container hostname and TM registration messages get dropped.
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
@@ -112,26 +139,24 @@ services:
       - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
       - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
       - TOPIC_LIQUIDITY_ANALYTICS=dex-liquidity-analytics
+      - TOPIC_PATTERN_ANALYTICS=dex-pattern-analytics
+      - TOPIC_MARKET_TRENDS=dex-market-trends
       - FLINK_CONSUMER_GROUP=dex-processor
       - FLINK_PARALLELISM=2
       - FLINK_CHECKPOINT_MS=10000
     depends_on:
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     ports:
       - "8081:8081"
-    volumes:
-      - ./aggregator/target:/opt/flink/usrlib
     networks:
       - dex-analytics-network
     restart: unless-stopped
-    profiles:
-      - full-stack
-      - flink-cluster
 
-  # Flink TaskManager workers for standalone cluster mode
+  # Flink TaskManager workers. Uses the job image: in standalone application
+  # mode the user jar must be present on TaskManagers too (no blob shipping).
   flink-taskmanager:
-    image: flink:2.0-scala_2.12-java21
+    image: dex-analytics-aggregator:latest
     container_name: flink-taskmanager
     command: taskmanager
     environment:
@@ -139,22 +164,11 @@ services:
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - TOPIC_TRADING_EVENTS=dex-trading-events
-      - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
-      - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
-      - TOPIC_LIQUIDITY_ANALYTICS=dex-liquidity-analytics
-      - FLINK_CONSUMER_GROUP=dex-processor
-      - FLINK_PARALLELISM=2
-      - FLINK_CHECKPOINT_MS=10000
     depends_on:
       - flink-jobmanager
     networks:
       - dex-analytics-network
     restart: unless-stopped
-    profiles:
-      - full-stack
-      - flink-cluster
 
   # Redis for analytics persistence
   redis:
@@ -183,8 +197,8 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       dapr-placement:
@@ -202,6 +216,7 @@ services:
       "-app-id", "analytics-service",
       "-app-port", "8080",
       "-app-protocol", "http",
+      "-app-channel-address", "analytics-service",
       "-dapr-http-port", "3501",
       "-dapr-grpc-port", "50002",
       "-components-path", "/components",
@@ -212,13 +227,16 @@ services:
     volumes:
       - ./dapr/components:/components
       - ./dapr/config:/config
-      - ./dapr/subscriptions:/subscriptions
+      # Declarative subscriptions must live in the components/resources path —
+      # a separate /subscriptions mount is never read by self-hosted daprd.
+      - ./dapr/subscriptions/analytics-subscriptions.yaml:/components/analytics-subscriptions.yaml:ro
     depends_on:
-      - analytics-service
+      analytics-service:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
     networks:
       - dex-analytics-network
-    environment:
-      - DAPR_HOST_IP=analytics-service
 
 networks:
   dex-analytics-network:

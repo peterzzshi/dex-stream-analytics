@@ -1,6 +1,6 @@
 # Aggregator
 
-Apache Flink 2 job (Java 21) that consumes DEX events from Kafka and produces four analytics streams using different window types.
+Apache Flink 2 job (Java 21) consuming multi-chain DEX events from Kafka and producing four analytics streams. Handles Polygon, Arbitrum, and Base events using `chainId` partitioning.
 
 ## Pipelines
 
@@ -11,7 +11,7 @@ Apache Flink 2 job (Java 21) that consumes DEX events from Kafka and produces fo
 | MEV Detection | Both topics (union) | Session (3 s gap) | `dex-pattern-analytics` | `MevDetectionFunction` |
 | Market Trends | `dex-trading-events` | Sliding (30 min / 5 min) | `dex-market-trends` | `SwapAggregator` + `MarketTrendWindowFunction` |
 
-Events are decoded and watermarked once per source topic, then fanned out to the four pipelines.
+Events are decoded and watermarked once per source topic, then fanned out to the four pipelines. All events include `chainId` and `chainName` for cross-chain partitioning.
 
 ## Contract with Ingester
 

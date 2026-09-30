@@ -4,10 +4,9 @@ metadata:
   name: dex-analytics-config
   namespace: default
 spec:
+  # Tracing disabled: no Zipkin backend is part of the local stack.
   tracing:
-    samplingRate: "1"
-    zipkin:
-      endpointAddress: "http://zipkin:9411/api/v2/spans"
+    samplingRate: "0"
 
   metric:
     enabled: true
@@ -22,8 +21,3 @@ spec:
     apiLogging:
       enabled: true
       obfuscateURLs: false
-
-  # Features
-  features:
-    - name: Feature1
-      enabled: true

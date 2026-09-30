@@ -13,11 +13,11 @@ spec:
 
     # Consumer group for this application
     - name: consumerGroup
-      value: "api-consumer-group"
+      value: "analytics-consumer-group"
 
     # Client ID for identification
     - name: clientID
-      value: "api-consumer-client"
+      value: "analytics-consumer-client"
 
     # Authentication type
     - name: authType
@@ -41,4 +41,4 @@ spec:
       value: "2.8.0"
 scopes:
   - ingester
-  - api
+  - analytics-service

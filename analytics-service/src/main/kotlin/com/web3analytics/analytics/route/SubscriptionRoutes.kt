@@ -26,7 +26,7 @@ fun Route.subscriptionRoutes(store: AnalyticsStore, mapper: ObjectMapper, eventB
         val result = mapper.extractCloudEventData<TradingAnalytics>(body)
             .map { analytics ->
                 store.storeTradingAnalytics(analytics)
-                eventBus.emit(AnalyticsEvent.TradingUpdate(analytics.pairAddress.value, mapper.readTree(body).get("data").toString()))
+                eventBus.emit(AnalyticsEvent.TradingUpdate(analytics.pairAddress.value, mapper.writeValueAsString(analytics)))
                 logger.info("Stored trading window: pair={} twap={} volume={}",
                     analytics.pairAddress, analytics.twap, analytics.volumeUSD)
                 mapOf("status" to "SUCCESS")
@@ -39,7 +39,7 @@ fun Route.subscriptionRoutes(store: AnalyticsStore, mapper: ObjectMapper, eventB
         val result = mapper.extractCloudEventData<LiquidityAnalytics>(body)
             .map { analytics ->
                 store.storeLiquidityAnalytics(analytics)
-                eventBus.emit(AnalyticsEvent.LiquidityUpdate(analytics.pairAddress.value, mapper.readTree(body).get("data").toString()))
+                eventBus.emit(AnalyticsEvent.LiquidityUpdate(analytics.pairAddress.value, mapper.writeValueAsString(analytics)))
                 logger.info("Stored liquidity window: pair={} mints={} burns={}",
                     analytics.pairAddress, analytics.mintCount, analytics.burnCount)
                 mapOf("status" to "SUCCESS")
@@ -52,7 +52,7 @@ fun Route.subscriptionRoutes(store: AnalyticsStore, mapper: ObjectMapper, eventB
         val result = mapper.extractCloudEventData<MevAlert>(body)
             .map { alert ->
                 store.storeMevAlert(alert)
-                eventBus.emit(AnalyticsEvent.MevAlertEvent(alert.pairAddress.value, mapper.readTree(body).get("data").toString()))
+                eventBus.emit(AnalyticsEvent.MevAlertEvent(alert.pairAddress.value, mapper.writeValueAsString(alert)))
                 logger.info("Stored MEV alert: pair={} type={} severity={}",
                     alert.pairAddress, alert.alertType, alert.severity)
                 mapOf("status" to "SUCCESS")
@@ -65,7 +65,7 @@ fun Route.subscriptionRoutes(store: AnalyticsStore, mapper: ObjectMapper, eventB
         val result = mapper.extractCloudEventData<MarketTrend>(body)
             .map { trend ->
                 store.storeMarketTrend(trend)
-                eventBus.emit(AnalyticsEvent.TrendUpdate(trend.pairAddress.value, mapper.readTree(body).get("data").toString()))
+                eventBus.emit(AnalyticsEvent.TrendUpdate(trend.pairAddress.value, mapper.writeValueAsString(trend)))
                 logger.info("Stored market trend: pair={} trend={} priceChange={}%",
                     trend.pairAddress, trend.trend, trend.priceChangePercent)
                 mapOf("status" to "SUCCESS")

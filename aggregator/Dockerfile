@@ -6,7 +6,6 @@ RUN mvn -q -B dependency:go-offline
 COPY src src
 RUN mvn -q -B package -DskipTests
 
+# Job image: jar baked in, run via `standalone-job` (jobmanager) from compose.
 FROM flink:2.0-scala_2.12-java21
 COPY --from=build /build/target/aggregator-1.0-SNAPSHOT.jar /opt/flink/usrlib/aggregator.jar
-ENV FLINK_PARALLELISM=2
-CMD ["/docker-entrypoint.sh", "taskmanager"]

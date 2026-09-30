@@ -16,13 +16,12 @@ Canonical Avro schemas for the pipeline live in `schemas/avro/`.
 | `MintEvent.avsc` | `dex-liquidity-events` | ingester | aggregator |
 | `BurnEvent.avsc` | `dex-liquidity-events` | ingester | aggregator |
 | `TransferEvent.avsc` | `dex-liquidity-events` | ingester | aggregator |
-| `AggregatedAnalytics.avsc` | `dex-trading-analytics` | aggregator | analytics-service |
 
-MevAlert and MarketTrend are serialized as JSON (not Avro) on `dex-pattern-analytics` and `dex-market-trends`.
+All four output topics (`dex-trading-analytics`, `dex-liquidity-analytics`, `dex-pattern-analytics`, `dex-market-trends`) are plain JSON, produced by the aggregator's `JsonSerializationSchema`. `AggregatedAnalytics.avsc` documents the trading-analytics shape only — it is not used on the wire. The analytics-service consumes outputs via Dapr subscriptions with `rawPayload: true` (no CloudEvent envelope).
 
 ## Contract Notes
 
-- Kafka values arrive wrapped as Dapr CloudEvents.
+- Input topic values arrive wrapped as Dapr CloudEvents (Avro binary in `data_base64`).
 - CloudEvent `type` selects the schema before payload decode.
 - `schemas/avro/*.avsc` is the source of truth for Avro payload shape.
 - Field semantics are documented in `DATA_MODEL.md`.

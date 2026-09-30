@@ -1,6 +1,6 @@
 # Analytics Service
 
-Kotlin/Ktor service that receives aggregated DEX analytics via Dapr subscriptions, computes pool health scores, and serves time-series query endpoints. Stores data in Redis sorted sets.
+Kotlin/Ktor service receiving multi-chain aggregated DEX analytics via Dapr subscriptions, computing pool health scores, and serving time-series query endpoints. Stores data in Redis with `chainId:pair` keying.
 
 ## Requirements
 

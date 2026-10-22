@@ -1,14 +1,15 @@
 package com.web3analytics.functions;
 
+import static com.web3analytics.functions.Web3Math.round8;
+import static com.web3analytics.functions.WindowUtils.buildWindowId;
+
 import com.web3analytics.models.AggregatedAnalytics;
 import com.web3analytics.models.MarketTrend;
+import java.time.Instant;
+import java.util.Iterator;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
-
-import java.time.Instant;
-
-import static com.web3analytics.functions.Web3Math.round8;
 
 /**
  * Converts aggregated swap metrics from a sliding window into a {@link MarketTrend}.
@@ -18,25 +19,9 @@ import static com.web3analytics.functions.Web3Math.round8;
 public class MarketTrendWindowFunction
         extends ProcessWindowFunction<AggregatedAnalytics, MarketTrend, String, TimeWindow> {
 
+  // Trend classification thresholds: 1% price movement filters noise in low-liquidity pairs
     private static final double BULLISH_THRESHOLD = 0.01;
     private static final double BEARISH_THRESHOLD = -0.01;
-
-    @Override
-    public void process(
-            String pairAddress,
-            Context context,
-            Iterable<AggregatedAnalytics> elements,
-            Collector<MarketTrend> out
-    ) {
-        AggregatedAnalytics metrics = elements.iterator().next();
-        out.collect(toMarketTrend(
-                pairAddress,
-                context.window().getStart(),
-                context.window().getEnd(),
-                metrics,
-                Instant.now().toEpochMilli()
-        ));
-    }
 
     static MarketTrend toMarketTrend(
             String pairAddress,
@@ -65,7 +50,7 @@ public class MarketTrendWindowFunction
         }
 
         return new MarketTrend(
-                buildWindowId(pairAddress, windowStart, windowEnd),
+            buildWindowId(pairAddress, windowStart, windowEnd, "trend"),
                 windowStart, windowEnd,
                 metrics.chain(),
                 metrics.chainName(),
@@ -85,7 +70,25 @@ public class MarketTrendWindowFunction
         );
     }
 
-    static String buildWindowId(String pairAddress, long windowStart, long windowEnd) {
-        return pairAddress + ":trend:" + windowStart + ":" + windowEnd;
+  @Override
+  public void process(
+      String pairAddress,
+      Context context,
+      Iterable<AggregatedAnalytics> elements,
+      Collector<MarketTrend> out
+  ) {
+    Iterator<AggregatedAnalytics> iterator = elements.iterator();
+    if (!iterator.hasNext()) {
+      throw new IllegalStateException("Window function received empty elements");
+    }
+
+    AggregatedAnalytics metrics = iterator.next();
+    out.collect(toMarketTrend(
+        pairAddress,
+        context.window().getStart(),
+        context.window().getEnd(),
+        metrics,
+        Instant.now().toEpochMilli()
+    ));
     }
 }

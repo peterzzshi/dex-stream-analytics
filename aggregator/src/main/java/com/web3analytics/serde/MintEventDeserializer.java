@@ -3,32 +3,37 @@ package com.web3analytics.serde;
 import com.web3analytics.models.MintEvent;
 
 /**
- * Deserializes MintEvent from Kafka payload.
- * Expects Dapr CloudEvents envelopes with Avro payload in data/data_base64.
+ * Deserializes MintEvent from Avro binary payload.
+ * Used by LiquidityEventDeserializer for heterogeneous topic routing.
  */
-public class MintEventDeserializer extends AbstractCloudEventAvroDeserializer<MintEvent, com.web3analytics.events.MintEvent> {
+class MintEventDeserializer {
 
-    public MintEventDeserializer() {
-        super(com.web3analytics.events.MintEvent.class, MintEvent.class, "com.dex.events.mint");
-    }
+  private final AvroDeserializer<MintEvent, com.web3analytics.events.MintEvent> avroDeserializer =
+      new AvroDeserializer<>(com.web3analytics.events.MintEvent.class) {
+        @Override
+        protected MintEvent map(com.web3analytics.events.MintEvent avroRecord) {
+          return new MintEvent(
+              avroRecord.getEventId(),
+              avroRecord.getBlockNumber(),
+              avroRecord.getBlockTimestamp(),
+              avroRecord.getTransactionHash(),
+              avroRecord.getLogIndex(),
+              avroRecord.getChain(),
+              avroRecord.getChainName(),
+              avroRecord.getPairAddress(),
+              avroRecord.getToken0(),
+              avroRecord.getToken1(),
+              avroRecord.getToken0Symbol(),
+              avroRecord.getToken1Symbol(),
+              avroRecord.getSender(),
+              avroRecord.getAmount0(),
+              avroRecord.getAmount1(),
+              avroRecord.getEventTimestamp()
+          );
+        }
+      };
 
-    @Override
-    protected MintEvent map(com.web3analytics.events.MintEvent record) {
-        return new MintEvent(
-                record.getEventId(),
-                record.getBlockNumber(),
-                record.getBlockTimestamp(),
-                record.getTransactionHash(),
-                record.getLogIndex(),
-                record.getPairAddress(),
-                record.getToken0(),
-                record.getToken1(),
-                record.getToken0Symbol(),
-                record.getToken1Symbol(),
-                record.getSender(),
-                record.getAmount0(),
-                record.getAmount1(),
-                record.getEventTimestamp()
-        );
+  MintEvent deserializeAvro(byte[] avroPayload) {
+    return avroDeserializer.deserialize(avroPayload);
     }
 }

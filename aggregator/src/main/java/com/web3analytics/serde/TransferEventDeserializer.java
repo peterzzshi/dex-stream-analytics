@@ -3,32 +3,37 @@ package com.web3analytics.serde;
 import com.web3analytics.models.TransferEvent;
 
 /**
- * Deserializes TransferEvent from Kafka payload.
- * Expects Dapr CloudEvents envelopes with Avro payload in data/data_base64.
+ * Deserializes TransferEvent from Avro binary payload.
+ * Used by LiquidityEventDeserializer for heterogeneous topic routing.
  */
-public class TransferEventDeserializer extends AbstractCloudEventAvroDeserializer<TransferEvent, com.web3analytics.events.TransferEvent> {
+class TransferEventDeserializer {
 
-    public TransferEventDeserializer() {
-        super(com.web3analytics.events.TransferEvent.class, TransferEvent.class, "com.dex.events.transfer");
-    }
+  private final AvroDeserializer<TransferEvent, com.web3analytics.events.TransferEvent> avroDeserializer =
+      new AvroDeserializer<>(com.web3analytics.events.TransferEvent.class) {
+        @Override
+        protected TransferEvent map(com.web3analytics.events.TransferEvent avroRecord) {
+          return new TransferEvent(
+              avroRecord.getEventId(),
+              avroRecord.getBlockNumber(),
+              avroRecord.getBlockTimestamp(),
+              avroRecord.getTransactionHash(),
+              avroRecord.getLogIndex(),
+              avroRecord.getChain(),
+              avroRecord.getChainName(),
+              avroRecord.getPairAddress(),
+              avroRecord.getToken0(),
+              avroRecord.getToken1(),
+              avroRecord.getToken0Symbol(),
+              avroRecord.getToken1Symbol(),
+              avroRecord.getFrom(),
+              avroRecord.getTo(),
+              avroRecord.getValue(),
+              avroRecord.getEventTimestamp()
+          );
+        }
+      };
 
-    @Override
-    protected TransferEvent map(com.web3analytics.events.TransferEvent record) {
-        return new TransferEvent(
-                record.getEventId(),
-                record.getBlockNumber(),
-                record.getBlockTimestamp(),
-                record.getTransactionHash(),
-                record.getLogIndex(),
-                record.getPairAddress(),
-                record.getToken0(),
-                record.getToken1(),
-                record.getToken0Symbol(),
-                record.getToken1Symbol(),
-                record.getFrom(),
-                record.getTo(),
-                record.getValue(),
-                record.getEventTimestamp()
-        );
+  TransferEvent deserializeAvro(byte[] avroPayload) {
+    return avroDeserializer.deserialize(avroPayload);
     }
 }

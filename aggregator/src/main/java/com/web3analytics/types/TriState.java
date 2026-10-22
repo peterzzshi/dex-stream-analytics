@@ -3,7 +3,6 @@ package com.web3analytics.types;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -23,12 +22,8 @@ import java.util.function.Supplier;
 public sealed interface TriState<T> {
 
     static <T> TriState<T> of(T value) {
-        Objects.requireNonNull(value, "Use ofNullable() for nullable values");
+      Objects.requireNonNull(value, "Value cannot be null");
         return new Defined<>(value);
-    }
-
-    static <T> TriState<T> ofNullable(T value) {
-        return value == null ? new Null<>() : new Defined<>(value);
     }
 
     static <T> TriState<T> undefined() {
@@ -39,66 +34,48 @@ public sealed interface TriState<T> {
         return new Null<>();
     }
 
-    default boolean isDefined() { return this instanceof Defined; }
-    default boolean isUndefined() { return this instanceof Undefined; }
-    default boolean isNull() { return this instanceof Null; }
+  default boolean isDefined() {
+    return this instanceof Defined;
+  }
+
+  default boolean isUndefined() {
+    return this instanceof Undefined;
+  }
+
+  default boolean isNull() {
+    return this instanceof Null;
+  }
 
     default T get() {
         return switch (this) {
-            case Defined<T> d -> d.value;
-            case Undefined<T> u -> throw new NoSuchElementException("Value is undefined");
-            case Null<T> n -> throw new NoSuchElementException("Value is explicitly null");
+          case Defined<T>(var value) -> value;
+          case Undefined<T> ignored -> throw new NoSuchElementException("Value is undefined");
+          case Null<T> ignored -> throw new NoSuchElementException("Value is explicitly null");
         };
     }
 
     default T orElse(T defaultValue) {
         return switch (this) {
-            case Defined<T> d -> d.value;
-            case Undefined<T> u -> defaultValue;
-            case Null<T> n -> defaultValue;
-        };
-    }
-
-    default T orElseGet(Supplier<? extends T> supplier) {
-        return switch (this) {
-            case Defined<T> d -> d.value;
-            case Undefined<T> u -> supplier.get();
-            case Null<T> n -> supplier.get();
+          case Defined<T>(var value) -> value;
+          case Undefined<T> ignored -> defaultValue;
+          case Null<T> ignored2 -> defaultValue;
         };
     }
 
     default <U> TriState<U> map(Function<? super T, ? extends U> mapper) {
         return switch (this) {
-            case Defined<T> d -> TriState.of(mapper.apply(d.value));
-            case Undefined<T> u -> TriState.undefined();
-            case Null<T> n -> TriState.ofNull();
+          case Defined<T>(var value) -> TriState.of(mapper.apply(value));
+          case Undefined<T> ignored -> TriState.undefined();
+          case Null<T> ignored -> TriState.ofNull();
         };
     }
 
     default <U> TriState<U> flatMap(Function<? super T, TriState<U>> mapper) {
         return switch (this) {
-            case Defined<T> d -> mapper.apply(d.value);
-            case Undefined<T> u -> TriState.undefined();
-            case Null<T> n -> TriState.ofNull();
+          case Defined<T>(var value) -> mapper.apply(value);
+          case Undefined<T> ignored -> TriState.undefined();
+          case Null<T> ignored -> TriState.ofNull();
         };
-    }
-
-    default void ifDefined(Consumer<? super T> consumer) {
-        if (this instanceof Defined<T> d) {
-            consumer.accept(d.value);
-        }
-    }
-
-    default void match(
-            Consumer<? super T> onDefined,
-            Runnable onUndefined,
-            Runnable onNull
-    ) {
-        switch (this) {
-            case Defined<T> d -> onDefined.accept(d.value);
-            case Undefined<T> u -> onUndefined.run();
-            case Null<T> n -> onNull.run();
-        }
     }
 
     default <R> R fold(
@@ -107,18 +84,17 @@ public sealed interface TriState<T> {
             Supplier<? extends R> onNull
     ) {
         return switch (this) {
-            case Defined<T> d -> onDefined.apply(d.value);
-            case Undefined<T> u -> onUndefined.get();
-            case Null<T> n -> onNull.get();
+          case Defined<T>(var value) -> onDefined.apply(value);
+          case Undefined<T> ignored -> onUndefined.get();
+          case Null<T> ignored -> onNull.get();
         };
     }
 
-    /** Collapses to Optional, losing the Undefined/Null distinction. */
     default Optional<T> toOptional() {
         return switch (this) {
-            case Defined<T> d -> Optional.of(d.value);
-            case Undefined<T> u -> Optional.empty();
-            case Null<T> n -> Optional.empty();
+          case Defined<T>(var value) -> Optional.of(value);
+          case Undefined<T> ignored -> Optional.empty();
+          case Null<T> ignored2 -> Optional.empty();
         };
     }
 
@@ -126,18 +102,11 @@ public sealed interface TriState<T> {
         public Defined {
             Objects.requireNonNull(value, "Defined value cannot be null");
         }
-
-        @Override
-        public String toString() { return "Defined[" + value + "]"; }
     }
 
     record Undefined<T>() implements TriState<T> {
-        @Override
-        public String toString() { return "Undefined"; }
     }
 
     record Null<T>() implements TriState<T> {
-        @Override
-        public String toString() { return "Null"; }
     }
 }

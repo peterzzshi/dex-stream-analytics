@@ -1,17 +1,18 @@
 package com.web3analytics.errors;
 
+import java.io.Serial;
+
+/**
+ * Thrown when serializing a domain model to bytes fails. Not intended for serialization itself -
+ * used only for control flow in Flink pipelines.
+ */
 public final class SerializationException extends RuntimeException {
 
-    private final Object failedObject;
+  // Suppresses Serializable warning - this exception is not serialized
+  @Serial
+  private static final long serialVersionUID = 1L;
 
-    public SerializationException(Object failedObject, Throwable cause) {
-        super("Failed to serialize: " +
-              (failedObject != null ? failedObject.getClass().getName() : "null"),
-              cause);
-        this.failedObject = failedObject;
-    }
-
-    public Object failedObject() {
-        return failedObject;
+  public SerializationException(String message, Throwable cause) {
+    super(message, cause);
     }
 }

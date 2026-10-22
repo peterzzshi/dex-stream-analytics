@@ -1,12 +1,12 @@
 package com.web3analytics.functions;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.web3analytics.models.AggregatedAnalytics;
 import com.web3analytics.models.MarketTrend;
-import org.junit.jupiter.api.Test;
-
 import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
 
 class MarketTrendWindowFunctionTest {
 
@@ -58,8 +58,8 @@ class MarketTrendWindowFunctionTest {
 
     @Test
     void windowIdFormat() {
-        String id = MarketTrendWindowFunction.buildWindowId("0xpair", 1000, 2000);
-        assertEquals("0xpair:trend:1000:2000", id);
+      String id = WindowUtils.buildWindowId("0xpair", 1000L, 2000L);
+      assertEquals("0xpair:1000:2000", id);
     }
 
     @Test
@@ -77,14 +77,14 @@ class MarketTrendWindowFunctionTest {
             Double volumeUSD, int swapCount, int uniqueTraders
     ) {
         return new AggregatedAnalytics(
-                "test-window", 0, 300000, "0xpair",
+            "test-window", 0L, 300000L, "eip155:1", "Ethereum", "0xpair",
                 "WMATIC", "USDC",
                 twap, open, close, high, low, 0.0,
                 "100000", "200000", volumeUSD,
                 swapCount, uniqueTraders,
                 "100.00 USD", "0xwhale",
-                500000, "50000000000",
-                0, List.of(), 999
+            500000L, "50000000000",
+            0, List.of(), 999L
         );
     }
 }

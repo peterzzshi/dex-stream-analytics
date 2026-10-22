@@ -1,15 +1,14 @@
 package com.web3analytics.functions;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.web3analytics.models.BurnEvent;
 import com.web3analytics.models.DexEvent;
 import com.web3analytics.models.LiquidityAnalytics;
 import com.web3analytics.models.MintEvent;
 import com.web3analytics.models.TransferEvent;
-import org.junit.jupiter.api.Test;
-
 import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
 
 class LiquidityWindowFunctionTest {
 
@@ -17,27 +16,27 @@ class LiquidityWindowFunctionTest {
     void summarize_computesLiquidityFlowAndProviderMetrics() {
         List<DexEvent> events = List.of(
                 new MintEvent(
-                        "mint-1", 1L, 1000L, "0xtx1", 0,
+                    "mint-1", 1L, 1000L, "0xtx1", 0, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", "WMATIC", "USDC",
                         "0xAlice", "100", "200", 1000L
                 ),
                 new MintEvent(
-                        "mint-2", 1L, 1050L, "0xtx2", 1,
+                    "mint-2", 1L, 1050L, "0xtx2", 1, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", null, null,
                         "0xBob", "50", "100", 1050L
                 ),
                 new BurnEvent(
-                        "burn-1", 1L, 1100L, "0xtx3", 2,
+                    "burn-1", 1L, 1100L, "0xtx3", 2, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", "WMATIC", "USDC",
                         "0xAlice", "0xAlice", "30", "60", 1100L
                 ),
                 new BurnEvent(
-                        "burn-2", 1L, 1200L, "0xtx4", 3,
+                    "burn-2", 1L, 1200L, "0xtx4", 3, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", null, null,
                         "0xCarol", "0xCarol", "20", "40", 1200L
                 ),
                 new TransferEvent(
-                        "transfer-1", 1L, 1250L, "0xtx5", 4,
+                    "transfer-1", 1L, 1250L, "0xtx5", 4, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", "WMATIC", "USDC",
                         "0xAlice", "0xBob", "10", 1250L
                 )
@@ -47,8 +46,7 @@ class LiquidityWindowFunctionTest {
                 "0xpair",
                 1_700_000_000_000L,
                 1_700_000_360_000L,
-                events,
-                1_700_000_400_000L
+            events
         );
 
         assertThat(analytics.windowId()).isEqualTo("0xpair:1700000000000:1700000360000");
@@ -77,31 +75,32 @@ class LiquidityWindowFunctionTest {
         assertThat(analytics.netLpTokenChange()).isEqualTo("0");
         assertThat(analytics.transferCount()).isEqualTo(1);
 
-        assertThat(analytics.processedAt()).isEqualTo(1_700_000_400_000L);
+      // processedAt is auto-generated, just verify it's non-zero
+      assertThat(analytics.processedAt()).isGreaterThan(0L);
     }
 
     @Test
     void summarize_correlatesTransferWithMintAndBurn() {
         List<DexEvent> events = List.of(
                 new MintEvent(
-                        "mint-1", 1L, 1000L, "0xtx1", 0,
+                    "mint-1", 1L, 1000L, "0xtx1", 0, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", "WMATIC", "USDC",
                         "0xAlice", "100", "200", 1000L
                 ),
                 // Transfer in same tx as mint → LP tokens minted
                 new TransferEvent(
-                        "transfer-1", 1L, 1000L, "0xtx1", 1,
+                    "transfer-1", 1L, 1000L, "0xtx1", 1, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", "WMATIC", "USDC",
                         "0x0000000000000000000000000000000000000000", "0xAlice", "500", 1000L
                 ),
                 new BurnEvent(
-                        "burn-1", 1L, 1100L, "0xtx2", 2,
+                    "burn-1", 1L, 1100L, "0xtx2", 2, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", "WMATIC", "USDC",
                         "0xAlice", "0xAlice", "30", "60", 1100L
                 ),
                 // Transfer in same tx as burn → LP tokens burned
                 new TransferEvent(
-                        "transfer-2", 1L, 1100L, "0xtx2", 3,
+                    "transfer-2", 1L, 1100L, "0xtx2", 3, "eip155:1", "Ethereum",
                         "0xpair", "0xt0", "0xt1", "WMATIC", "USDC",
                         "0xAlice", "0x0000000000000000000000000000000000000000", "200", 1100L
                 )
@@ -111,8 +110,7 @@ class LiquidityWindowFunctionTest {
                 "0xpair",
                 1_700_000_000_000L,
                 1_700_000_360_000L,
-                events,
-                1_700_000_400_000L
+            events
         );
 
         assertThat(analytics.mintCount()).isEqualTo(1);
@@ -125,7 +123,7 @@ class LiquidityWindowFunctionTest {
 
     @Test
     void buildWindowId_includesPairAndBounds() {
-        assertThat(LiquidityWindowFunction.buildWindowId("0xpair", 10L, 20L))
+      assertThat(WindowUtils.buildWindowId("0xpair", 10L, 20L))
                 .isEqualTo("0xpair:10:20");
     }
 }

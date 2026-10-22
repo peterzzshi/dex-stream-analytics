@@ -12,25 +12,127 @@
 
     <name>Web3 DEX Analytics - Flink Aggregator</name>
 
-    <properties>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <java.version>21</java.version>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
-        <maven.compiler.release>21</maven.compiler.release>
+  <build>
+    <plugins>
+      <!-- Maven Compiler -->
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <source>${java.version}</source>
+          <target>${java.version}</target>
+        </configuration>
+        <groupId>org.apache.maven.plugins</groupId>
+        <version>3.13.0</version>
+      </plugin>
 
-        <flink.version>2.0.0</flink.version>
-        <scala.binary.version>2.12</scala.binary.version>
-        <avro.version>1.12.1</avro.version>
-        <kafka.version>4.2.0</kafka.version>
-        <log4j.version>2.25.3</log4j.version>
-        <slf4j.version>2.0.16</slf4j.version>
-        <junit.version>5.11.4</junit.version>
-        <mockito.version>5.22.0</mockito.version>
-        <assertj.version>3.27.7</assertj.version>
-    </properties>
+      <!-- Avro code generation -->
+      <plugin>
+        <artifactId>avro-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <configuration>
+              <outputDirectory>${project.build.directory}/generated-sources/avro</outputDirectory>
+              <sourceDirectory>${project.basedir}/src/main/resources/avro</sourceDirectory>
+              <stringType>String</stringType>
+            </configuration>
+            <goals>
+              <goal>schema</goal>
+            </goals>
+            <id>generate-avro-classes</id>
+            <phase>generate-sources</phase>
+          </execution>
+        </executions>
+        <groupId>org.apache.avro</groupId>
+        <version>${avro.version}</version>
+      </plugin>
 
-    <dependencies>
+      <!-- Shade Plugin for Fat JAR -->
+      <plugin>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <configuration>
+              <artifactSet>
+                <excludes>
+                  <exclude>org.apache.flink:flink-streaming-java</exclude>
+                  <exclude>org.apache.flink:flink-clients</exclude>
+                  <exclude>org.apache.flink:flink-runtime</exclude>
+                  <exclude>org.apache.flink:flink-core</exclude>
+                  <exclude>org.apache.flink:flink-core-api</exclude>
+                  <exclude>org.apache.flink:flink-datastream-api</exclude>
+                  <exclude>org.apache.flink:flink-datastream</exclude>
+                  <exclude>org.apache.flink:flink-metrics-core</exclude>
+                  <exclude>org.apache.flink:flink-annotations</exclude>
+                  <exclude>org.apache.flink:flink-rpc-core</exclude>
+                  <exclude>org.apache.flink:flink-rpc-akka-loader</exclude>
+                  <exclude>org.apache.flink:flink-queryable-state-client-java</exclude>
+                  <exclude>org.apache.flink:flink-hadoop-fs</exclude>
+                  <exclude>org.apache.flink:flink-file-sink-common</exclude>
+                  <exclude>org.apache.flink:flink-connector-datagen</exclude>
+                  <exclude>org.apache.flink:flink-connector-base</exclude>
+                  <exclude>org.apache.flink:flink-shaded-force-shading</exclude>
+                  <exclude>com.google.code.findbugs:jsr305</exclude>
+                  <exclude>org.slf4j:*</exclude>
+                  <exclude>org.apache.logging.log4j:*</exclude>
+                </excludes>
+              </artifactSet>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <transformers>
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.web3analytics.StreamProcessor</mainClass>
+                </transformer>
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
+            </configuration>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <phase>package</phase>
+          </execution>
+        </executions>
+        <groupId>org.apache.maven.plugins</groupId>
+        <version>3.6.2</version>
+      </plugin>
+
+      <!-- Surefire for Tests -->
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <groupId>org.apache.maven.plugins</groupId>
+        <version>3.5.2</version>
+      </plugin>
+
+      <plugin>
+        <artifactId>dependency-check-maven</artifactId>
+        <configuration>
+          <failBuildOnCVSS>7</failBuildOnCVSS>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+        <groupId>org.owasp</groupId>
+        <version>11.1.1</version>
+      </plugin>
+
+    </plugins>
+
+  </build>
+
+  <dependencies>
         <!-- Flink Core (provided by the Flink dist at runtime — must not be
              bundled, or user-jar copies of Flink classes shadow the cluster's
              and Java-serialized lambdas fail with ClassCastException) -->
@@ -45,7 +147,7 @@
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-kafka</artifactId>
-            <version>4.0.0-2.0</version>
+          <version>5.0.0-2.2</version>
         </dependency>
 
         <!-- Flink Avro (unused at runtime — provided for compilation only) -->
@@ -99,7 +201,22 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.21.1</version>
+        </dependency>
+    <dependency>
+      <artifactId>jackson-core</artifactId>
+      <groupId>com.fasterxml.jackson.core</groupId>
+    </dependency>
+
+    <!-- CloudEvents SDK -->
+    <dependency>
+      <artifactId>cloudevents-core</artifactId>
+      <groupId>io.cloudevents</groupId>
+      <version>4.0.1</version>
+    </dependency>
+    <dependency>
+      <artifactId>cloudevents-json-jackson</artifactId>
+      <groupId>io.cloudevents</groupId>
+      <version>4.0.1</version>
         </dependency>
 
         <!-- Testing -->
@@ -114,6 +231,15 @@
             <artifactId>flink-test-utils</artifactId>
             <version>${flink.version}</version>
             <scope>test</scope>
+          <exclusions>
+            <!-- Exclude ZooKeeper test utilities - not needed for our tests
+                 curator-test pulls in zookeeper:3.9.6 with CVE-2023-44981, CVE-2024-23944
+                 We don't use ZK in tests, so exclude the entire curator-test tree -->
+            <exclusion>
+              <artifactId>curator-test</artifactId>
+              <groupId>org.apache.curator</groupId>
+            </exclusion>
+          </exclusions>
         </dependency>
         <dependency>
             <groupId>org.assertj</groupId>
@@ -129,7 +255,65 @@
         </dependency>
     </dependencies>
 
-    <profiles>
+  <dependencyManagement>
+    <dependencies>
+      <!-- Security: Override vulnerable transitive dependencies
+           Using dependencyManagement forces these versions across the entire
+           dependency tree, including transitive deps from Flink and Kafka -->
+
+      <!-- Jackson: Core JSON processing (transitive from flink-connector-kafka)
+           Fixes: CVE-2026-89407, CVE-2026-89425, CVE-2026-68498,
+                  CVE-2026-18401, CVE-2026-68494, WS-2026-0003
+           All are DoS/OOB read vulnerabilities in async parser -->
+      <dependency>
+        <artifactId>jackson-core</artifactId>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <version>2.22.3</version>
+      </dependency>
+      <dependency>
+        <artifactId>jackson-databind</artifactId>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <version>2.22.3</version>
+      </dependency>
+      <dependency>
+        <artifactId>jackson-annotations</artifactId>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <version>2.22</version>
+      </dependency>
+
+      <!-- Kafka compression codecs (transitive from kafka-clients)
+           Required for Kafka producer/consumer; cannot exclude -->
+
+      <!-- snappy-java: Fixes CVE-2026-90559 (OOB write in uncompress) -->
+      <dependency>
+        <artifactId>snappy-java</artifactId>
+        <groupId>org.xerial.snappy</groupId>
+        <version>1.1.10.9</version>
+      </dependency>
+
+      <!-- zstd-jni: Fixes CVE-2026-87795, CVE-2026-87823, CVE-2026-89046,
+                    CVE-2026-90560, CVE-2026-87825, CVE-2026-87877,
+                    CVE-2026-87824, CVE-2026-90852, CVE-2026-89045
+           All are OOB reads, use-after-free, and invalid input handling -->
+      <dependency>
+        <artifactId>zstd-jni</artifactId>
+        <groupId>com.github.luben</groupId>
+        <version>1.5.7-14</version>
+      </dependency>
+
+      <!-- lz4-java: Fixes CVE-2026-106451, CVE-2026-59949, CVE-2026-106453,
+                     CVE-2026-106452, CVE-2026-106450, CVE-2026-106449
+           Race condition in native lib loading, XXHash JNI validation,
+           untrusted header sizes causing heap exhaustion, SOE on empty blocks -->
+      <dependency>
+        <artifactId>lz4-java</artifactId>
+        <groupId>at.yawk.lz4</groupId>
+        <version>1.11.4</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <profiles>
         <!-- Development profile: Includes Flink runtime for IntelliJ/standalone -->
         <profile>
             <id>dev</id>
@@ -159,147 +343,21 @@
         </profile>
     </profiles>
 
-    <build>
-        <plugins>
-            <!-- Maven Compiler -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.13.0</version>
-                <configuration>
-                    <source>${java.version}</source>
-                    <target>${java.version}</target>
-                </configuration>
-            </plugin>
+  <properties>
+    <assertj.version>3.27.7</assertj.version>
+    <avro.version>1.12.1</avro.version>
+    <flink.version>2.3.0</flink.version>
+    <java.version>21</java.version>
+    <junit.version>5.11.4</junit.version>
 
-            <!-- Avro code generation -->
-            <plugin>
-                <groupId>org.apache.avro</groupId>
-                <artifactId>avro-maven-plugin</artifactId>
-                <version>${avro.version}</version>
-                <executions>
-                    <execution>
-                        <id>generate-avro-classes</id>
-                        <phase>generate-sources</phase>
-                        <goals>
-                            <goal>schema</goal>
-                        </goals>
-                        <configuration>
-                            <sourceDirectory>${project.basedir}/src/main/resources/avro</sourceDirectory>
-                            <outputDirectory>${project.build.directory}/generated-sources/avro</outputDirectory>
-                            <stringType>String</stringType>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-
-            <!-- Shade Plugin for Fat JAR -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.6.0</version>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <artifactSet>
-                                <excludes>
-                                    <exclude>org.apache.flink:flink-streaming-java</exclude>
-                                    <exclude>org.apache.flink:flink-clients</exclude>
-                                    <exclude>org.apache.flink:flink-runtime</exclude>
-                                    <exclude>org.apache.flink:flink-core</exclude>
-                                    <exclude>org.apache.flink:flink-core-api</exclude>
-                                    <exclude>org.apache.flink:flink-datastream-api</exclude>
-                                    <exclude>org.apache.flink:flink-datastream</exclude>
-                                    <exclude>org.apache.flink:flink-metrics-core</exclude>
-                                    <exclude>org.apache.flink:flink-annotations</exclude>
-                                    <exclude>org.apache.flink:flink-rpc-core</exclude>
-                                    <exclude>org.apache.flink:flink-rpc-akka-loader</exclude>
-                                    <exclude>org.apache.flink:flink-queryable-state-client-java</exclude>
-                                    <exclude>org.apache.flink:flink-hadoop-fs</exclude>
-                                    <exclude>org.apache.flink:flink-file-sink-common</exclude>
-                                    <exclude>org.apache.flink:flink-connector-datagen</exclude>
-                                    <exclude>org.apache.flink:flink-connector-base</exclude>
-                                    <exclude>org.apache.flink:flink-shaded-force-shading</exclude>
-                                    <exclude>com.google.code.findbugs:jsr305</exclude>
-                                    <exclude>org.slf4j:*</exclude>
-                                    <exclude>org.apache.logging.log4j:*</exclude>
-                                </excludes>
-                            </artifactSet>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.web3analytics.StreamProcessor</mainClass>
-                                </transformer>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                            </transformers>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-
-            <!-- Surefire for Tests -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.5.2</version>
-            </plugin>
-
-            <!--  Checkstyle - Disabled: Configuration incompatible with current setup -->
-            <!--
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-checkstyle-plugin</artifactId>
-                <version>3.6.0</version>
-                <configuration>
-                    <configLocation>checkstyle.xml</configLocation>
-                    <consoleOutput>true</consoleOutput>
-                    <failsOnError>false</failsOnError>
-                    <includeTestSourceDirectory>true</includeTestSourceDirectory>
-                </configuration>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>check</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            -->
-
-            <!-- SpotBugs - Disabled: ASM version doesn't support Java 25 runtime -->
-            <!--
-            <plugin>
-                <groupId>com.github.spotbugs</groupId>
-                <artifactId>spotbugs-maven-plugin</artifactId>
-                <version>4.8.3.1</version>
-                <configuration>
-                    <effort>Max</effort>
-                    <threshold>Low</threshold>
-                    <xmlOutput>true</xmlOutput>
-                    <failOnError>false</failOnError>
-                </configuration>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>check</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            -->
-        </plugins>
-    </build>
+    <kafka.version>4.2.0</kafka.version>
+    <log4j.version>2.26.1</log4j.version>
+    <maven.compiler.release>21</maven.compiler.release>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
+    <mockito.version>5.22.0</mockito.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <scala.binary.version>2.12</scala.binary.version>
+    <slf4j.version>2.0.16</slf4j.version>
+  </properties>
 </project>

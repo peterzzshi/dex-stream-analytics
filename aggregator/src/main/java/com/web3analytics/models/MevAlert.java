@@ -26,4 +26,10 @@ public record MevAlert(
         String description,
         List<String> involvedTransactions,
         long detectedAt
-) {}
+) {
+
+  public MevAlert {
+    victimAddresses = List.copyOf(victimAddresses);
+    involvedTransactions = List.copyOf(involvedTransactions);
+  }
+}

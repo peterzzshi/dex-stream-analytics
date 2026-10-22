@@ -9,29 +9,31 @@ public class SwapEventDeserializer extends AbstractCloudEventAvroDeserializer<Sw
     }
 
     @Override
-    protected SwapEvent map(com.web3analytics.events.SwapEvent record) {
+    protected SwapEvent map(com.web3analytics.events.SwapEvent avroRecord) {
         return new SwapEvent(
-                record.getEventId(),
-                record.getBlockNumber(),
-                record.getBlockTimestamp(),
-                record.getTransactionHash(),
-                record.getLogIndex(),
-                record.getPairAddress(),
-                record.getToken0(),
-                record.getToken1(),
-                record.getToken0Symbol(),
-                record.getToken1Symbol(),
-                record.getSender(),
-                record.getRecipient(),
-                record.getAmount0In(),
-                record.getAmount1In(),
-                record.getAmount0Out(),
-                record.getAmount1Out(),
-                record.getPrice(),
-                record.getVolumeUSD(),
-                record.getGasUsed(),
-                record.getGasPrice(),
-                record.getEventTimestamp()
+            avroRecord.getEventId(),
+            avroRecord.getBlockNumber(),
+            avroRecord.getBlockTimestamp(),
+            avroRecord.getTransactionHash(),
+            avroRecord.getLogIndex(),
+            avroRecord.getChain(),
+            avroRecord.getChainName(),
+            avroRecord.getPairAddress(),
+            avroRecord.getToken0(),
+            avroRecord.getToken1(),
+            avroRecord.getToken0Symbol(),
+            avroRecord.getToken1Symbol(),
+            avroRecord.getSender(),
+            avroRecord.getRecipient(),
+            avroRecord.getAmount0In(),
+            avroRecord.getAmount1In(),
+            avroRecord.getAmount0Out(),
+            avroRecord.getAmount1Out(),
+            avroRecord.getPrice(),
+            avroRecord.getVolumeUSD(),
+            avroRecord.getGasUsed(),
+            avroRecord.getGasPrice(),
+            avroRecord.getEventTimestamp()
         );
     }
 }

@@ -1,11 +1,13 @@
 package com.web3analytics.functions;
 
+import static com.web3analytics.functions.WindowUtils.buildWindowId;
+
 import com.web3analytics.models.AggregatedAnalytics;
+import java.time.Instant;
+import java.util.Iterator;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
-
-import java.time.Instant;
 
 /** Replaces placeholder window metadata with authoritative Flink window boundaries. */
 public class SwapAnalyticsWindowFunction
@@ -18,7 +20,12 @@ public class SwapAnalyticsWindowFunction
             Iterable<AggregatedAnalytics> elements,
             Collector<AggregatedAnalytics> out
     ) {
-        AggregatedAnalytics metrics = elements.iterator().next();
+      Iterator<AggregatedAnalytics> iterator = elements.iterator();
+      if (!iterator.hasNext()) {
+        throw new IllegalStateException("Window function received empty elements");
+      }
+
+      AggregatedAnalytics metrics = iterator.next();
         long windowStart = context.window().getStart();
         long windowEnd = context.window().getEnd();
 
@@ -38,9 +45,5 @@ public class SwapAnalyticsWindowFunction
                 metrics.arbitrageCount(), metrics.repeatedTraders(),
                 Instant.now().toEpochMilli()
         ));
-    }
-
-    static String buildWindowId(String pairAddress, long windowStart, long windowEnd) {
-        return pairAddress + ":" + windowStart + ":" + windowEnd;
     }
 }

@@ -1,37 +1,149 @@
 package com.web3analytics.functions;
 
+import static com.web3analytics.functions.Web3Math.normalizeAddress;
+import static com.web3analytics.functions.Web3Math.parseBigInt;
+import static com.web3analytics.functions.WindowUtils.buildWindowId;
+import static com.web3analytics.functions.WindowUtils.preferSymbol;
+
 import com.web3analytics.models.BurnEvent;
 import com.web3analytics.models.DexEvent;
 import com.web3analytics.models.LiquidityAnalytics;
 import com.web3analytics.models.MintEvent;
 import com.web3analytics.models.TransferEvent;
-import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.util.Collector;
-
 import java.math.BigInteger;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-
-import static com.web3analytics.functions.Web3Math.normalizeAddress;
-import static com.web3analytics.functions.Web3Math.parseBigInt;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.util.Collector;
 
 /**
  * Full-window scan for LP behavior metrics.
  * Intentionally non-incremental: lower-frequency stream where buffering the full
  * window is acceptable and simplifies the churn/provider-set logic.
- *
  * Transfer events are correlated to Mint/Burn by transactionHash to compute
  * LP token amounts minted/burned per window.
  */
 public class LiquidityWindowFunction
         extends ProcessWindowFunction<DexEvent, LiquidityAnalytics, String, TimeWindow> {
 
-    // UniswapV2 zero address used for mint (from) and burn (to) transfers
-    private static final String ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+  static LiquidityAnalytics summarize(
+      String pairAddress,
+      long windowStart,
+      long windowEnd,
+      Iterable<DexEvent> events
+  ) {
+    Accumulator acc = new Accumulator();
+
+    for (DexEvent event : events) {
+      processEvent(event, acc);
+    }
+
+    return buildResult(pairAddress, windowStart, windowEnd, acc);
+  }
+
+  private static void processEvent(DexEvent event, Accumulator acc) {
+    if (acc.chain == null) {
+      acc.chain = event.chain();
+      acc.chainName = event.chainName();
+    }
+
+    switch (event) {
+      case MintEvent mint -> processMint(mint, acc);
+      case BurnEvent burn -> processBurn(burn, acc);
+      case TransferEvent transfer -> processTransfer(transfer, acc);
+      case com.web3analytics.models.SwapEvent ignored -> {
+        // SwapEvents are ignored in liquidity analysis
+      }
+    }
+  }
+
+  private static void processMint(MintEvent mint, Accumulator acc) {
+    acc.mintCount++;
+    acc.totalMintAmount0 = acc.totalMintAmount0.add(parseBigInt(mint.amount0()));
+    acc.totalMintAmount1 = acc.totalMintAmount1.add(parseBigInt(mint.amount1()));
+    acc.mintProviders.add(normalizeAddress(mint.sender()));
+    acc.mintTxHashes.add(mint.transactionHash());
+
+    if (acc.token0Symbol == null || acc.token1Symbol == null) {
+      acc.token0Symbol = preferSymbol(acc.token0Symbol, mint.token0Symbol());
+      acc.token1Symbol = preferSymbol(acc.token1Symbol, mint.token1Symbol());
+    }
+  }
+
+  private static void processBurn(BurnEvent burn, Accumulator acc) {
+    acc.burnCount++;
+    acc.totalBurnAmount0 = acc.totalBurnAmount0.add(parseBigInt(burn.amount0()));
+    acc.totalBurnAmount1 = acc.totalBurnAmount1.add(parseBigInt(burn.amount1()));
+    acc.burnProviders.add(normalizeAddress(burn.sender()));
+    acc.burnTxHashes.add(burn.transactionHash());
+
+    if (acc.token0Symbol == null || acc.token1Symbol == null) {
+      acc.token0Symbol = preferSymbol(acc.token0Symbol, burn.token0Symbol());
+      acc.token1Symbol = preferSymbol(acc.token1Symbol, burn.token1Symbol());
+    }
+  }
+
+  private static void processTransfer(TransferEvent transfer, Accumulator acc) {
+    acc.transferCount++;
+    BigInteger value = parseBigInt(transfer.value());
+    acc.transferValuesByTx.merge(transfer.transactionHash(), value, BigInteger::add);
+  }
+
+  private static LiquidityAnalytics buildResult(
+      String pairAddress,
+      long windowStart,
+      long windowEnd,
+      Accumulator acc
+  ) {
+    // Correlate: transfers in mint txs are LP tokens minted
+    // Transfers in burn txs are LP tokens burned
+    BigInteger totalLpMinted = BigInteger.ZERO;
+    BigInteger totalLpBurned = BigInteger.ZERO;
+
+    for (String txHash : acc.mintTxHashes) {
+      BigInteger lpValue = acc.transferValuesByTx.get(txHash);
+      if (lpValue != null) {
+        totalLpMinted = totalLpMinted.add(lpValue);
+      }
+    }
+    for (String txHash : acc.burnTxHashes) {
+      BigInteger lpValue = acc.transferValuesByTx.get(txHash);
+      if (lpValue != null) {
+        totalLpBurned = totalLpBurned.add(lpValue);
+      }
+    }
+
+    Set<String> uniqueProviders = new HashSet<>(acc.mintProviders);
+    uniqueProviders.addAll(acc.burnProviders);
+
+    Set<String> churnedProviders = new HashSet<>(acc.mintProviders);
+    churnedProviders.retainAll(acc.burnProviders);
+
+    return new LiquidityAnalytics(
+        buildWindowId(pairAddress, windowStart, windowEnd),
+        windowStart, windowEnd,
+        acc.chain != null ? acc.chain : "",
+        acc.chainName != null ? acc.chainName : "",
+        pairAddress,
+        acc.token0Symbol, acc.token1Symbol,
+        acc.mintCount, acc.burnCount,
+        acc.totalMintAmount0.toString(), acc.totalMintAmount1.toString(),
+        acc.totalBurnAmount0.toString(), acc.totalBurnAmount1.toString(),
+        acc.totalMintAmount0.subtract(acc.totalBurnAmount0).toString(),
+        acc.totalMintAmount1.subtract(acc.totalBurnAmount1).toString(),
+        totalLpMinted.toString(),
+        totalLpBurned.toString(),
+        totalLpMinted.subtract(totalLpBurned).toString(),
+        acc.transferCount,
+        acc.mintProviders.size(), acc.burnProviders.size(),
+        uniqueProviders.size(), churnedProviders.size(),
+        Instant.now().toEpochMilli()
+    );
+  }
 
     @Override
     public void process(
@@ -44,129 +156,32 @@ public class LiquidityWindowFunction
                 pairAddress,
                 context.window().getStart(),
                 context.window().getEnd(),
-                events,
-                Instant.now().toEpochMilli()
+            events
         ));
     }
 
-    static LiquidityAnalytics summarize(
-            String pairAddress,
-            long windowStart,
-            long windowEnd,
-            Iterable<DexEvent> events,
-            long processedAt
-    ) {
-        int mintCount = 0;
-        int burnCount = 0;
-        int transferCount = 0;
+  private static class Accumulator {
 
-        BigInteger totalMintAmount0 = BigInteger.ZERO;
-        BigInteger totalMintAmount1 = BigInteger.ZERO;
-        BigInteger totalBurnAmount0 = BigInteger.ZERO;
-        BigInteger totalBurnAmount1 = BigInteger.ZERO;
+    int mintCount = 0;
+    int burnCount = 0;
+    int transferCount = 0;
 
-        Set<String> mintProviders = new HashSet<>();
-        Set<String> burnProviders = new HashSet<>();
+    BigInteger totalMintAmount0 = BigInteger.ZERO;
+    BigInteger totalMintAmount1 = BigInteger.ZERO;
+    BigInteger totalBurnAmount0 = BigInteger.ZERO;
+    BigInteger totalBurnAmount1 = BigInteger.ZERO;
 
-        // Track transaction hashes that contain mint/burn for Transfer correlation
-        Set<String> mintTxHashes = new HashSet<>();
-        Set<String> burnTxHashes = new HashSet<>();
+    Set<String> mintProviders = new HashSet<>();
+    Set<String> burnProviders = new HashSet<>();
 
-        // Collect Transfer events for second-pass correlation
-        Map<String, BigInteger> transferValuesByTx = new HashMap<>();
+    Set<String> mintTxHashes = new HashSet<>();
+    Set<String> burnTxHashes = new HashSet<>();
 
-        String token0Symbol = null;
-        String token1Symbol = null;
-        String chain = null;
-        String chainName = null;
+    Map<String, BigInteger> transferValuesByTx = new HashMap<>();
 
-        for (DexEvent event : events) {
-            if (chain == null) {
-                chain = event.chain();
-                chainName = event.chainName();
-            }
-            switch (event) {
-                case MintEvent mint -> {
-                    mintCount++;
-                    totalMintAmount0 = totalMintAmount0.add(parseBigInt(mint.amount0()));
-                    totalMintAmount1 = totalMintAmount1.add(parseBigInt(mint.amount1()));
-                    mintProviders.add(normalizeAddress(mint.sender()));
-                    mintTxHashes.add(mint.transactionHash());
-                    token0Symbol = preferSymbol(token0Symbol, mint.token0Symbol());
-                    token1Symbol = preferSymbol(token1Symbol, mint.token1Symbol());
-                }
-                case BurnEvent burn -> {
-                    burnCount++;
-                    totalBurnAmount0 = totalBurnAmount0.add(parseBigInt(burn.amount0()));
-                    totalBurnAmount1 = totalBurnAmount1.add(parseBigInt(burn.amount1()));
-                    burnProviders.add(normalizeAddress(burn.sender()));
-                    burnTxHashes.add(burn.transactionHash());
-                    token0Symbol = preferSymbol(token0Symbol, burn.token0Symbol());
-                    token1Symbol = preferSymbol(token1Symbol, burn.token1Symbol());
-                }
-                case TransferEvent transfer -> {
-                    transferCount++;
-                    // Accumulate transfer value by txHash for correlation
-                    BigInteger value = parseBigInt(transfer.value());
-                    transferValuesByTx.merge(transfer.transactionHash(), value, BigInteger::add);
-                }
-                case com.web3analytics.models.SwapEvent ignored -> { }
-            }
-        }
-
-        // Correlate: transfers in mint txs are LP tokens minted (from=0x0)
-        // Transfers in burn txs are LP tokens burned (to=0x0)
-        BigInteger totalLpMinted = BigInteger.ZERO;
-        BigInteger totalLpBurned = BigInteger.ZERO;
-
-        for (String txHash : mintTxHashes) {
-            BigInteger lpValue = transferValuesByTx.get(txHash);
-            if (lpValue != null) {
-                totalLpMinted = totalLpMinted.add(lpValue);
-            }
-        }
-        for (String txHash : burnTxHashes) {
-            BigInteger lpValue = transferValuesByTx.get(txHash);
-            if (lpValue != null) {
-                totalLpBurned = totalLpBurned.add(lpValue);
-            }
-        }
-
-        Set<String> uniqueProviders = new HashSet<>(mintProviders);
-        uniqueProviders.addAll(burnProviders);
-
-        Set<String> churnedProviders = new HashSet<>(mintProviders);
-        churnedProviders.retainAll(burnProviders);
-
-        return new LiquidityAnalytics(
-                buildWindowId(pairAddress, windowStart, windowEnd),
-                windowStart, windowEnd,
-                chain != null ? chain : "",
-                chainName != null ? chainName : "",
-                pairAddress,
-                token0Symbol, token1Symbol,
-                mintCount, burnCount,
-                totalMintAmount0.toString(), totalMintAmount1.toString(),
-                totalBurnAmount0.toString(), totalBurnAmount1.toString(),
-                totalMintAmount0.subtract(totalBurnAmount0).toString(),
-                totalMintAmount1.subtract(totalBurnAmount1).toString(),
-                totalLpMinted.toString(),
-                totalLpBurned.toString(),
-                totalLpMinted.subtract(totalLpBurned).toString(),
-                transferCount,
-                mintProviders.size(), burnProviders.size(),
-                uniqueProviders.size(), churnedProviders.size(),
-                processedAt
-        );
-    }
-
-    static String buildWindowId(String pairAddress, long windowStart, long windowEnd) {
-        return pairAddress + ":" + windowStart + ":" + windowEnd;
-    }
-
-    private static String preferSymbol(String current, String candidate) {
-        if (current != null && !current.isBlank()) return current;
-        if (candidate == null || candidate.isBlank()) return current;
-        return candidate;
+    String token0Symbol;
+    String token1Symbol;
+    String chain;
+    String chainName;
     }
 }

@@ -1,5 +1,7 @@
 package com.web3analytics.models;
 
+import java.util.List;
+
 public record AggregatedAnalytics(
         String windowId,
         long windowStart,
@@ -25,6 +27,11 @@ public record AggregatedAnalytics(
         long totalGasUsed,
         String averageGasPrice,
         int arbitrageCount,
-        java.util.List<String> repeatedTraders,
+        List<String> repeatedTraders,
         long processedAt
-) {}
+) {
+
+  public AggregatedAnalytics {
+    repeatedTraders = List.copyOf(repeatedTraders);
+  }
+}

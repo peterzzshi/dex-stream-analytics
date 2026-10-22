@@ -1,20 +1,20 @@
 package com.web3analytics.functions;
 
+import static com.web3analytics.functions.Web3Math.normalizeAddress;
+import static com.web3analytics.functions.Web3Math.parseBigInt;
+import static com.web3analytics.functions.Web3Math.round8;
+import static com.web3analytics.functions.WindowUtils.preferSymbol;
+
 import com.web3analytics.models.AggregatedAnalytics;
 import com.web3analytics.models.SwapEvent;
 import com.web3analytics.types.TriState;
-import org.apache.flink.api.common.functions.AggregateFunction;
-
 import java.math.BigInteger;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-
-import static com.web3analytics.functions.Web3Math.normalizeAddress;
-import static com.web3analytics.functions.Web3Math.parseBigInt;
-import static com.web3analytics.functions.Web3Math.round8;
+import org.apache.flink.api.common.functions.AggregateFunction;
 
 /**
  * Incremental swap aggregation. Window metadata is attached later by
@@ -23,41 +23,11 @@ import static com.web3analytics.functions.Web3Math.round8;
 public class SwapAggregator
         implements AggregateFunction<SwapEvent, SwapAggregator.Accumulator, AggregatedAnalytics> {
 
-    public static class Accumulator {
-        String chain;
-        String chainName;
-        String pairAddress;
-        TriState<String> token0Symbol = TriState.undefined();
-        TriState<String> token1Symbol = TriState.undefined();
-
-        double weightedPriceSum = 0.0;
-        double totalVolume = 0.0;
-
-        // OHLC with logIndex tie-breaker for same-block ordering
-        double openPrice = Double.NaN;
-        long openEventTime = Long.MAX_VALUE;
-        int openLogIndex = Integer.MAX_VALUE;
-
-        double closePrice = Double.NaN;
-        long closeEventTime = Long.MIN_VALUE;
-        int closeLogIndex = Integer.MIN_VALUE;
-
-        double highPrice = Double.NEGATIVE_INFINITY;
-        double lowPrice = Double.POSITIVE_INFINITY;
-
-        BigInteger totalVolume0 = BigInteger.ZERO;
-        BigInteger totalVolume1 = BigInteger.ZERO;
-        double volumeUSD = 0.0;
-        TriState<Double> volumeUSDState = TriState.undefined();
-
-        int swapCount = 0;
-        Map<String, Integer> traderCounts = new HashMap<>();
-
-        long totalGasUsed = 0;
-        BigInteger totalGasPrice = BigInteger.ZERO;
-
-        LargestSwapCandidate largestSwap = LargestSwapCandidate.empty();
-        int arbitrageCount = 0;
+  private static void applyOpen(Accumulator acc, double price, long eventTime) {
+    if (eventTime < acc.openEventTime) {
+      acc.openPrice = price;
+      acc.openEventTime = eventTime;
+    }
     }
 
     private record LargestSwapCandidate(Double usdValue, BigInteger token0Volume, String trader) {
@@ -79,6 +49,26 @@ public class SwapAggregator
         return new Accumulator();
     }
 
+  private static void applyClose(Accumulator acc, double price, long eventTime) {
+    if (eventTime > acc.closeEventTime) {
+      acc.closePrice = price;
+      acc.closeEventTime = eventTime;
+    }
+  }
+
+  private static AggregatedAnalytics emptyResult(Accumulator acc) {
+    long now = Instant.now().toEpochMilli();
+    return new AggregatedAnalytics(
+        UUID.randomUUID().toString(), now, now,
+        acc.chain != null ? acc.chain : "",
+        acc.chainName != null ? acc.chainName : "",
+        acc.pairAddress != null ? acc.pairAddress : "",
+        acc.token0Symbol, acc.token1Symbol,
+        0, 0, 0, 0, 0, 0,
+        "0", "0", null, 0, 0, "0", "", 0, "0", 0, List.of(), now
+    );
+  }
+
     @Override
     public Accumulator add(SwapEvent event, Accumulator acc) {
         if (acc.pairAddress == null) {
@@ -87,8 +77,8 @@ public class SwapAggregator
             acc.pairAddress = event.pairAddress();
         }
 
-        acc.token0Symbol = mergePreferred(acc.token0Symbol, event.token0Symbol());
-        acc.token1Symbol = mergePreferred(acc.token1Symbol, event.token1Symbol());
+      acc.token0Symbol = preferSymbol(acc.token0Symbol, event.token0Symbol());
+      acc.token1Symbol = preferSymbol(acc.token1Symbol, event.token1Symbol());
 
         double price = event.price();
         BigInteger vol0 = parseBigInt(event.amount0In()).add(parseBigInt(event.amount0Out()));
@@ -96,10 +86,9 @@ public class SwapAggregator
         double swapVolume = vol0.doubleValue();
 
         long eventTime = event.getEventTimeMillis();
-        int logIndex = event.logIndex();
 
-        applyOpen(acc, price, eventTime, logIndex);
-        applyClose(acc, price, eventTime, logIndex);
+      applyOpen(acc, price, eventTime);
+      applyClose(acc, price, eventTime);
 
         acc.weightedPriceSum += price * swapVolume;
         acc.totalVolume += swapVolume;
@@ -166,8 +155,8 @@ public class SwapAggregator
                 acc.chain,
                 acc.chainName,
                 acc.pairAddress,
-                toNullableString(acc.token0Symbol),
-                toNullableString(acc.token1Symbol),
+            acc.token0Symbol,
+            acc.token1Symbol,
                 round8(twap),
                 round8(acc.openPrice),
                 round8(acc.closePrice),
@@ -184,7 +173,7 @@ public class SwapAggregator
                 acc.totalGasUsed,
                 avgGasPrice,
                 acc.arbitrageCount,
-                repeatedTraders,
+            List.copyOf(repeatedTraders),
                 Instant.now().toEpochMilli()
         );
     }
@@ -198,16 +187,16 @@ public class SwapAggregator
         merged.chain = a.chain;
         merged.chainName = a.chainName;
         merged.pairAddress = a.pairAddress;
-        merged.token0Symbol = mergeTriState(a.token0Symbol, b.token0Symbol);
-        merged.token1Symbol = mergeTriState(a.token1Symbol, b.token1Symbol);
+      merged.token0Symbol = preferSymbol(a.token0Symbol, b.token0Symbol);
+      merged.token1Symbol = preferSymbol(a.token1Symbol, b.token1Symbol);
 
         merged.weightedPriceSum = a.weightedPriceSum + b.weightedPriceSum;
         merged.totalVolume = a.totalVolume + b.totalVolume;
 
-        applyOpen(merged, a.openPrice, a.openEventTime, a.openLogIndex);
-        applyOpen(merged, b.openPrice, b.openEventTime, b.openLogIndex);
-        applyClose(merged, a.closePrice, a.closeEventTime, a.closeLogIndex);
-        applyClose(merged, b.closePrice, b.closeEventTime, b.closeLogIndex);
+      applyOpen(merged, a.openPrice, a.openEventTime);
+      applyOpen(merged, b.openPrice, b.openEventTime);
+      applyClose(merged, a.closePrice, a.closeEventTime);
+      applyClose(merged, b.closePrice, b.closeEventTime);
 
         merged.highPrice = Math.max(a.highPrice, b.highPrice);
         merged.lowPrice = Math.min(a.lowPrice, b.lowPrice);
@@ -232,24 +221,6 @@ public class SwapAggregator
         return merged;
     }
 
-    private static void applyOpen(Accumulator acc, double price, long eventTime, int logIndex) {
-        if (eventTime < acc.openEventTime
-                || (eventTime == acc.openEventTime && logIndex < acc.openLogIndex)) {
-            acc.openPrice = price;
-            acc.openEventTime = eventTime;
-            acc.openLogIndex = logIndex;
-        }
-    }
-
-    private static void applyClose(Accumulator acc, double price, long eventTime, int logIndex) {
-        if (eventTime > acc.closeEventTime
-                || (eventTime == acc.closeEventTime && logIndex > acc.closeLogIndex)) {
-            acc.closePrice = price;
-            acc.closeEventTime = eventTime;
-            acc.closeLogIndex = logIndex;
-        }
-    }
-
     private static LargestSwapCandidate chooseLargest(LargestSwapCandidate a, LargestSwapCandidate b) {
         if (a == null) return b;
         if (b == null) return a;
@@ -268,34 +239,40 @@ public class SwapAggregator
         return c.token0Volume().toString();
     }
 
-    private static AggregatedAnalytics emptyResult(Accumulator acc) {
-        long now = Instant.now().toEpochMilli();
-        return new AggregatedAnalytics(
-                UUID.randomUUID().toString(), now, now,
-                acc.chain != null ? acc.chain : "",
-                acc.chainName != null ? acc.chainName : "",
-                acc.pairAddress != null ? acc.pairAddress : "",
-                toNullableString(acc.token0Symbol), toNullableString(acc.token1Symbol),
-                0, 0, 0, 0, 0, 0,
-                "0", "0", null, 0, 0, "0", "", 0, "0", 0, List.of(), now
-        );
-    }
+  public static class Accumulator {
 
-    private static TriState<String> mergePreferred(TriState<String> current, String candidate) {
-        if (current.isDefined()) return current;
-        if (candidate == null || candidate.isBlank()) return current;
-        return TriState.of(candidate);
-    }
+    String chain;
+    String chainName;
+    String pairAddress;
+    String token0Symbol;
+    String token1Symbol;
 
-    private static <T> TriState<T> mergeTriState(TriState<T> left, TriState<T> right) {
-        if (left.isDefined()) return left;
-        if (right.isDefined()) return right;
-        if (left.isNull() || right.isNull()) return TriState.ofNull();
-        return TriState.undefined();
-    }
+    double weightedPriceSum = 0.0;
+    double totalVolume = 0.0;
 
-    private static String toNullableString(TriState<String> state) {
-        return state.fold(v -> v, () -> null, () -> null);
+    // OHLC tracking
+    double openPrice = Double.NaN;
+    long openEventTime = Long.MAX_VALUE;
+
+    double closePrice = Double.NaN;
+    long closeEventTime = Long.MIN_VALUE;
+
+    double highPrice = Double.NEGATIVE_INFINITY;
+    double lowPrice = Double.POSITIVE_INFINITY;
+
+    BigInteger totalVolume0 = BigInteger.ZERO;
+    BigInteger totalVolume1 = BigInteger.ZERO;
+    double volumeUSD = 0.0;
+    TriState<Double> volumeUSDState = TriState.undefined();
+
+    int swapCount = 0;
+    Map<String, Integer> traderCounts = new HashMap<>();
+
+    long totalGasUsed = 0;
+    BigInteger totalGasPrice = BigInteger.ZERO;
+
+    LargestSwapCandidate largestSwap = LargestSwapCandidate.empty();
+    int arbitrageCount = 0;
     }
 
     private static Double toNullableDouble(TriState<Double> state) {

@@ -8,14 +8,14 @@ import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class Web3Math {
+public final class Web3Math {
 
     private static final Logger LOG = LoggerFactory.getLogger(Web3Math.class);
 
     private Web3Math() {
     }
 
-    static BigInteger parseBigInt(String value) {
+  public static BigInteger parseBigInt(String value) {
         if (!isSignedInteger(value)) {
             LOG.warn("Invalid BigInteger value '{}', defaulting to ZERO", value);
             return BigInteger.ZERO;
@@ -23,14 +23,14 @@ final class Web3Math {
         return new BigInteger(value.trim());
     }
 
-    static String normalizeAddress(String address) {
+  public static String normalizeAddress(String address) {
         if (address == null) {
             return "";
         }
         return address.toLowerCase(Locale.ROOT);
     }
 
-    static double round8(double value) {
+  public static double round8(double value) {
         return BigDecimal.valueOf(value)
                 .setScale(8, RoundingMode.HALF_UP)
                 .doubleValue();

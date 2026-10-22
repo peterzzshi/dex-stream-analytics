@@ -1,162 +1,163 @@
 package com.web3analytics.functions;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.web3analytics.functions.mev.MevCandidate;
+import com.web3analytics.functions.mev.SessionContext;
 import com.web3analytics.models.BurnEvent;
 import com.web3analytics.models.DexEvent;
 import com.web3analytics.models.MevAlert;
 import com.web3analytics.models.MintEvent;
 import com.web3analytics.models.SwapEvent;
+import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
-
+/**
+ * Behavioral tests for MEV detection function. Focus: Does the orchestration correctly apply
+ * per-block and session-wide detectors?
+ */
 class MevDetectionFunctionTest {
 
-    private static final String PAIR = "0x6e7a5fafcec6bb1e78bae2a1f0b612012bf14827";
+  private static final String PAIR = "0xpair";
     private static final String ATTACKER = "0xattacker";
     private static final String VICTIM = "0xvictim";
-    private static final String LP_PROVIDER = "0xlpprovider";
+
+  private final MevDetectionFunction function = new MevDetectionFunction();
 
     @Test
-    void detectsSandwichAttack() {
+    void detectsSandwichAttackFromPerBlockDetector() {
         // Block 100: attacker buys token0, victim buys token0, attacker sells token0
         List<DexEvent> events = List.of(
-                swap(100, 0, ATTACKER, "0", "5000", "1000", "0", 2.0, 10.0),  // buy token0
-                swap(100, 1, VICTIM, "0", "3000", "500", "0", 1.8, 5.4),       // buy token0 (slipped)
-                swap(100, 2, ATTACKER, "1000", "0", "0", "5200", 2.1, 10.5)    // sell token0
+            swap(100, 0, ATTACKER, "0", "5000", "1000", "0"),
+            swap(100, 1, VICTIM, "0", "3000", "500", "0"),
+            swap(100, 2, ATTACKER, "1000", "0", "0", "5200")
         );
 
-        List<MevAlert> alerts = MevDetectionFunction.detect(PAIR, 0, 10000, events, 999);
+      List<MevAlert> alerts = function.detect(PAIR, 0, 10000, events, 999L);
 
-        assertEquals(1, alerts.size());
-        MevAlert alert = alerts.get(0);
-        assertEquals("SANDWICH_ATTACK", alert.alertType());
-        assertEquals(ATTACKER.toLowerCase(), alert.attackerAddress());
-        assertEquals(1, alert.victimAddresses().size());
-        assertTrue(alert.victimAddresses().contains(VICTIM.toLowerCase()));
-        assertEquals(100, alert.blockNumber());
-        assertEquals(3, alert.involvedSwapCount());
+      assertThat(alerts).hasSize(1);
+      assertThat(alerts.getFirst().alertType()).isEqualTo("SANDWICH_ATTACK");
+      assertThat(alerts.getFirst().victimAddresses()).containsExactly(VICTIM);
     }
 
     @Test
-    void noAlertForNormalTrading() {
-        // Three different traders in the same block, no sandwich pattern
+    void detectsJitLiquidityFromSessionDetector() {
+      // Mint at block 100, large swap at block 101, burn at block 102 by same provider
+      String provider = "0xlprovider";
         List<DexEvent> events = List.of(
-                swap(100, 0, "0xtrader1", "0", "1000", "500", "0", 2.0, 5.0),
-                swap(100, 1, "0xtrader2", "0", "2000", "800", "0", 1.9, 7.6),
-                swap(100, 2, "0xtrader3", "500", "0", "0", "1200", 2.1, 5.0)
+            mint(100, 0, provider),
+            swap(101, 0, "0xtrader", "0", "50000", "10000", "0"),
+            burn(102, 0, provider)
         );
 
-        List<MevAlert> alerts = MevDetectionFunction.detect(PAIR, 0, 10000, events, 999);
-        assertTrue(alerts.isEmpty());
+      List<MevAlert> alerts = function.detect(PAIR, 0, 10000, events, 999L);
+
+      assertThat(alerts).hasSize(1);
+      assertThat(alerts.getFirst().alertType()).isEqualTo("JIT_LIQUIDITY");
+      assertThat(alerts.getFirst().attackerAddress()).isEqualTo(provider);
     }
 
     @Test
-    void noAlertForTwoSwaps() {
-        // Only 2 swaps - not enough for sandwich
+    void appliesAllPerBlockDetectorsToConcurrentBlocks() {
+      // Two blocks, each with sandwich pattern
         List<DexEvent> events = List.of(
-                swap(100, 0, ATTACKER, "0", "5000", "1000", "0", 2.0, 10.0),
-                swap(100, 1, VICTIM, "0", "3000", "500", "0", 1.8, 5.4)
+            swap(100, 0, ATTACKER, "0", "5000", "1000", "0"),
+            swap(100, 1, VICTIM, "0", "3000", "500", "0"),
+            swap(100, 2, ATTACKER, "1000", "0", "0", "5200"),
+            swap(101, 0, ATTACKER, "0", "4000", "800", "0"),
+            swap(101, 1, "0xvictim2", "0", "2000", "400", "0"),
+            swap(101, 2, ATTACKER, "800", "0", "0", "4100")
         );
 
-        List<MevAlert> alerts = MevDetectionFunction.detect(PAIR, 0, 10000, events, 999);
-        assertTrue(alerts.isEmpty());
+      List<MevAlert> alerts = function.detect(PAIR, 0, 10000, events, 999L);
+
+      assertThat(alerts).hasSize(2);
     }
 
     @Test
-    void noSandwichWhenSameDirection() {
-        // Attacker buys, victim buys, attacker buys again (no reversal)
+    void canSubstituteCustomDetectorViaConstructor() {
+      // Inject a detector that always flags any session with a swap
+      java.util.function.BiFunction<List<DexEvent>, SessionContext, List<MevCandidate>> alwaysDetect =
+          (evts, ctx) -> evts.stream()
+              .filter(SwapEvent.class::isInstance)
+              .findFirst()
+              .map(e -> new MevCandidate(
+                  "CUSTOM_PATTERN", e.blockNumber(), "0xcustom", List.of(),
+                  0.0, 1, 1, Set.of(e.transactionHash()), "Custom detection"
+              ))
+              .stream()
+              .toList();
+
+      var functionWithCustomDetector = new MevDetectionFunction(
+          List.of(),  // no per-block
+          List.of(alwaysDetect)  // custom session-wide
+        );
+
+      List<MevAlert> alerts = functionWithCustomDetector.detect(
+          PAIR, 0, 10000,
+          List.of(swap(100, 0, "0xsender", "0", "1000", "200", "0")),
+          999L
+      );
+
+      assertThat(alerts).hasSize(1);
+      assertThat(alerts.getFirst().alertType()).isEqualTo("CUSTOM_PATTERN");
+    }
+
+    @Test
+    void emptyEventsProduceNoAlerts() {
+      assertThat(function.detect(PAIR, 0, 10000, List.of(), 999L)).isEmpty();
+    }
+
+    @Test
+    void eventsWithNoMevPatternsProduceNoAlerts() {
+      // Single swap, no sandwich or JIT liquidity
         List<DexEvent> events = List.of(
-                swap(100, 0, ATTACKER, "0", "5000", "1000", "0", 2.0, 10.0),
-                swap(100, 1, VICTIM, "0", "3000", "500", "0", 1.8, 5.4),
-                swap(100, 2, ATTACKER, "0", "5000", "1000", "0", 2.0, 10.0)
+            swap(100, 0, "0xtrader", "0", "1000", "200", "0")
         );
 
-        List<MevAlert> alerts = MevDetectionFunction.detect(PAIR, 0, 10000, events, 999);
-        assertTrue(alerts.isEmpty());
+      assertThat(function.detect(PAIR, 0, 10000, events, 999L)).isEmpty();
     }
 
     @Test
-    void detectsJitLiquidity() {
-        long ts = 1700000000;
-        // Block 100: mint, then swap, then burn - same provider
+    void sortsEventsBeforeDetection() {
+      // Events out of order
         List<DexEvent> events = List.of(
-                mint(100, 0, LP_PROVIDER, ts),
-                swap(100, 1, "0xtrader", "0", "5000", "1000", "0", 2.0, 10.0),
-                burn(100, 2, LP_PROVIDER, ts)
+            swap(100, 2, ATTACKER, "1000", "0", "0", "5200"),
+            swap(100, 0, ATTACKER, "0", "5000", "1000", "0"),
+            swap(100, 1, VICTIM, "0", "3000", "500", "0")
         );
 
-        List<MevAlert> alerts = MevDetectionFunction.detect(PAIR, 0, 10000, events, 999);
+      List<MevAlert> alerts = function.detect(PAIR, 0, 10000, events, 999L);
 
-        assertEquals(1, alerts.size());
-        assertEquals("JIT_LIQUIDITY", alerts.get(0).alertType());
-        assertEquals(LP_PROVIDER.toLowerCase(), alerts.get(0).attackerAddress());
-    }
-
-    @Test
-    void noJitWhenDifferentProviders() {
-        long ts = 1700000000;
-        List<DexEvent> events = List.of(
-                mint(100, 0, "0xproviderA", ts),
-                swap(100, 1, "0xtrader", "0", "5000", "1000", "0", 2.0, 10.0),
-                burn(100, 2, "0xproviderB", ts)
-        );
-
-        List<MevAlert> alerts = MevDetectionFunction.detect(PAIR, 0, 10000, events, 999);
-        assertTrue(alerts.stream().noneMatch(a -> a.alertType().equals("JIT_LIQUIDITY")));
-    }
-
-    @Test
-    void noJitWithoutSwapBetween() {
-        long ts = 1700000000;
-        // Mint at block 100, burn at block 105 - blocks too far apart
-        List<DexEvent> events = List.of(
-                mint(100, 0, LP_PROVIDER, ts),
-                burn(105, 1, LP_PROVIDER, ts + 10)
-        );
-
-        List<MevAlert> alerts = MevDetectionFunction.detect(PAIR, 0, 10000, events, 999);
-        assertTrue(alerts.isEmpty());
-    }
-
-    @Test
-    void swapDirectionDetection() {
-        // Buying token0: sending token1 in, receiving token0 out
-        SwapEvent buyToken0 = swap(100, 0, "0xaddr", "0", "5000", "1000", "0", 2.0, 10.0);
-        assertEquals(MevDetectionFunction.SwapDirection.BUY_TOKEN0,
-                MevDetectionFunction.direction(buyToken0));
-
-        // Buying token1: sending token0 in, receiving token1 out
-        SwapEvent buyToken1 = swap(100, 0, "0xaddr", "1000", "0", "0", "5000", 0.5, 10.0);
-        assertEquals(MevDetectionFunction.SwapDirection.BUY_TOKEN1,
-                MevDetectionFunction.direction(buyToken1));
+      // Should still detect sandwich despite out-of-order input
+      assertThat(alerts).hasSize(1);
+      assertThat(alerts.getFirst().alertType()).isEqualTo("SANDWICH_ATTACK");
     }
 
     private SwapEvent swap(long block, int logIndex, String sender,
-                           String a0In, String a1In, String a0Out, String a1Out,
-                           double price, Double volumeUSD) {
+        String a0In, String a1In, String a0Out, String a1Out) {
         return new SwapEvent(
-                "evt-" + block + "-" + logIndex, block, block, "0xtx" + block + logIndex,
-                logIndex, PAIR, "0xtoken0", "0xtoken1", "WMATIC", "USDC",
-                sender, "0xrecipient", a0In, a1In, a0Out, a1Out,
-                price, volumeUSD, 21000, "50000000000", block
+            "evt-" + block + "-" + logIndex, block, block * 1000, "0xtx-" + block + "-" + logIndex,
+            logIndex, "eip155:1", "Ethereum", PAIR, "0xtoken0", "0xtoken1",
+            "WMATIC", "USDC", sender, "0xrecipient",
+            a0In, a1In, a0Out, a1Out, 2.0, 10.0, 21000, "50000000000", block
         );
     }
 
-    private MintEvent mint(long block, int logIndex, String sender, long ts) {
+  private MintEvent mint(long block, int logIndex, String sender) {
         return new MintEvent(
-                "evt-mint-" + block, block, ts, "0xtx-mint-" + block,
-                logIndex, PAIR, "0xtoken0", "0xtoken1", "WMATIC", "USDC",
-                sender, "1000000", "2000000", ts
+            "evt-mint-" + block, block, block * 1000, "0xtx-mint-" + block,
+            logIndex, "eip155:1", "Ethereum", PAIR, "0xtoken0", "0xtoken1",
+            "WMATIC", "USDC", sender, "1000000", "2000000", block * 1000
         );
     }
 
-    private BurnEvent burn(long block, int logIndex, String sender, long ts) {
+  private BurnEvent burn(long block, int logIndex, String sender) {
         return new BurnEvent(
-                "evt-burn-" + block, block, ts, "0xtx-burn-" + block,
-                logIndex, PAIR, "0xtoken0", "0xtoken1", "WMATIC", "USDC",
-                sender, "0xrecipient", "1000000", "2000000", ts
+            "evt-burn-" + block, block, block * 1000, "0xtx-burn-" + block,
+            logIndex, "eip155:1", "Ethereum", PAIR, "0xtoken0", "0xtoken1",
+            "WMATIC", "USDC", sender, "0xrecipient", "1000000", "2000000", block * 1000
         );
     }
 }

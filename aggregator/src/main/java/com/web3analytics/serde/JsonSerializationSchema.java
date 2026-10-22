@@ -15,7 +15,7 @@ public class JsonSerializationSchema<T> implements SerializationSchema<T> {
         try {
             return mapper.writeValueAsBytes(element);
         } catch (Exception e) {
-            throw new SerializationException(element, e);
+          throw new SerializationException("Failed to serialize element to JSON", e);
         }
     }
 }

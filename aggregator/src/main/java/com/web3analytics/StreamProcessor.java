@@ -1,29 +1,30 @@
 package com.web3analytics;
 
 import com.web3analytics.config.FlinkConfig;
-import com.web3analytics.config.FlinkConfig.WindowConfig;
+import com.web3analytics.errors.DecodingError;
 import com.web3analytics.functions.LiquidityWindowFunction;
 import com.web3analytics.functions.MarketTrendWindowFunction;
 import com.web3analytics.functions.MevDetectionFunction;
-import com.web3analytics.functions.SwapAnalyticsWindowFunction;
 import com.web3analytics.functions.SwapAggregator;
+import com.web3analytics.functions.SwapAnalyticsWindowFunction;
 import com.web3analytics.models.AggregatedAnalytics;
-import com.web3analytics.models.DecodingError;
 import com.web3analytics.models.DexEvent;
 import com.web3analytics.models.LiquidityAnalytics;
 import com.web3analytics.models.MarketTrend;
 import com.web3analytics.models.MevAlert;
 import com.web3analytics.models.SwapEvent;
+import com.web3analytics.serde.ByteArrayDeserializationSchema;
 import com.web3analytics.serde.JsonSerializationSchema;
-import com.web3analytics.serde.ByteArrayPassthroughDeserializer;
 import com.web3analytics.serde.LiquidityEventDeserializer;
 import com.web3analytics.serde.SafeDecodeProcessFunction;
 import com.web3analytics.serde.SwapEventDeserializer;
+import java.io.Serial;
+import java.time.Duration;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
-import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -36,52 +37,47 @@ import org.apache.flink.util.OutputTag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
-
 /**
  * Multi-window Flink processor demonstrating four window strategies:
  *
  * <ul>
- *   <li><b>Tumbling</b>: SwapEvent → 5-min trading analytics (TWAP, OHLC, volume)</li>
- *   <li><b>Tumbling</b>: Mint/Burn/Transfer → 1-hour liquidity analytics</li>
+ *   <li><b>Tumbling</b>: SwapEvent → trading analytics (TWAP, OHLC, volume)</li>
+ *   <li><b>Tumbling</b>: Mint/Burn/Transfer → liquidity analytics</li>
  *   <li><b>Session</b>: All events → MEV detection (sandwich attacks, JIT liquidity)</li>
- *   <li><b>Sliding</b>: SwapEvent → 30-min/5-min market trends</li>
+ *   <li><b>Sliding</b>: SwapEvent → market trends</li>
  * </ul>
  *
  * Decode and watermark assignment happen once per source; window pipelines fan out
  * from the shared watermarked streams.
- *
  * Uses native Kafka connector (not DAPR) for exactly-once semantics.
  */
 public class StreamProcessor {
 
     private static final Logger LOG = LoggerFactory.getLogger(StreamProcessor.class);
 
-    public static void main(String[] args) throws Exception {
-        FlinkConfig config = FlinkConfig.fromEnv();
+  public static void main(final String[] args) throws Exception {
+    final FlinkConfig config = FlinkConfig.fromEnv();
         LOG.info("Starting DEX Analytics Stream Processor");
-        LOG.info("Trading: {} -> {} window(s)", config.topicTradingEvents(), config.tradingWindows().size());
-        for (WindowConfig w : config.tradingWindows()) {
-            LOG.info("  Tumbling window: {} -> {}", w.duration(), w.outputTopic());
-        }
-        LOG.info("Liquidity: {} -> {} (tumbling={})", config.topicLiquidityEvents(),
-                config.topicLiquidityAnalytics(), config.liquidityWindow());
-        LOG.info("MEV detection: session gap={} -> {}", config.sessionGap(), config.topicPatternAnalytics());
-        LOG.info("Market trends: sliding={}/{} -> {}", config.trendWindow(), config.trendSlide(),
+    LOG.info("Trading: {} -> {} (tumbling={}m)", config.topicTradingEvents(),
+        config.topicTradingAnalytics(), config.tradingWindowMinutes());
+    LOG.info("Liquidity: {} -> {} (tumbling={}m)", config.topicLiquidityEvents(),
+        config.topicLiquidityAnalytics(), config.liquidityWindowMinutes());
+    LOG.info("MEV detection: session gap={}s -> {}", config.sessionGapSeconds(),
+        config.topicPatternAnalytics());
+    LOG.info("Market trends: sliding={}m/{}m -> {}", config.trendWindowMinutes(),
+        config.trendSlideMinutes(),
                 config.topicMarketTrends());
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(config.parallelism());
         env.enableCheckpointing(config.checkpointMs());
 
         // Decode once, fan out to all pipelines
-        DataStream<SwapEvent> tradingStream = buildWatermarkedTradingStream(env, config);
-        DataStream<DexEvent> liquidityStream = buildWatermarkedLiquidityStream(env, config);
+    final DataStream<SwapEvent> tradingStream = buildWatermarkedTradingStream(env, config);
+    final DataStream<DexEvent> liquidityStream = buildWatermarkedLiquidityStream(env, config);
 
-        // 1. Tumbling windows: Trading analytics
-        for (WindowConfig window : config.tradingWindows()) {
-            buildTradingWindowPipeline(tradingStream, window, config.kafkaBootstrap());
-        }
+    // 1. Tumbling window: Trading analytics
+    buildTradingWindowPipeline(tradingStream, config);
 
         // 2. Tumbling window: Liquidity analytics
         buildLiquidityPipeline(liquidityStream, config);
@@ -98,20 +94,23 @@ public class StreamProcessor {
     // ── Source decode + watermark (shared) ────────────────────────────
 
     private static DataStream<SwapEvent> buildWatermarkedTradingStream(
-            StreamExecutionEnvironment env, FlinkConfig config
+        final StreamExecutionEnvironment env, final FlinkConfig config
     ) {
-        KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
+      final KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
                 .setBootstrapServers(config.kafkaBootstrap())
                 .setTopics(config.topicTradingEvents())
                 .setGroupId(config.consumerGroup() + "-trading")
                 .setStartingOffsets(OffsetsInitializer.earliest())
-                .setValueOnlyDeserializer(new ByteArrayPassthroughDeserializer())
+            .setValueOnlyDeserializer(new ByteArrayDeserializationSchema())
                 .build();
 
-        OutputTag<DecodingError> decodeErrors = new OutputTag<>("trading-decode-errors") {};
-        SwapEventDeserializer deserializer = new SwapEventDeserializer();
+      final OutputTag<DecodingError> decodeErrors = new OutputTag<>("trading-decode-errors") {
+        @Serial
+        private static final long serialVersionUID = 7775045071686846421L;
+      };
+      final SwapEventDeserializer deserializer = new SwapEventDeserializer();
 
-        SingleOutputStreamOperator<SwapEvent> decoded = env
+      final SingleOutputStreamOperator<SwapEvent> decoded = env
                 .fromSource(source, WatermarkStrategy.noWatermarks(), "trading-events-raw")
                 .process(new SafeDecodeProcessFunction<>(
                         config.topicTradingEvents(),
@@ -123,7 +122,7 @@ public class StreamProcessor {
 
         decoded.getSideOutput(decodeErrors).print("trading-decode-errors");
 
-        WatermarkStrategy<SwapEvent> watermarks = WatermarkStrategy
+      final WatermarkStrategy<SwapEvent> watermarks = WatermarkStrategy
                 .<SwapEvent>forBoundedOutOfOrderness(Duration.ofSeconds(60))
                 .withTimestampAssigner((event, ts) -> event.getEventTimeMillis());
 
@@ -131,20 +130,23 @@ public class StreamProcessor {
     }
 
     private static DataStream<DexEvent> buildWatermarkedLiquidityStream(
-            StreamExecutionEnvironment env, FlinkConfig config
+        final StreamExecutionEnvironment env, final FlinkConfig config
     ) {
-        KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
+      final KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
                 .setBootstrapServers(config.kafkaBootstrap())
                 .setTopics(config.topicLiquidityEvents())
                 .setGroupId(config.consumerGroup() + "-liquidity")
                 .setStartingOffsets(OffsetsInitializer.earliest())
-                .setValueOnlyDeserializer(new ByteArrayPassthroughDeserializer())
+            .setValueOnlyDeserializer(new ByteArrayDeserializationSchema())
                 .build();
 
-        OutputTag<DecodingError> decodeErrors = new OutputTag<>("liquidity-decode-errors") {};
-        LiquidityEventDeserializer deserializer = new LiquidityEventDeserializer();
+      final OutputTag<DecodingError> decodeErrors = new OutputTag<>("liquidity-decode-errors") {
+        @Serial
+        private static final long serialVersionUID = 2377963851791726070L;
+      };
+      final LiquidityEventDeserializer deserializer = new LiquidityEventDeserializer();
 
-        SingleOutputStreamOperator<DexEvent> decoded = env
+      final SingleOutputStreamOperator<DexEvent> decoded = env
                 .fromSource(source, WatermarkStrategy.noWatermarks(), "liquidity-events-raw")
                 .process(new SafeDecodeProcessFunction<>(
                         config.topicLiquidityEvents(),
@@ -156,39 +158,37 @@ public class StreamProcessor {
 
         decoded.getSideOutput(decodeErrors).print("liquidity-decode-errors");
 
-        WatermarkStrategy<DexEvent> watermarks = WatermarkStrategy
+      final WatermarkStrategy<DexEvent> watermarks = WatermarkStrategy
                 .<DexEvent>forBoundedOutOfOrderness(Duration.ofSeconds(60))
                 .withTimestampAssigner((event, ts) -> event.getEventTimeMillis());
 
         return decoded.assignTimestampsAndWatermarks(watermarks);
     }
 
-    // ── Pipeline 1: Trading Analytics (tumbling windows) ─────────────
+  // ── Pipeline 1: Trading Analytics (tumbling window) ──────────────
 
-    private static void buildTradingWindowPipeline(
-            DataStream<SwapEvent> watermarked,
-            WindowConfig window,
-            String kafkaBootstrap
-    ) {
-        long minutes = window.duration().toMinutes();
-        String name = "trading-analytics-" + minutes + "m";
-
-        DataStream<AggregatedAnalytics> analytics = watermarked
+  private static void buildTradingWindowPipeline(final DataStream<SwapEvent> watermarked,
+      final FlinkConfig config) {
+    final DataStream<AggregatedAnalytics> analytics = watermarked
                 .keyBy(event -> event.chain() + ":" + event.pairAddress())
-                .window(TumblingEventTimeWindows.of(window.duration()))
+        .window(
+            TumblingEventTimeWindows.of(Duration.ofMinutes(config.tradingWindowMinutes())))
                 .aggregate(new SwapAggregator(), new SwapAnalyticsWindowFunction())
-                .name(name);
+        .name("trading-analytics");
 
-        analytics.print(name);
-        analytics.sinkTo(buildKafkaSink(kafkaBootstrap, window.outputTopic(), name));
+    analytics.print("trading-analytics");
+    analytics.sinkTo(
+        buildKafkaSink(config.kafkaBootstrap(), config.topicTradingAnalytics(), "trading"));
     }
 
     // ── Pipeline 2: Liquidity Analytics (tumbling window) ────────────
 
-    private static void buildLiquidityPipeline(DataStream<DexEvent> liquidityStream, FlinkConfig config) {
-        DataStream<LiquidityAnalytics> analytics = liquidityStream
+  private static void buildLiquidityPipeline(final DataStream<DexEvent> liquidityStream,
+      final FlinkConfig config) {
+    final DataStream<LiquidityAnalytics> analytics = liquidityStream
                 .keyBy(event -> event.chain() + ":" + event.pairAddress())
-                .window(TumblingEventTimeWindows.of(config.liquidityWindow()))
+        .window(
+            TumblingEventTimeWindows.of(Duration.ofMinutes(config.liquidityWindowMinutes())))
                 .process(new LiquidityWindowFunction());
 
         analytics.print("liquidity-analytics");
@@ -198,20 +198,17 @@ public class StreamProcessor {
     // ── Pipeline 3: MEV Detection (session windows) ──────────────────
 
     private static void buildMevDetectionStream(
-            DataStream<SwapEvent> tradingStream,
-            DataStream<DexEvent> liquidityStream,
-            FlinkConfig config
+        final DataStream<SwapEvent> tradingStream,
+        final DataStream<DexEvent> liquidityStream,
+        final FlinkConfig config
     ) {
-        // Widen SwapEvent to DexEvent for union
-        DataStream<DexEvent> swapsAsDex = tradingStream
-                .map(event -> (DexEvent) event)
-                .returns(TypeInformation.of(DexEvent.class));
+      // Cast SwapEvent stream to DexEvent for union compatibility
+      final DataStream<DexEvent> tradingAsEvents = tradingStream.map(swap -> swap);
+      final DataStream<DexEvent> allEvents = tradingAsEvents.union(liquidityStream);
 
-        DataStream<DexEvent> allEvents = swapsAsDex.union(liquidityStream);
-
-        DataStream<MevAlert> alerts = allEvents
+      final DataStream<MevAlert> alerts = allEvents
                 .keyBy(event -> event.chain() + ":" + event.pairAddress())
-                .window(EventTimeSessionWindows.withGap(config.sessionGap()))
+          .window(EventTimeSessionWindows.withGap(Duration.ofSeconds(config.sessionGapSeconds())))
                 .process(new MevDetectionFunction())
                 .name("mev-detection");
 
@@ -221,10 +218,13 @@ public class StreamProcessor {
 
     // ── Pipeline 4: Market Trends (sliding windows) ──────────────────
 
-    private static void buildMarketTrendStream(DataStream<SwapEvent> tradingStream, FlinkConfig config) {
-        DataStream<MarketTrend> trends = tradingStream
+  private static void buildMarketTrendStream(final DataStream<SwapEvent> tradingStream,
+      final FlinkConfig config) {
+    final DataStream<MarketTrend> trends = tradingStream
                 .keyBy(event -> event.chain() + ":" + event.pairAddress())
-                .window(SlidingEventTimeWindows.of(config.trendWindow(), config.trendSlide()))
+        .window(SlidingEventTimeWindows.of(
+            Duration.ofMinutes(config.trendWindowMinutes()),
+            Duration.ofMinutes(config.trendSlideMinutes())))
                 .aggregate(new SwapAggregator(), new MarketTrendWindowFunction())
                 .name("market-trends");
 
@@ -234,7 +234,8 @@ public class StreamProcessor {
 
     // ── Shared sink builder ──────────────────────────────────────────
 
-    private static <T> KafkaSink<T> buildKafkaSink(String kafkaBootstrap, String topic, String sinkName) {
+  private static <T> KafkaSink<T> buildKafkaSink(final String kafkaBootstrap, final String topic,
+      final String sinkName) {
         return KafkaSink.<T>builder()
                 .setBootstrapServers(kafkaBootstrap)
                 .setDeliveryGuarantee(DeliveryGuarantee.EXACTLY_ONCE)

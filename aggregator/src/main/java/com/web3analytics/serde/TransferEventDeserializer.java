@@ -1,6 +1,7 @@
 package com.web3analytics.serde;
 
 import com.web3analytics.models.TransferEvent;
+import java.math.BigDecimal;
 
 /**
  * Deserializes TransferEvent from Avro binary payload.
@@ -12,6 +13,10 @@ class TransferEventDeserializer {
       new AvroDeserializer<>(com.web3analytics.events.TransferEvent.class) {
         @Override
         protected TransferEvent map(com.web3analytics.events.TransferEvent avroRecord) {
+          final BigDecimal value =
+              AmountValidation.requireNonNegative("value", avroRecord.getValue());
+          AmountValidation.requireAtLeastOnePositive("TransferEvent", value);
+
           return new TransferEvent(
               avroRecord.getEventId(),
               avroRecord.getBlockNumber(),

@@ -22,6 +22,8 @@ import java.io.Serial;
 import java.time.Duration;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
@@ -68,7 +70,17 @@ public class StreamProcessor {
         config.trendSlideMinutes(),
                 config.topicMarketTrends());
 
-    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+    final Configuration flinkConfiguration = new Configuration();
+    flinkConfiguration.set(RestartStrategyOptions.RESTART_STRATEGY, "exponential-delay");
+    flinkConfiguration.set(
+        RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_INITIAL_BACKOFF,
+        Duration.ofSeconds(1));
+    flinkConfiguration.set(
+        RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_MAX_BACKOFF,
+        Duration.ofMinutes(5));
+
+    final StreamExecutionEnvironment env =
+        StreamExecutionEnvironment.getExecutionEnvironment(flinkConfiguration);
         env.setParallelism(config.parallelism());
         env.enableCheckpointing(config.checkpointMs());
 

@@ -175,7 +175,12 @@ graph LR
     F4 --> OM[dex-market-trends]
 ```
 
-Fault tolerance: 60 s bounded-out-of-orderness watermarks, fixed-delay restart (3 attempts / 10 s), exactly-once delivery via Kafka transactions.
+Fault tolerance: 60 s bounded-out-of-orderness watermarks, exactly-once delivery via Kafka
+transactions. The job explicitly configures `exponential-delay` restart (1 s initial backoff, 5 min
+max, unlimited attempts) rather than relying on Flink's implicit default — the same values, made
+explicit so a future Flink upgrade can't silently change restart behavior again. Per-record
+decode/validation failures do not trigger a restart at all: they're caught and routed to a
+side-output DLQ stream (see DATA_MODEL.md's Data Quality section) rather than failing the task.
 
 ### analytics-service (Kotlin / Ktor)
 

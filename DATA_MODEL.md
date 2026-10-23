@@ -206,7 +206,10 @@ Not persisted — computed by the analytics service from stored data.
 - **Event ordering**: Guaranteed within a transaction (logIndex); across transactions, event-time windows + watermarks handle out-of-order delivery.
 - **Validation**: The ingester checks that a decoded log has the expected topic and field count
   and skips logs it cannot classify; Avro encoding then enforces the schema on write. The
-  aggregator validates the CloudEvent `type` before decoding and routes anything unrecognised
-  to a side output. There is no cross-field validation (e.g. `amount0In > 0`) at either end.
+  aggregator checks the CloudEvent `type` before decoding; a mismatch, malformed CloudEvent, or
+  bad Avro payload throws and is routed to the deserialization-error side output (a DLQ stream)
+  rather than failing the job. Decoded amount fields are cross-validated: negative or
+  unparseable amounts are rejected, and an event with every amount field at zero (e.g.
+  `amount0In`/`amount1In`/`amount0Out`/`amount1Out` all zero) is rejected as degenerate.
 - **Known limitation**: the ingester's finality buffer is in-memory. A restart drops events that
   were observed but not yet published; there is no Ethereum-side replay of that gap.

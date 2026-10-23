@@ -14,8 +14,6 @@ import org.apache.avro.specific.SpecificRecord;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.util.Collector;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Template for CloudEvent envelope unwrap and Avro binary decode.
@@ -23,8 +21,6 @@ import org.slf4j.LoggerFactory;
  */
 public abstract class AbstractCloudEventAvroDeserializer<T, S extends SpecificRecord> implements DeserializationSchema<T> {
 
-  private static final Logger LOG = LoggerFactory.getLogger(
-      AbstractCloudEventAvroDeserializer.class);
   private static final EventFormat EVENT_FORMAT =
       EventFormatProvider.getInstance().resolveFormat(JsonFormat.CONTENT_TYPE);
   @Serial
@@ -53,32 +49,27 @@ public abstract class AbstractCloudEventAvroDeserializer<T, S extends SpecificRe
       final CloudEvent cloudEvent;
       try {
         cloudEvent = EVENT_FORMAT.deserialize(message);
-        if (cloudEvent == null) {
-          LOG.warn("CloudEvent deserialization returned null, skipping message");
-          return;
-        }
       } catch (final Exception e) {
-        LOG.error("Failed to parse CloudEvent: {}", e.getMessage());
-        return;
+        throw new IOException("Failed to parse CloudEvent: " + e.getMessage(), e);
+      }
+      if (cloudEvent == null) {
+        throw new IOException("CloudEvent deserialization returned null");
       }
 
       final String eventType = cloudEvent.getType();
       if (!this.expectedEventType.equals(eventType)) {
-        LOG.warn("CloudEvent type mismatch: expected '{}' but got '{}', skipping",
-            this.expectedEventType, eventType);
-        return;
+        throw new IOException("CloudEvent type mismatch: expected '" + this.expectedEventType
+            + "' but got '" + eventType + "'");
       }
 
       final CloudEventData data = cloudEvent.getData();
       if (data == null) {
-        LOG.warn("CloudEvent missing data field for type '{}', skipping", eventType);
-        return;
+        throw new IOException("CloudEvent missing data field for type '" + eventType + "'");
       }
 
       final byte[] avroPayload = data.toBytes();
       if (avroPayload == null || avroPayload.length == 0) {
-        LOG.warn("CloudEvent data is empty for type '{}', skipping", eventType);
-        return;
+        throw new IOException("CloudEvent data is empty for type '" + eventType + "'");
       }
 
       try {
@@ -92,7 +83,8 @@ public abstract class AbstractCloudEventAvroDeserializer<T, S extends SpecificRe
           out.collect(result);
         }
       } catch (final Exception e) {
-        LOG.error("Avro decoding failed for event type '{}': {}", eventType, e.getMessage());
+        throw new IOException(
+            "Avro decoding failed for event type '" + eventType + "': " + e.getMessage(), e);
       }
     }
 

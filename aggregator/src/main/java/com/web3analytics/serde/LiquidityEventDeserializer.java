@@ -1,5 +1,6 @@
 package com.web3analytics.serde;
 
+import com.web3analytics.errors.DeserializationException;
 import com.web3analytics.models.DexEvent;
 import io.cloudevents.CloudEvent;
 import io.cloudevents.CloudEventData;
@@ -11,15 +12,12 @@ import java.io.Serial;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.util.Collector;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Routes heterogeneous liquidity events by CloudEvent type, delegating to specialized deserializers.
  */
 public class LiquidityEventDeserializer implements DeserializationSchema<DexEvent> {
 
-  private static final Logger LOG = LoggerFactory.getLogger(LiquidityEventDeserializer.class);
     private static final String EVENT_TYPE_MINT = "com.dex.events.mint";
     private static final String EVENT_TYPE_BURN = "com.dex.events.burn";
     private static final String EVENT_TYPE_TRANSFER = "com.dex.events.transfer";
@@ -43,49 +41,42 @@ public class LiquidityEventDeserializer implements DeserializationSchema<DexEven
       final CloudEvent cloudEvent;
       try {
         cloudEvent = EVENT_FORMAT.deserialize(message);
-        if (cloudEvent == null) {
-          LOG.warn("CloudEvent deserialization returned null, skipping message");
-          return;
-        }
       } catch (final Exception e) {
-        LOG.error("Failed to parse CloudEvent: {}", e.getMessage());
-        return;
+        throw new IOException("Failed to parse CloudEvent: " + e.getMessage(), e);
+      }
+      if (cloudEvent == null) {
+        throw new IOException("CloudEvent deserialization returned null");
       }
 
       final String eventType = cloudEvent.getType();
       if (eventType == null) {
-        LOG.warn("CloudEvent missing type field, skipping");
-        return;
+        throw new IOException("CloudEvent missing type field");
       }
 
       final CloudEventData data = cloudEvent.getData();
       if (data == null) {
-        LOG.warn("CloudEvent missing data field for type '{}', skipping", eventType);
-        return;
+        throw new IOException("CloudEvent missing data field for type '" + eventType + "'");
       }
 
       final byte[] avroPayload = data.toBytes();
       if (avroPayload == null || avroPayload.length == 0) {
-        LOG.warn("CloudEvent data is empty for type '{}', skipping", eventType);
-        return;
-        }
+        throw new IOException("CloudEvent data is empty for type '" + eventType + "'");
+      }
 
       try {
         final DexEvent result = switch (eventType) {
           case EVENT_TYPE_MINT -> this.mintDeserializer.deserializeAvro(avroPayload);
           case EVENT_TYPE_BURN -> this.burnDeserializer.deserializeAvro(avroPayload);
           case EVENT_TYPE_TRANSFER -> this.transferDeserializer.deserializeAvro(avroPayload);
-          default -> {
-            LOG.warn("Unknown event type: {}, skipping", eventType);
-            yield null;
-          }
+          default -> throw new DeserializationException("Unknown event type: " + eventType);
         };
         if (result != null) {
           out.collect(result);
         }
       } catch (final Exception e) {
-        LOG.error("Failed to deserialize Avro payload for event type '{}': {}", eventType,
-            e.getMessage());
+        throw new IOException(
+            "Failed to deserialize Avro payload for event type '" + eventType + "': "
+                + e.getMessage(), e);
       }
     }
 

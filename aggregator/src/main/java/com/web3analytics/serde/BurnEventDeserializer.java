@@ -1,6 +1,7 @@
 package com.web3analytics.serde;
 
 import com.web3analytics.models.BurnEvent;
+import java.math.BigDecimal;
 
 /**
  * Deserializes BurnEvent from Avro binary payload.
@@ -12,6 +13,12 @@ class BurnEventDeserializer {
       new AvroDeserializer<>(com.web3analytics.events.BurnEvent.class) {
         @Override
         protected BurnEvent map(com.web3analytics.events.BurnEvent avroRecord) {
+          final BigDecimal amount0 =
+              AmountValidation.requireNonNegative("amount0", avroRecord.getAmount0());
+          final BigDecimal amount1 =
+              AmountValidation.requireNonNegative("amount1", avroRecord.getAmount1());
+          AmountValidation.requireAtLeastOnePositive("BurnEvent", amount0, amount1);
+
           return new BurnEvent(
               avroRecord.getEventId(),
               avroRecord.getBlockNumber(),

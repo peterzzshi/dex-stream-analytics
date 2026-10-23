@@ -1,6 +1,7 @@
 package com.web3analytics.serde;
 
 import com.web3analytics.models.MintEvent;
+import java.math.BigDecimal;
 
 /**
  * Deserializes MintEvent from Avro binary payload.
@@ -12,6 +13,12 @@ class MintEventDeserializer {
       new AvroDeserializer<>(com.web3analytics.events.MintEvent.class) {
         @Override
         protected MintEvent map(com.web3analytics.events.MintEvent avroRecord) {
+          final BigDecimal amount0 =
+              AmountValidation.requireNonNegative("amount0", avroRecord.getAmount0());
+          final BigDecimal amount1 =
+              AmountValidation.requireNonNegative("amount1", avroRecord.getAmount1());
+          AmountValidation.requireAtLeastOnePositive("MintEvent", amount0, amount1);
+
           return new MintEvent(
               avroRecord.getEventId(),
               avroRecord.getBlockNumber(),

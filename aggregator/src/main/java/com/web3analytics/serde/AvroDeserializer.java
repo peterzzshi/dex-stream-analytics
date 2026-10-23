@@ -1,6 +1,7 @@
 package com.web3analytics.serde;
 
 import com.web3analytics.errors.DeserializationException;
+import java.io.IOException;
 import org.apache.avro.io.BinaryDecoder;
 import org.apache.avro.io.DecoderFactory;
 import org.apache.avro.specific.SpecificDatumReader;
@@ -32,9 +33,10 @@ abstract class AvroDeserializer<T, A extends SpecificRecordBase> {
       decoder = DecoderFactory.get().binaryDecoder(avroPayload, decoder);
       A avroRecord = reader.read(null, decoder);
       return map(avroRecord);
-    } catch (Exception err) {
+    } catch (IOException err) {
       throw new DeserializationException(
-          "Failed to decode Avro payload for " + avroClass.getSimpleName(), err);
+          "Failed to decode Avro payload for " + avroClass.getSimpleName() + ": "
+              + err.getMessage(), err);
     }
   }
 

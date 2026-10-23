@@ -42,19 +42,34 @@ No API key needed — the default stack runs Kafka, Flink, and the analytics API
 
 ```bash
 docker compose up -d --build
-python3 scripts/produce_test_events.py   # feed test events (requires fastavro, kafka-python)
+./scripts/verify_services.sh              # verify all services are healthy
+python3 scripts/produce_test_events.py    # feed test events (requires fastavro, kafka-python)
 ```
 
-Visit http://localhost:8080/dashboard for live analytics (Flink Web UI: http://localhost:8081).
+### Access the Application
 
-For live chain data, set `POLYGON_RPC_URL` (Polygon WebSocket endpoint) in `.env` and add the `live` profile:
+Once running, open:
+
+- **Analytics Dashboard**: http://localhost:8080/dashboard  
+  Real-time pool health, trading metrics, MEV alerts
+- **Flink Web UI**: http://localhost:8081  
+  Job status, task metrics, checkpoints
+- **Health Check**: http://localhost:8080/health  
+  Service readiness
+
+**View logs**: `docker compose logs -f flink-jobmanager analytics-service`
+
+### Optional: Live Chain Data
+
+For live blockchain events instead of test data, set `POLYGON_RPC_URL` (Polygon WebSocket endpoint) in `.env` and add the `live` profile:
 
 ```bash
-cp .env.example .env   # set POLYGON_RPC_URL
-docker compose --profile live up -d --build
+cp .env.example .env                          # add your RPC URL
+docker compose --profile live up -d --build   # starts ingester + dapr sidecars
+docker compose logs -f ingester               # monitor blockchain listener
 ```
 
-**View logs**: `docker compose logs -f flink-jobmanager analytics-service` (add `ingester` with the live profile)
+The ingester is not required for local development — the pipeline works with test events by default.
 
 ## Build Individual Components
 

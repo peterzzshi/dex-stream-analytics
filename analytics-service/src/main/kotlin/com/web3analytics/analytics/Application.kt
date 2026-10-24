@@ -20,6 +20,7 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.http.content.staticResources
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
@@ -84,6 +85,8 @@ fun Application.analyticsModule(
         get("/health") {
             call.respondText("ok")
         }
+
+        staticResources("/static", "static")
 
         tradingRoutes(store)
         liquidityRoutes(store)

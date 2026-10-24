@@ -6,8 +6,9 @@ import com.web3analytics.analytics.model.TimeRange
 import com.web3analytics.analytics.store.AnalyticsStore
 import kotlin.math.min
 
-class PoolHealthScorer(private val store: AnalyticsStore) {
-
+class PoolHealthScorer(
+    private val store: AnalyticsStore,
+) {
     fun evaluate(pairAddress: PairAddress): PoolHealth {
         val now = System.currentTimeMillis()
         val range24h = TimeRange(now - 86_400_000, now)
@@ -15,11 +16,10 @@ class PoolHealthScorer(private val store: AnalyticsStore) {
         val tradingWindows = store.getTradingWindows(pairAddress, range24h)
         val liquidityWindows = store.getLiquidityWindows(pairAddress, range24h)
         val alerts = store.getMevAlerts(pairAddress, range24h)
-        val trends = store.getMarketTrends(pairAddress, range24h)
+        val latestTrend = store.getLatestMarketTrend(pairAddress)
 
         val volumeUSD = tradingWindows.mapNotNull { it.volumeUSD }.sum()
         val uniqueTraders = tradingWindows.map { it.uniqueTraders }.maxOrNull() ?: 0
-        val latestTrend = store.getLatestMarketTrend(pairAddress)
 
         val tradingScore = scoreTradingActivity(tradingWindows.size, volumeUSD, uniqueTraders)
         val liquidityScore = scoreLiquidity(liquidityWindows.size)
@@ -38,7 +38,11 @@ class PoolHealthScorer(private val store: AnalyticsStore) {
     }
 
     companion object {
-        fun scoreTradingActivity(windowCount: Int, volumeUSD: Double, uniqueTraders: Int): Double {
+        fun scoreTradingActivity(
+            windowCount: Int,
+            volumeUSD: Double,
+            uniqueTraders: Int,
+        ): Double {
             // More windows = more active trading
             val activityScore = min(windowCount / 24.0, 1.0)
             // Volume diversity: >$100k/day is healthy

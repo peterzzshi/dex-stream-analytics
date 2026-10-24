@@ -1,94 +1,61 @@
 # Analytics Service
 
-Kotlin/Ktor service receiving aggregated DEX analytics via Dapr subscriptions, computing pool
-health scores, and serving time-series query endpoints. Stores data in Redis sorted sets keyed
-by `analytics:trading:{pair}` / `analytics:liquidity:{pair}` (a chain prefix joins the key when
-multi-chain lands).
+Kotlin/Ktor REST API consuming Flink-aggregated analytics from Kafka (via Dapr subscriptions),
+computing pool health scores, and serving time-series query endpoints. Stores data in Redis
+sorted sets.
 
 ## Requirements
 
 - JDK 21
 - Redis 7+
+- Kafka broker (via Dapr)
+
+## Build & Test
+
+```bash
+./gradlew test
+./gradlew build
+```
 
 ## Run
 
+Standalone (requires reachable Redis):
 ```bash
 REDIS_HOST=localhost REDIS_PORT=6379 APP_PORT=8080 ./gradlew run
 ```
 
-## Endpoints
+Full stack (recommended):
 
-### Dapr Subscription
+```bash
+docker compose up -d --build   # from repo root
+```
 
-Topics are subscribed **declaratively** via `dapr/subscriptions/*.yaml` (no programmatic `/dapr/subscribe` manifest). Dapr pushes events to these routes:
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/events/trading-analytics` | Receive trading windows |
-| POST | `/events/liquidity-analytics` | Receive liquidity windows |
-| POST | `/events/pattern-analytics` | Receive MEV alerts |
-| POST | `/events/market-trends` | Receive market trends |
-
-### Trading Analytics
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/pairs/{pair}/twap` | TWAP series |
-| GET | `/pairs/{pair}/ohlc` | OHLC candlestick data |
-| GET | `/pairs/{pair}/volume` | Volume and swap count |
-| GET | `/pairs/{pair}/trading` | Full trading windows |
-| GET | `/pairs/{pair}/latest` | Most recent trading window |
-
-### Liquidity Analytics
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/pairs/{pair}/liquidity` | Liquidity windows |
-| GET | `/pairs/{pair}/liquidity/latest` | Most recent liquidity window |
-| GET | `/pairs/{pair}/liquidity/flows` | LP token flow summary |
-
-### Pool Health
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/pools/{pair}/health` | Composite health score |
-| GET | `/pools/{pair}/alerts` | MEV alerts for pair |
-| GET | `/pools/{pair}/trends` | Market trends for pair |
-| GET | `/pools/leaderboard` | All pools ranked by health |
-
-### Summary
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | Health check |
-| GET | `/analytics/summary` | Tracked pair and window counts |
-| GET | `/analytics/pairs` | All pairs with latest metrics |
-
-### Dashboard
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/dashboard` | Real-time HTML dashboard |
-| WS | `/ws/analytics` | Live analytics stream (send `{"channels":[...]}` to filter) |
-
-All time-range endpoints accept `?from=<ms>&to=<ms>` query parameters (default: last hour).
-
-## Pool Health Scoring
-
-The `/pools/{pair}/health` endpoint computes a weighted composite score (0–1):
-
-- **Trading score** (35%): volume, activity frequency, trader diversity
-- **Liquidity score** (35%): LP event activity
-- **Safety score** (30%): inverse of recent MEV alert count
+Visit http://localhost:8080/dashboard for live analytics.
 
 ## Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `APP_PORT` | `8080` | HTTP server port |
-| `REDIS_HOST` | `localhost` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `REDIS_PASSWORD` | — | Redis password (optional) |
-| `TRADING_RETENTION_HOURS` | `168` | Trading data retention (7 days) |
-| `LIQUIDITY_RETENTION_HOURS` | `720` | Liquidity data retention (30 days) |
+| Variable                    | Default     | Description                        |
+|-----------------------------|-------------|------------------------------------|
+| `APP_PORT`                  | `8080`      | HTTP server port                   |
+| `REDIS_HOST`                | `localhost` | Redis host                         |
+| `REDIS_PORT`                | `6379`      | Redis port                         |
+| `REDIS_PASSWORD`            | —           | Redis password (optional)          |
+| `TRADING_RETENTION_HOURS`   | `168`       | Trading data retention (7 days)    |
+| `LIQUIDITY_RETENTION_HOURS` | `720`       | Liquidity data retention (30 days) |
+| `MEV_RETENTION_HOURS`       | `168`       | MEV alert retention (7 days)       |
+| `TREND_RETENTION_HOURS`     | `168`       | Market trend retention (7 days)    |
 
-## Test
+Kafka topics and Dapr subscription routes are wired in `dapr/subscriptions/*.yaml` and match the
+aggregator's output topics — see root [ARCHITECTURE.md](../ARCHITECTURE.md#event-to-analytics-mapping)
+for the full contract.
 
-```bash
-./gradlew test   # 29 tests
-```
+## Design Notes
+
+- **Dapr subscriptions are declarative** — no programmatic `/dapr/subscribe` endpoint; the sidecar
+  reads `dapr/subscriptions/analytics-subscriptions.yaml` and pushes CloudEvents to `/events/*`
+  routes.
+- **Pool health scoring** — composite metric (35 % trading activity + 35 % liquidity activity +
+  30 % safety/inverse of MEV alerts) computed at query time, not persisted.
+- **Redis key structure** — `analytics:trading:{pair}`, `analytics:liquidity:{pair}`,
+  `analytics:mev:{pair}`, `analytics:trends:{pair}`, all scored by `windowStart` or `detectedAt`
+  for time-range queries. When multi-chain lands, a chain prefix joins the key.

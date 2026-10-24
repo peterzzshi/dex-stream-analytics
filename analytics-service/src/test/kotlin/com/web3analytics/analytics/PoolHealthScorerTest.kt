@@ -8,7 +8,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class PoolHealthScorerTest {
-
     @Test
     fun `perfect safety score when no alerts`() {
         val score = PoolHealthScorer.scoreSafety(0)

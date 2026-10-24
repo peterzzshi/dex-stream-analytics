@@ -21,82 +21,109 @@ class InMemoryAnalyticsStore : AnalyticsStore {
     private val trendCount = AtomicLong(0)
 
     override fun storeTradingAnalytics(analytics: TradingAnalytics) {
-        tradingByPair.computeIfAbsent(analytics.pairAddress) {
-            Collections.synchronizedList(mutableListOf())
-        }.add(analytics)
+        tradingByPair
+            .computeIfAbsent(analytics.pairAddress) {
+                Collections.synchronizedList(mutableListOf())
+            }.add(analytics)
         tradingCount.incrementAndGet()
     }
 
     override fun storeLiquidityAnalytics(analytics: LiquidityAnalytics) {
-        liquidityByPair.computeIfAbsent(analytics.pairAddress) {
-            Collections.synchronizedList(mutableListOf())
-        }.add(analytics)
+        liquidityByPair
+            .computeIfAbsent(analytics.pairAddress) {
+                Collections.synchronizedList(mutableListOf())
+            }.add(analytics)
         liquidityCount.incrementAndGet()
     }
 
     override fun storeMevAlert(alert: MevAlert) {
-        mevByPair.computeIfAbsent(alert.pairAddress) {
-            Collections.synchronizedList(mutableListOf())
-        }.add(alert)
+        mevByPair
+            .computeIfAbsent(alert.pairAddress) {
+                Collections.synchronizedList(mutableListOf())
+            }.add(alert)
         mevCount.incrementAndGet()
     }
 
     override fun storeMarketTrend(trend: MarketTrend) {
-        trendsByPair.computeIfAbsent(trend.pairAddress) {
-            Collections.synchronizedList(mutableListOf())
-        }.add(trend)
+        trendsByPair
+            .computeIfAbsent(trend.pairAddress) {
+                Collections.synchronizedList(mutableListOf())
+            }.add(trend)
         trendCount.incrementAndGet()
     }
 
-    override fun getTradingWindows(pairAddress: PairAddress, range: TimeRange): List<TradingAnalytics> {
-        return tradingByPair[pairAddress]
+    override fun getTradingWindows(
+        pairAddress: PairAddress,
+        range: TimeRange,
+    ): List<TradingAnalytics> =
+        tradingByPair[pairAddress]
             ?.filter { it.windowStart >= range.from && it.windowStart <= range.to }
             ?.sortedBy { it.windowStart }
             ?: emptyList()
-    }
 
-    override fun getLatestTradingWindow(pairAddress: PairAddress): TradingAnalytics? {
-        return tradingByPair[pairAddress]?.maxByOrNull { it.windowStart }
-    }
+    override fun getLatestTradingWindow(pairAddress: PairAddress): TradingAnalytics? =
+        tradingByPair[pairAddress]?.maxByOrNull {
+            it.windowStart
+        }
 
-    override fun getLiquidityWindows(pairAddress: PairAddress, range: TimeRange): List<LiquidityAnalytics> {
-        return liquidityByPair[pairAddress]
+    override fun tradingWindowCount(
+        pairAddress: PairAddress,
+        range: TimeRange,
+    ): Int = tradingByPair[pairAddress]?.count { it.windowStart >= range.from && it.windowStart <= range.to } ?: 0
+
+    override fun getLiquidityWindows(
+        pairAddress: PairAddress,
+        range: TimeRange,
+    ): List<LiquidityAnalytics> =
+        liquidityByPair[pairAddress]
             ?.filter { it.windowStart >= range.from && it.windowStart <= range.to }
             ?.sortedBy { it.windowStart }
             ?: emptyList()
-    }
 
-    override fun getLatestLiquidityWindow(pairAddress: PairAddress): LiquidityAnalytics? {
-        return liquidityByPair[pairAddress]?.maxByOrNull { it.windowStart }
-    }
+    override fun getLatestLiquidityWindow(pairAddress: PairAddress): LiquidityAnalytics? =
+        liquidityByPair[pairAddress]?.maxByOrNull {
+            it.windowStart
+        }
 
-    override fun getMevAlerts(pairAddress: PairAddress, range: TimeRange): List<MevAlert> {
-        return mevByPair[pairAddress]
+    override fun getMevAlerts(
+        pairAddress: PairAddress,
+        range: TimeRange,
+    ): List<MevAlert> =
+        mevByPair[pairAddress]
             ?.filter { it.detectedAt >= range.from && it.detectedAt <= range.to }
             ?.sortedByDescending { it.detectedAt }
             ?: emptyList()
-    }
 
-    override fun getMarketTrends(pairAddress: PairAddress, range: TimeRange): List<MarketTrend> {
-        return trendsByPair[pairAddress]
+    override fun getMarketTrends(
+        pairAddress: PairAddress,
+        range: TimeRange,
+    ): List<MarketTrend> =
+        trendsByPair[pairAddress]
             ?.filter { it.windowStart >= range.from && it.windowStart <= range.to }
             ?.sortedBy { it.windowStart }
             ?: emptyList()
-    }
 
-    override fun getLatestMarketTrend(pairAddress: PairAddress): MarketTrend? {
-        return trendsByPair[pairAddress]?.maxByOrNull { it.windowStart }
-    }
+    override fun getLatestMarketTrend(pairAddress: PairAddress): MarketTrend? =
+        trendsByPair[pairAddress]?.maxByOrNull {
+            it.windowStart
+        }
 
     override fun tradingPairCount(): Int = tradingByPair.size
+
     override fun liquidityPairCount(): Int = liquidityByPair.size
+
     override fun totalTradingWindows(): Long = tradingCount.get()
+
     override fun totalLiquidityWindows(): Long = liquidityCount.get()
+
     override fun totalMevAlerts(): Long = mevCount.get()
+
     override fun totalMarketTrends(): Long = trendCount.get()
 
     override fun trackedTradingPairs(): Set<PairAddress> = tradingByPair.keys.toSet()
+
     override fun trackedLiquidityPairs(): Set<PairAddress> = liquidityByPair.keys.toSet()
+
     override fun allTrackedPairs(): Set<PairAddress> =
         tradingByPair.keys + liquidityByPair.keys + mevByPair.keys + trendsByPair.keys
 }

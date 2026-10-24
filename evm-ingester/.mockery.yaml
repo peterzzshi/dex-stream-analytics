@@ -1,0 +1,13 @@
+with-expecter: true
+dir: "{{.InterfaceDir}}/mocks"
+outpkg: "mocks"
+mockname: "Mock{{.InterfaceName}}"
+filename: "mock_{{.InterfaceName | snakecase}}.go"
+
+packages:
+  evm-ingester/internal/blockchain:
+    interfaces:
+      EthClient:
+  evm-ingester/internal/oracle:
+    interfaces:
+      PriceOracle:

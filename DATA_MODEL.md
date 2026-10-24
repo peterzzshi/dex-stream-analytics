@@ -1,7 +1,7 @@
 # Data Model
 
 Schema definitions, field semantics, and data flow for the DEX analytics pipeline. Avro schemas
-are embedded per component: `ingester/internal/avro/` (producer) and
+are embedded per component: `evm-ingester/internal/avro/` (producer) and
 `aggregator/src/main/resources/avro/` (consumer).
 
 ## Data Flow
@@ -66,20 +66,20 @@ Monitored Solidity events:
 
 Represents a token trade on the pair.
 
-| Field | Type | Notes |
-|---|---|---|
-| eventId | string | Deduplication key, `txHash:logIndex` |
-| blockNumber / blockTimestamp | long | Block context (timestamp in seconds) |
-| transactionHash / logIndex | string / int | Log location |
-| pairAddress | string | Pair contract |
-| token0 / token1 | string | Token addresses |
-| token0Symbol / token1Symbol | string? | Resolved by ingester (cached) |
-| sender / recipient | string | Initiator vs output receiver (differ for router swaps) |
-| amount0In / amount1In / amount0Out / amount1Out | string | Wei amounts |
-| price | double | Execution price (token1 / token0) |
-| volumeUSD | double? | USD volume via Chainlink oracle |
-| gasUsed / gasPrice | long / string | Transaction-level gas metrics |
-| eventTimestamp | long | Ingester capture time |
+| Field                                           | Type          | Notes                                                  |
+|-------------------------------------------------|---------------|--------------------------------------------------------|
+| eventId                                         | string        | Deduplication key, `txHash:logIndex`                   |
+| blockNumber / blockTimestamp                    | long          | Block context (timestamp in seconds)                   |
+| transactionHash / logIndex                      | string / int  | Log location                                           |
+| pairAddress                                     | string        | Pair contract                                          |
+| token0 / token1                                 | string        | Token addresses                                        |
+| token0Symbol / token1Symbol                     | string?       | Resolved by the ingester (cached)                      |
+| sender / recipient                              | string        | Initiator vs output receiver (differ for router swaps) |
+| amount0In / amount1In / amount0Out / amount1Out | string        | Wei amounts                                            |
+| price                                           | double        | Execution price (token1 / token0)                      |
+| volumeUSD                                       | double?       | USD volume via Chainlink oracle                        |
+| gasUsed / gasPrice                              | long / string | Transaction-level gas metrics                          |
+| eventTimestamp                                  | long          | Ingester capture time                                  |
 
 ### MintEvent (`dex-liquidity-events`)
 
@@ -201,7 +201,7 @@ Not persisted — computed by the analytics service from stored data.
 
 ## Data Quality
 
-- **Reorgs**: 64-block finality gate in ingester; 60 s watermark in Flink absorbs late arrivals.
+- **Reorgs**: 64-block finality gate in the ingester; 60 s watermark in Flink absorbs late arrivals.
 - **RPC lag**: Paid endpoints recommended; `lastProcessedBlock` should be monitored against chain head.
 - **Event ordering**: Guaranteed within a transaction (logIndex); across transactions, event-time windows + watermarks handle out-of-order delivery.
 - **Validation**: The ingester checks that a decoded log has the expected topic and field count

@@ -63,24 +63,20 @@ services:
     networks:
       - dex-analytics-network
 
-  # Ingester: Go service listening to blockchain events
-  # Only runs with --profile live; requires POLYGON_RPC_URL and PAIR_ADDRESS in .env
+  # EVM ingester: Go service listening to EVM blockchain events
+  # Only runs with --profile live; requires ETH_RPC_URL in .env
   # For local dev, use scripts/produce_test_events.py to feed the pipeline instead.
-  ingester:
+  evm-ingester:
     build:
-      context: ./ingester
+      context: ./evm-ingester
       dockerfile: Dockerfile
-    container_name: ingester
+    container_name: evm-ingester
     environment:
-      - POLYGON_RPC_URL=${POLYGON_RPC_URL}
-      - PAIR_ADDRESS=${PAIR_ADDRESS}
-      - DAPR_HOST=ingester-dapr
-      - DAPR_HTTP_PORT=3500
-      - DAPR_GRPC_PORT=50001
-      - PUBSUB_NAME=kafka-pubsub
-      - TOPIC_TRADING_EVENTS=dex-trading-events
-      - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
-      - APP_PORT=3000
+      - CONFIG_PATH=/app/config/evm-ingester.yaml
+      - ETH_RPC_URL=${ETH_RPC_URL}
+    volumes:
+      # Chains and pools live in YAML, not env vars — mount so edits need no rebuild.
+      - ./evm-ingester/config:/app/config:ro
     ports:
       - "3000:3000"
     depends_on:
@@ -94,16 +90,16 @@ services:
     profiles:
       - live
 
-  # DAPR sidecar for ingester
-  ingester-dapr:
+  # DAPR sidecar for evm-ingester
+  evm-ingester-dapr:
     image: daprio/daprd:1.12.0
-    container_name: ingester-dapr
+    container_name: evm-ingester-dapr
     command: [
       "./daprd",
-      "-app-id", "ingester",
+      "-app-id", "evm-ingester",
       "-app-port", "3000",
       "-app-protocol", "http",
-      "-app-channel-address", "ingester",
+      "-app-channel-address", "evm-ingester",
       "-dapr-http-port", "3500",
       "-dapr-grpc-port", "50001",
       "-components-path", "/components",
@@ -115,7 +111,7 @@ services:
       - ./dapr/components:/components
       - ./dapr/config:/config
     depends_on:
-      - ingester
+      - evm-ingester
     networks:
       - dex-analytics-network
     profiles:

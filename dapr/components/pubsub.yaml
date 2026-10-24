@@ -40,5 +40,5 @@ spec:
     - name: version
       value: "2.8.0"
 scopes:
-  - ingester
+  - evm-ingester
   - analytics-service

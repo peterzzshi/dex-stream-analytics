@@ -13,7 +13,7 @@ graph TD
     end
 
     subgraph "Ingester · Go"
-        ING[ingester]
+        ING[evm-ingester]
         DAPR_I[Dapr sidecar]
     end
 
@@ -86,11 +86,11 @@ chain.
 
 That distinction is enforced at three places, so adding a chain is additive:
 
-| Layer | Today | Multi-chain |
-|---|---|---|
-| Ingester | single instance (`evm-ingester`), `PAIR_ADDRESS` | one ingester binary per chain family, `CHAIN` + `CHAIN_NAME` |
-| Event schema | no `chain` field | `chain` (CAIP-2 string) + `chainName` (string) on every event |
-| Flink key | `pairAddress` | `(chain, pairAddress)` |
+| Layer        | Today                                                                    | Multi-chain                                                           |
+|--------------|--------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| Ingester     | single instance (`evm-ingester`), pool set in `config/evm-ingester.yaml` | one ingester binary per chain family, `chain` + `name` per YAML entry |
+| Event schema | no `chain` field                                                         | `chain` (CAIP-2 string) + `chainName` (string) on every event         |
+| Flink key    | `pairAddress`                                                            | `(chain, pairAddress)`                                                |
 
 `chain` is CAIP-2 (`eip155:137`, `solana:5eykt...`), not EIP-155's bare numeric chain ID —
 EIP-155 can't name a non-EVM cluster, so the chain-neutral form is canonical even today,
@@ -139,15 +139,17 @@ the four event topics). Enriches each raw log with the block timestamp, transact
 token symbols, and a Chainlink USD price. Encodes to Avro and publishes via Dapr. One goroutine
 listens, one publishes through a buffered channel.
 
-Named `evm-ingester` (not just `ingester`) because the design is one ingester binary per chain
-*family*, not per chain: a second EVM chain reuses this binary with a different `RPC_URL` /
-`PAIR_ADDRESS`; Solana is a different enough execution and account model (no event logs, no
-EIP-155 chain ID, commitment-level finality) to need its own ingester, `solana-ingester` —
-see [Future Work](#future-work).
+Named `evm-ingester` (not just `ingester`) because the design is one ingester binary per chain *family*, not per chain:
+a second EVM chain reuses this binary with a different RPC URL and
+pool address in its config; Solana is a different enough execution and account model (no event
+logs, no EIP-155 chain ID, commitment-level finality) to need its own ingester,
+`solana-ingester` — see [Future Work](#future-work).
 
-**Deployment**: one Docker container today (the `live` profile), configured by `POLYGON_RPC_URL`
-and `PAIR_ADDRESS`. Adding another EVM chain means running the same binary with a different
-`RPC_URL`/`PAIR_ADDRESS`/`CHAIN` — the Kafka topics are shared.
+**Deployment**: one Docker container today (the `live` profile), configured by
+`config/evm-ingester.yaml` — chains, pools, Dapr coordinates, and finality depth are all in that
+file, versioned and mounted read-only. Only the RPC URL is a secret, passed as `${ETH_RPC_URL}`.
+Adding another EVM chain means adding a YAML entry, not restarting with different env vars — the
+Kafka topics are shared.
 
 **Design note — enrichment happens here, not in Flink**: Chainlink reads and symbol lookups are
 cached in the ingester so the values written to the event are frozen at ingest. Flink replay
@@ -211,18 +213,19 @@ Input topics are keyed by `pairAddress`; output topics by `windowId`.
 
 ### Docker Compose Services
 
-| Service | Purpose | Port |
-|---|---|---|
-| kafka | KRaft broker | 9092 |
-| kafka-init | One-shot topic provisioning | — |
-| redis | Analytics store | 6379 |
-| dapr-placement | Dapr placement | 50006 |
-| flink-jobmanager | Builds and runs the Flink job (application mode) | 8081 (Web UI) |
-| flink-taskmanager | Flink workers | — |
-| analytics-service + sidecar | Kotlin API | 8080 |
-| ingester + sidecar (`live` profile) | Go blockchain listener | — |
+| Service                                 | Purpose                                          | Port          |
+|-----------------------------------------|--------------------------------------------------|---------------|
+| kafka                                   | KRaft broker                                     | 9092          |
+| kafka-init                              | One-shot topic provisioning                      | —             |
+| redis                                   | Analytics store                                  | 6379          |
+| dapr-placement                          | Dapr placement                                   | 50006         |
+| flink-jobmanager                        | Builds and runs the Flink job (application mode) | 8081 (Web UI) |
+| flink-taskmanager                       | Flink workers                                    | —             |
+| analytics-service + sidecar             | Kotlin API                                       | 8080          |
+| evm-ingester + sidecar (`live` profile) | Go EVM listener                                  | —             |
 
-The default `docker compose up -d` runs the full pipeline without chain access; `scripts/produce_test_events.py` feeds it test events. The `live` profile adds the ingester and requires a Polygon WebSocket RPC endpoint.
+The default `docker compose up -d` runs the full pipeline without chain access; `scripts/produce_test_events.py` feeds
+it test events. The `live` profile adds `evm-ingester` and requires an EVM WebSocket RPC endpoint (`ETH_RPC_URL`).
 
 ## Production vs Prototype
 
@@ -256,8 +259,8 @@ The default `docker compose up -d` runs the full pipeline without chain access; 
    SDK's alpha status doesn't factor into this choice.
 2. **Multi-chain EVM** (Arbitrum, Base): lower priority than Solana — it adds deployments
    within a chain family the design already generalizes over, rather than testing the seam
-   itself. `CHAIN`/`CHAIN_NAME` in `evm-ingester`, one instance each; the aggregator needs only
-   the key change — `(chain, pairAddress)`.
+   itself. One YAML entry per deployment in `evm-ingester`, each with its own `chain`/`name`;
+   the aggregator needs only the key change — `(chain, pairAddress)`.
 
 **Beyond chain breadth:**
 - **Uniswap V3/V4 support**: V3 keeps `(token0, token1, fee)` pool addressability but replaces

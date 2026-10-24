@@ -44,10 +44,10 @@ fi
 echo
 
 # Check ingester status
-if docker compose ps | grep -q "ingester.*Up"; then
-  echo "✓ Ingester: running (live chain data)"
+if docker compose ps | grep -q "evm-ingester.*Up"; then
+  echo "✓ EVM ingester: running (live chain data)"
 else
-  echo "ℹ Ingester: not running (use test data)"
+  echo "ℹ EVM ingester: not running (use test data)"
   echo "  To start: docker compose --profile live up -d"
 fi
 echo

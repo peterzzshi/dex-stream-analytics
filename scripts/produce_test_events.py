@@ -18,7 +18,7 @@ from kafka import KafkaProducer
 
 KAFKA_BOOTSTRAP = "localhost:29092"
 
-# --- Avro schemas (inline, matching ingester/internal/avro/*.avsc) ---
+# --- Avro schemas (inline, matching evm-ingester/internal/avro/*.avsc) ---
 SWAP_SCHEMA = fastavro.parse_schema({
     "namespace": "com.web3analytics.events",
     "type": "record",

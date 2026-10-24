@@ -20,14 +20,14 @@ changing the aggregator.
 
 ## Tech Stack
 
-| Component | Language | Purpose |
-|---|---|---|
-| `ingester/` | Go | Blockchain listener + Chainlink pricing |
-| `aggregator/` | Java 21 / Flink 2 | Stream processing (4 window pipelines) |
-| `analytics-service/` | Kotlin / Ktor | REST API + pool health scoring |
-| `dapr/` | YAML | Pub/sub component configs |
+| Component            | Language          | Purpose                                |
+|----------------------|-------------------|----------------------------------------|
+| `evm-ingester/`      | Go                | EVM listener + Chainlink pricing       |
+| `aggregator/`        | Java 21 / Flink 2 | Stream processing (4 window pipelines) |
+| `analytics-service/` | Kotlin / Ktor     | REST API + pool health scoring         |
+| `dapr/`              | YAML              | Pub/sub component configs              |
 
-Avro schemas are embedded per component: `ingester/internal/avro/` and
+Avro schemas are embedded per component: `evm-ingester/internal/avro/` and
 `aggregator/src/main/resources/avro/`.
 
 ## Documentation
@@ -50,23 +50,24 @@ python3 scripts/produce_test_events.py    # feed test events (requires fastavro,
 
 Once running, open:
 
-- **Analytics Dashboard**: http://localhost:8080/dashboard  
+- **Analytics Dashboard**: http://localhost:8080/dashboard
   Real-time pool health, trading metrics, MEV alerts
-- **Flink Web UI**: http://localhost:8081  
+- **Flink Web UI**: http://localhost:8081
   Job status, task metrics, checkpoints
-- **Health Check**: http://localhost:8080/health  
+- **Health Check**: http://localhost:8080/health
   Service readiness
 
 **View logs**: `docker compose logs -f flink-jobmanager analytics-service`
 
 ### Optional: Live Chain Data
 
-For live blockchain events instead of test data, set `POLYGON_RPC_URL` (Polygon WebSocket endpoint) in `.env` and add the `live` profile:
+For live blockchain events instead of test data, set `ETH_RPC_URL` (EVM WebSocket endpoint) in `.env` and add the `live`
+profile:
 
 ```bash
 cp .env.example .env                          # add your RPC URL
-docker compose --profile live up -d --build   # starts ingester + dapr sidecars
-docker compose logs -f ingester               # monitor blockchain listener
+docker compose --profile live up -d --build   # starts evm-ingester + dapr sidecar
+docker compose logs -f evm-ingester           # monitor blockchain listener
 ```
 
 The ingester is not required for local development — the pipeline works with test events by default.
@@ -74,7 +75,8 @@ The ingester is not required for local development — the pipeline works with t
 ## Build Individual Components
 
 See component READMEs for standalone build instructions:
-- `ingester/README.md`
+
+- `evm-ingester/README.md`
 - `aggregator/README.md`
 - `analytics-service/README.md`
 

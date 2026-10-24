@@ -19,6 +19,7 @@ coverage.html
 # Java/Maven
 target/
 **/.gradle/
+gradle-daemon-jvm.properties
 pom.xml.tag
 pom.xml.releaseBackup
 pom.xml.versionsBackup
@@ -40,6 +41,7 @@ buildNumber.properties
 
 # Build artifacts
 *.jar
+!gradle-wrapper.jar
 *.war
 *.ear
 *.class
@@ -58,9 +60,6 @@ coverage.json
 # Docker
 *.pid
 docker-compose.override.yml
-
-# AI tooling context (local-only)
-.ai-context/
 
 # Logs
 logs/

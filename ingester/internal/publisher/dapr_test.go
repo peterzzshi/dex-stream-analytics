@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+
 	"ingester/internal/events"
 )
 
@@ -75,6 +77,15 @@ func TestPublish_SwapEvent(t *testing.T) {
 		}, nil
 	}
 
+	pub := &Publisher{
+		Codecs: codecs,
+		Topics: mockTopicMapper,
+		URL:    mockURLBuilder,
+		Doer:   mockDoer,
+		Source: "ingester/uniswap-v2",
+		logger: zap.NewNop(),
+	}
+
 	event := events.SwapEvent{
 		BaseEvent: events.BaseEvent{
 			EventType:       events.EventTypeSwap,
@@ -97,7 +108,7 @@ func TestPublish_SwapEvent(t *testing.T) {
 		GasPrice:   "50000000000",
 	}
 
-	Publish(context.Background(), event, codecs, mockTopicMapper, mockURLBuilder, mockDoer)
+	pub.Publish(context.Background(), event)
 
 	if capturedReq == nil {
 		t.Fatal("Expected HTTP request to be made")
@@ -119,7 +130,7 @@ func TestPublish_SwapEvent(t *testing.T) {
 	}
 
 	// Verify CloudEvents structure
-	var cloudEvent map[string]interface{}
+	var cloudEvent map[string]any
 	if err := json.Unmarshal(capturedBody, &cloudEvent); err != nil {
 		t.Fatalf("Failed to parse CloudEvents JSON: %v", err)
 	}
@@ -155,6 +166,15 @@ func TestPublish_MintEvent(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 
+	pub := &Publisher{
+		Codecs: codecs,
+		Topics: mockTopicMapper,
+		URL:    mockURLBuilder,
+		Doer:   mockDoer,
+		Source: "ingester/test",
+		logger: zap.NewNop(),
+	}
+
 	event := events.MintEvent{
 		BaseEvent: events.BaseEvent{
 			EventType:   events.EventTypeMint,
@@ -166,7 +186,7 @@ func TestPublish_MintEvent(t *testing.T) {
 		Amount1: "4250",
 	}
 
-	Publish(context.Background(), event, codecs, mockTopicMapper, mockURLBuilder, mockDoer)
+	pub.Publish(context.Background(), event)
 
 	if !requestMade {
 		t.Error("Expected HTTP request to be made")
@@ -181,6 +201,15 @@ func TestPublish_BurnEvent(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 
+	pub := &Publisher{
+		Codecs: codecs,
+		Topics: mockTopicMapper,
+		URL:    mockURLBuilder,
+		Doer:   mockDoer,
+		Source: "ingester/test",
+		logger: zap.NewNop(),
+	}
+
 	event := events.BurnEvent{
 		BaseEvent: events.BaseEvent{
 			EventType:   events.EventTypeBurn,
@@ -193,7 +222,7 @@ func TestPublish_BurnEvent(t *testing.T) {
 		Amount1:   "2125",
 	}
 
-	Publish(context.Background(), event, codecs, mockTopicMapper, mockURLBuilder, mockDoer)
+	pub.Publish(context.Background(), event)
 
 	if !requestMade {
 		t.Error("Expected HTTP request to be made")
@@ -208,6 +237,15 @@ func TestPublish_TransferEvent(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 
+	pub := &Publisher{
+		Codecs: codecs,
+		Topics: mockTopicMapper,
+		URL:    mockURLBuilder,
+		Doer:   mockDoer,
+		Source: "ingester/test",
+		logger: zap.NewNop(),
+	}
+
 	event := events.TransferEvent{
 		BaseEvent: events.BaseEvent{
 			EventType:   events.EventTypeTransfer,
@@ -219,7 +257,7 @@ func TestPublish_TransferEvent(t *testing.T) {
 		Value: "777",
 	}
 
-	Publish(context.Background(), event, codecs, mockTopicMapper, mockURLBuilder, mockDoer)
+	pub.Publish(context.Background(), event)
 
 	if !requestMade {
 		t.Error("Expected HTTP request to be made")
@@ -230,6 +268,15 @@ func TestPublish_HTTPError(t *testing.T) {
 	codecs, _ := CreateCodecMap()
 	mockDoer := mockHTTPError(500)
 
+	pub := &Publisher{
+		Codecs: codecs,
+		Topics: mockTopicMapper,
+		URL:    mockURLBuilder,
+		Doer:   mockDoer,
+		Source: "ingester/test",
+		logger: zap.NewNop(),
+	}
+
 	event := events.SwapEvent{
 		BaseEvent: events.BaseEvent{
 			EventType:   events.EventTypeSwap,
@@ -238,13 +285,22 @@ func TestPublish_HTTPError(t *testing.T) {
 		},
 	}
 
-	Publish(context.Background(), event, codecs, mockTopicMapper, mockURLBuilder, mockDoer)
+	pub.Publish(context.Background(), event)
 }
 
 func TestPublish_NetworkError(t *testing.T) {
 	codecs, _ := CreateCodecMap()
 	mockDoer := mockHTTPNetworkError()
 
+	pub := &Publisher{
+		Codecs: codecs,
+		Topics: mockTopicMapper,
+		URL:    mockURLBuilder,
+		Doer:   mockDoer,
+		Source: "ingester/test",
+		logger: zap.NewNop(),
+	}
+
 	event := events.SwapEvent{
 		BaseEvent: events.BaseEvent{
 			EventType:   events.EventTypeSwap,
@@ -253,7 +309,7 @@ func TestPublish_NetworkError(t *testing.T) {
 		},
 	}
 
-	Publish(context.Background(), event, codecs, mockTopicMapper, mockURLBuilder, mockDoer)
+	pub.Publish(context.Background(), event)
 }
 
 func TestCreateCloudEvent(t *testing.T) {
@@ -301,7 +357,7 @@ func TestCreateCloudEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payload, topic, err := createCloudEvent(tt.event, codecs, mockTopicMapper)
+			payload, topic, err := createCloudEvent(tt.event, codecs, mockTopicMapper, "ingester/test")
 
 			if tt.expectError && err == nil {
 				t.Error("Expected error but got nil")
@@ -333,7 +389,7 @@ func TestEncode(t *testing.T) {
 		Sender: "0xsender",
 	}
 
-	payload, _, err := createCloudEvent(event, codecs, mockTopicMapper)
+	payload, _, err := createCloudEvent(event, codecs, mockTopicMapper, "ingester/test")
 
 	if err != nil {
 		t.Fatalf("createCloudEvent() failed: %v", err)

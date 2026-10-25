@@ -1,59 +1,80 @@
 use anyhow::{Context, Result};
 use solana_client::{
-    nonblocking::pubsub_client::PubsubClient,
-    rpc_client::RpcClient as SolanaRpcClient,
+    nonblocking::pubsub_client::PubsubClient, rpc_client::RpcClient as SolanaRpcClient,
+    rpc_config::RpcTransactionConfig,
 };
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding};
-use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tokio::sync::Mutex;
+use tracing::debug;
 
 pub struct RpcClient {
+    http_client: Arc<SolanaRpcClient>,
     ws_url: String,
-    http_url: String,
     commitment: CommitmentConfig,
 }
 
-impl RpcClient {
-    pub fn new(ws_url: String, commitment: &str) -> Result<Self> {
-        // Derive HTTP URL from WebSocket URL
-        let http_url = ws_url.replace("wss://", "https://").replace("ws://", "http://");
+pub struct LogSubscription {
+    client: Arc<Mutex<PubsubClient>>,
+}
 
-        let commitment = parse_commitment(commitment)?;
+impl LogSubscription {
+    pub async fn recv(&mut self) -> Result<solana_client::rpc_response::RpcLogsResponse> {
+        // This is a placeholder - actual implementation needs proper subscription handling
+        // For now, return an error to indicate not implemented
+        anyhow::bail!("Log subscription receive not yet implemented")
+    }
+}
+
+impl RpcClient {
+    pub fn new(ws_url: &str, commitment: String) -> Result<Self> {
+        // Derive HTTP URL from WebSocket URL
+        let http_url = ws_url
+            .replace("wss://", "https://")
+            .replace("ws://", "http://");
+
+        let commitment_config = parse_commitment(&commitment)?;
+
+        let http_client = Arc::new(SolanaRpcClient::new_with_commitment(
+            http_url,
+            commitment_config,
+        ));
 
         Ok(Self {
-            ws_url,
-            http_url,
-            commitment,
+            http_client,
+            ws_url: ws_url.to_string(),
+            commitment: commitment_config,
         })
     }
 
     /// Subscribe to logs for a specific program
-    pub async fn subscribe_logs(&self, program_id: &str) -> Result<PubsubClient> {
-        let pubkey = Pubkey::from_str(program_id)
-            .with_context(|| format!("Invalid program ID: {}", program_id))?;
-
-        let client = PubsubClient::new(&self.ws_url).await
+    pub async fn subscribe_logs(&self, program_id: Pubkey) -> Result<LogSubscription> {
+        let client = PubsubClient::new(&self.ws_url)
+            .await
             .context("Failed to connect to Solana WebSocket")?;
 
         debug!("Subscribed to logs for program: {}", program_id);
 
-        Ok(client)
+        Ok(LogSubscription {
+            client: Arc::new(Mutex::new(client)),
+        })
     }
 
     /// Fetch full transaction details
     pub async fn get_transaction(
         &self,
-        signature: &Signature,
+        signature: Signature,
     ) -> Result<EncodedConfirmedTransactionWithStatusMeta> {
-        let rpc_client = SolanaRpcClient::new_with_commitment(
-            self.http_url.clone(),
-            self.commitment,
-        );
+        let config = RpcTransactionConfig {
+            encoding: Some(UiTransactionEncoding::JsonParsed),
+            commitment: Some(self.commitment),
+            max_supported_transaction_version: Some(0),
+        };
 
-        let tx = rpc_client
-            .get_transaction(signature, UiTransactionEncoding::JsonParsed)
+        let tx = self
+            .http_client
+            .get_transaction_with_config(&signature, config)
             .context("Failed to fetch transaction")?;
 
         Ok(tx)
@@ -61,12 +82,9 @@ impl RpcClient {
 
     /// Get current finalized slot
     pub async fn get_finalized_slot(&self) -> Result<u64> {
-        let rpc_client = SolanaRpcClient::new_with_commitment(
-            self.http_url.clone(),
-            CommitmentConfig::finalized(),
-        );
-
-        let slot = rpc_client.get_slot()
+        let slot = self
+            .http_client
+            .get_slot_with_commitment(CommitmentConfig::finalized())
             .context("Failed to get finalized slot")?;
 
         Ok(slot)
@@ -74,12 +92,9 @@ impl RpcClient {
 
     /// Get slot for a specific commitment level
     pub async fn get_slot(&self) -> Result<u64> {
-        let rpc_client = SolanaRpcClient::new_with_commitment(
-            self.http_url.clone(),
-            self.commitment,
-        );
-
-        let slot = rpc_client.get_slot()
+        let slot = self
+            .http_client
+            .get_slot_with_commitment(self.commitment)
             .context("Failed to get slot")?;
 
         Ok(slot)

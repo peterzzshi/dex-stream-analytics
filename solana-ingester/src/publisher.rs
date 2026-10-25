@@ -1,6 +1,6 @@
 use crate::events::{BurnEvent, Event, MintEvent, SwapEvent};
 use anyhow::{Context, Result};
-use apache_avro::{to_value, Schema, Writer};
+use apache_avro::{Schema, Writer, to_value};
 use reqwest::Client;
 use serde_json::json;
 use std::sync::Arc;
@@ -23,11 +23,11 @@ struct AvroSchemas {
 
 impl Publisher {
     pub fn new(
-        dapr_host: String,
+        dapr_host: &str,
         dapr_port: u16,
-        pubsub_name: String,
-        trading_topic: String,
-        liquidity_topic: String,
+        pubsub_name: &str,
+        trading_topic: &str,
+        liquidity_topic: &str,
     ) -> Result<Self> {
         let dapr_url = format!("http://{}:{}", dapr_host, dapr_port);
 
@@ -42,15 +42,20 @@ impl Publisher {
         Ok(Self {
             client: Client::new(),
             dapr_url,
-            pubsub_name,
-            trading_topic,
-            liquidity_topic,
+            pubsub_name: pubsub_name.to_string(),
+            trading_topic: trading_topic.to_string(),
+            liquidity_topic: liquidity_topic.to_string(),
             schemas: AvroSchemas {
                 swap_schema,
                 mint_schema,
                 burn_schema,
             },
         })
+    }
+
+    /// Publish event to Kafka via Dapr (alias for publish)
+    pub async fn publish_event(&self, event: Event) -> Result<()> {
+        self.publish(event).await
     }
 
     /// Publish event to Kafka via Dapr
@@ -106,7 +111,8 @@ impl Publisher {
             self.dapr_url, self.pubsub_name, topic
         );
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Content-Type", "application/cloudevents+json")
             .header("partitionKey", pool_address)
@@ -127,33 +133,33 @@ impl Publisher {
     }
 
     fn encode_swap(&self, event: &SwapEvent) -> Result<Vec<u8>> {
-        let value = to_value(event)
-            .context("Failed to convert SwapEvent to Avro value")?;
+        let value = to_value(event).context("Failed to convert SwapEvent to Avro value")?;
 
-        let mut writer = Writer::new(&self.schemas.swap_schema, Vec::new());
-        writer.append(value)
+        let mut writer = Writer::new(&self.schemas.swap_schema, Vec::new())?;
+        writer
+            .append_value_ref(&value)
             .context("Failed to encode SwapEvent to Avro")?;
 
         Ok(writer.into_inner()?)
     }
 
     fn encode_mint(&self, event: &MintEvent) -> Result<Vec<u8>> {
-        let value = to_value(event)
-            .context("Failed to convert MintEvent to Avro value")?;
+        let value = to_value(event).context("Failed to convert MintEvent to Avro value")?;
 
-        let mut writer = Writer::new(&self.schemas.mint_schema, Vec::new());
-        writer.append(value)
+        let mut writer = Writer::new(&self.schemas.mint_schema, Vec::new())?;
+        writer
+            .append_value_ref(&value)
             .context("Failed to encode MintEvent to Avro")?;
 
         Ok(writer.into_inner()?)
     }
 
     fn encode_burn(&self, event: &BurnEvent) -> Result<Vec<u8>> {
-        let value = to_value(event)
-            .context("Failed to convert BurnEvent to Avro value")?;
+        let value = to_value(event).context("Failed to convert BurnEvent to Avro value")?;
 
-        let mut writer = Writer::new(&self.schemas.burn_schema, Vec::new());
-        writer.append(value)
+        let mut writer = Writer::new(&self.schemas.burn_schema, Vec::new())?;
+        writer
+            .append_value_ref(&value)
             .context("Failed to encode BurnEvent to Avro")?;
 
         Ok(writer.into_inner()?)
@@ -162,7 +168,7 @@ impl Publisher {
 
 // Add base64 encoding support
 mod base64 {
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::{Engine as _, engine::general_purpose};
 
     pub fn encode(data: &[u8]) -> String {
         general_purpose::STANDARD.encode(data)
@@ -200,7 +206,8 @@ mod tests {
             "kafka-pubsub".to_string(),
             "trading".to_string(),
             "liquidity".to_string(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let swap = SwapEvent {
             base: mock_base_event(),

@@ -17,12 +17,12 @@ pub struct AddResult {
 }
 
 impl FinalityBuffer {
-    pub fn new(commitment_level: String) -> Self {
+    pub fn new(commitment_level: String, size_limit: usize) -> Self {
         Self {
             commitment_level,
             pending: HashMap::new(),
             highest_slot: 0,
-            size_limit: DEFAULT_BUFFER_SIZE_LIMIT,
+            size_limit,
         }
     }
 
@@ -39,7 +39,10 @@ impl FinalityBuffer {
 
         // If event is already finalized, return immediately
         if slot <= finalized_slot {
-            debug!("Event at slot {} already finalized (current: {}), confirming immediately", slot, finalized_slot);
+            debug!(
+                "Event at slot {} already finalized (current: {}), confirming immediately",
+                slot, finalized_slot
+            );
             return AddResult {
                 confirmed: vec![event],
                 evicted: vec![],
@@ -47,7 +50,10 @@ impl FinalityBuffer {
         }
 
         // Add to pending buffer
-        self.pending.entry(slot).or_insert_with(Vec::new).push(event);
+        self.pending
+            .entry(slot)
+            .or_insert_with(Vec::new)
+            .push(event);
 
         // Check size limit
         let total_events: usize = self.pending.values().map(|v| v.len()).sum();
@@ -70,7 +76,8 @@ impl FinalityBuffer {
         let mut confirmed = Vec::new();
 
         // Collect all slots <= finalized_slot
-        let slots_to_release: Vec<u64> = self.pending
+        let slots_to_release: Vec<u64> = self
+            .pending
             .keys()
             .filter(|&&slot| slot <= finalized_slot)
             .copied()
@@ -105,7 +112,11 @@ impl FinalityBuffer {
         match oldest_slot {
             Some(slot) => {
                 let evicted = self.pending.remove(&slot).unwrap_or_default();
-                warn!("Evicted {} events from slot {} (oldest)", evicted.len(), slot);
+                warn!(
+                    "Evicted {} events from slot {} (oldest)",
+                    evicted.len(),
+                    slot
+                );
 
                 AddResult {
                     confirmed: vec![],
@@ -164,7 +175,7 @@ mod tests {
         let mut buffer = FinalityBuffer::new("finalized".to_string());
 
         let event = mock_swap_event(100);
-        let result = buffer.add(event, 150);  // Event at 100, finalized at 150
+        let result = buffer.add(event, 150); // Event at 100, finalized at 150
 
         assert_eq!(result.confirmed.len(), 1);
         assert_eq!(result.evicted.len(), 0);

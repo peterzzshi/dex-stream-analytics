@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use solana_transaction_status::UiTransactionTokenBalance;
 
 /// Compute actual token amounts from pre/post balance diffs
@@ -66,9 +66,35 @@ pub fn extract_swap_amounts(vault0_diff: i64, vault1_diff: i64) -> (u64, u64, u6
     (amount0_in, amount1_in, amount0_out, amount1_out)
 }
 
+/// Compute swap fill amounts from pre/post balance diffs
+pub fn compute_swap_fill(
+    pre_balances: &[UiTransactionTokenBalance],
+    post_balances: &[UiTransactionTokenBalance],
+    vault0_index: usize,
+    vault1_index: usize,
+) -> Result<(u64, u64)> {
+    let (v0_diff, v1_diff) =
+        compute_balance_diff(pre_balances, post_balances, vault0_index, vault1_index)?;
+
+    // Return the absolute amounts that changed
+    Ok((v0_diff.abs() as u64, v1_diff.abs() as u64))
+}
+
 /// Extract liquidity amounts (always positive for mint/burn)
 pub fn extract_liquidity_amounts(vault0_diff: i64, vault1_diff: i64) -> (u64, u64) {
     (vault0_diff.abs() as u64, vault1_diff.abs() as u64)
+}
+
+/// Compute liquidity amounts from pre/post balance diffs
+pub fn compute_liquidity_amounts(
+    pre_balances: &[UiTransactionTokenBalance],
+    post_balances: &[UiTransactionTokenBalance],
+    vault0_index: usize,
+    vault1_index: usize,
+) -> Result<(u64, u64)> {
+    let (v0_diff, v1_diff) =
+        compute_balance_diff(pre_balances, post_balances, vault0_index, vault1_index)?;
+    Ok(extract_liquidity_amounts(v0_diff, v1_diff))
 }
 
 #[cfg(test)]
@@ -95,17 +121,17 @@ mod tests {
     fn test_swap_balance_diff() {
         // Swap: user sends 1M token0 (vault0 increases), receives 990k token1 (vault1 decreases)
         let pre = vec![
-            mock_token_balance(5, "10000000"),  // vault0 pre
-            mock_token_balance(6, "10000000"),  // vault1 pre
+            mock_token_balance(5, "10000000"), // vault0 pre
+            mock_token_balance(6, "10000000"), // vault1 pre
         ];
         let post = vec![
-            mock_token_balance(5, "11000000"),  // vault0 post (+1M)
-            mock_token_balance(6, "9010000"),   // vault1 post (-990k)
+            mock_token_balance(5, "11000000"), // vault0 post (+1M)
+            mock_token_balance(6, "9010000"),  // vault1 post (-990k)
         ];
 
         let (v0_diff, v1_diff) = compute_balance_diff(&pre, &post, 5, 6).unwrap();
-        assert_eq!(v0_diff, 1000000);   // +1M token0 into pool
-        assert_eq!(v1_diff, -990000);   // -990k token1 out of pool
+        assert_eq!(v0_diff, 1000000); // +1M token0 into pool
+        assert_eq!(v1_diff, -990000); // -990k token1 out of pool
 
         let (a0_in, a1_in, a0_out, a1_out) = extract_swap_amounts(v0_diff, v1_diff);
         assert_eq!(a0_in, 1000000);
@@ -122,8 +148,8 @@ mod tests {
             mock_token_balance(6, "10000000"),
         ];
         let post = vec![
-            mock_token_balance(5, "15000000"),  // +5M
-            mock_token_balance(6, "15000000"),  // +5M
+            mock_token_balance(5, "15000000"), // +5M
+            mock_token_balance(6, "15000000"), // +5M
         ];
 
         let (v0_diff, v1_diff) = compute_balance_diff(&pre, &post, 5, 6).unwrap();

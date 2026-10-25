@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use pyth_solana_receiver_sdk::price_update::{PriceUpdateV2, VerificationLevel};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
@@ -83,7 +84,7 @@ impl PythOracle {
     fn get_price_feed_account(&self, token_mint: &str) -> Result<Option<Pubkey>> {
         // Hardcoded mapping for SOL and USDC
         let feed_str = match token_mint {
-            "So11111111111111111111111111111111111111112" => SOL_USD_PYTH,  // Wrapped SOL
+            "So11111111111111111111111111111111111111112" => SOL_USD_PYTH, // Wrapped SOL
             USDC_MINT => USDC_USD_PYTH,
             _ => return Ok(None),
         };
@@ -127,7 +128,9 @@ mod tests {
     #[test]
     fn test_sol_feed_account() {
         let oracle = PythOracle::new("https://api.mainnet-beta.solana.com".to_string());
-        let feed = oracle.get_price_feed_account("So11111111111111111111111111111111111111112").unwrap();
+        let feed = oracle
+            .get_price_feed_account("So11111111111111111111111111111111111111112")
+            .unwrap();
         assert!(feed.is_some());
     }
 }

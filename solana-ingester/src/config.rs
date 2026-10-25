@@ -46,8 +46,10 @@ pub struct SolanaConfig {
 pub struct PoolConfig {
     pub name: String,
     pub address: String,
-    pub token0: String,
-    pub token1: String,
+    #[serde(default)]
+    pub token0: Option<String>,
+    #[serde(default)]
+    pub token1: Option<String>,
 }
 
 impl Config {
@@ -58,8 +60,8 @@ impl Config {
         // Expand environment variables in format ${VAR_NAME}
         let expanded = expand_env_vars(&content)?;
 
-        let config: Config = serde_yaml::from_str(&expanded)
-            .context("Failed to parse config YAML")?;
+        let config: Config =
+            serde_yaml::from_str(&expanded).context("Failed to parse config YAML")?;
 
         Ok(config)
     }

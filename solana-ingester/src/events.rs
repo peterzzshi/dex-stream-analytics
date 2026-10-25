@@ -3,6 +3,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BaseEvent {
+    pub event_type: String,
     pub event_id: String,
     pub block_number: i64,
     pub block_timestamp: i64,
@@ -43,6 +44,8 @@ pub struct MintEvent {
     pub sender: String,
     pub amount0: String,
     pub amount1: String,
+    pub liquidity: String,
+    pub event_timestamp: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,9 +54,10 @@ pub struct BurnEvent {
     #[serde(flatten)]
     pub base: BaseEvent,
     pub sender: String,
-    pub recipient: String,
     pub amount0: String,
     pub amount1: String,
+    pub liquidity: String,
+    pub event_timestamp: i64,
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,44 @@
+[package]
+name = "solana-ingester"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Solana RPC
+solana-client = "2.0"
+solana-sdk = "2.0"
+solana-transaction-status = "2.0"
+
+# Pyth oracle
+pyth-sdk-solana = "0.10"
+
+# Avro serialization
+apache-avro = "0.17"
+
+# HTTP client (Dapr publish)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Config / serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Base58 (Solana addresses)
+bs58 = "0.5"
+
+# Time
+chrono = "0.4"
+
+# Base64 encoding
+base64 = "0.21"

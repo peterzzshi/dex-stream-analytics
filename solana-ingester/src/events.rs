@@ -19,10 +19,8 @@ pub struct BaseEvent {
     pub event_timestamp: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct SwapEvent {
-    #[serde(flatten)]
     pub base: BaseEvent,
     pub sender: String,
     pub recipient: String,
@@ -36,6 +34,46 @@ pub struct SwapEvent {
     pub gas_price: String,
 }
 
+impl Serialize for SwapEvent {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("SwapEvent", 23)?;
+
+        // Serialize all BaseEvent fields
+        state.serialize_field("eventId", &self.base.event_id)?;
+        state.serialize_field("blockNumber", &self.base.block_number)?;
+        state.serialize_field("blockTimestamp", &self.base.block_timestamp)?;
+        state.serialize_field("transactionHash", &self.base.transaction_hash)?;
+        state.serialize_field("logIndex", &self.base.log_index)?;
+        state.serialize_field("chain", &self.base.chain)?;
+        state.serialize_field("chainName", &self.base.chain_name)?;
+        state.serialize_field("pairAddress", &self.base.pair_address)?;
+        state.serialize_field("token0", &self.base.token0)?;
+        state.serialize_field("token1", &self.base.token1)?;
+        state.serialize_field("token0Symbol", &self.base.token0_symbol)?;
+        state.serialize_field("token1Symbol", &self.base.token1_symbol)?;
+
+        // Serialize SwapEvent-specific fields
+        state.serialize_field("sender", &self.sender)?;
+        state.serialize_field("recipient", &self.recipient)?;
+        state.serialize_field("amount0In", &self.amount0_in)?;
+        state.serialize_field("amount1In", &self.amount1_in)?;
+        state.serialize_field("amount0Out", &self.amount0_out)?;
+        state.serialize_field("amount1Out", &self.amount1_out)?;
+        state.serialize_field("price", &self.price)?;
+        state.serialize_field("volumeUSD", &self.volume_usd)?;
+        state.serialize_field("gasUsed", &self.gas_used)?;
+        state.serialize_field("gasPrice", &self.gas_price)?;
+        state.serialize_field("eventTimestamp", &self.base.event_timestamp)?;
+
+        state.end()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MintEvent {
@@ -45,7 +83,6 @@ pub struct MintEvent {
     pub amount0: String,
     pub amount1: String,
     pub liquidity: String,
-    pub event_timestamp: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,7 +94,6 @@ pub struct BurnEvent {
     pub amount0: String,
     pub amount1: String,
     pub liquidity: String,
-    pub event_timestamp: i64,
 }
 
 #[derive(Debug, Clone)]

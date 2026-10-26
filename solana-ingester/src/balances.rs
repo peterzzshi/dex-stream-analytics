@@ -43,9 +43,11 @@ fn compute_single_balance_diff(
 }
 
 fn parse_ui_amount(amount_str: &str) -> Result<i64> {
-    amount_str
-        .parse::<i64>()
-        .with_context(|| format!("Failed to parse token amount: {}", amount_str))
+    let unsigned: u64 = amount_str
+        .parse()
+        .with_context(|| format!("Failed to parse token amount: {}", amount_str))?;
+
+    i64::try_from(unsigned).with_context(|| format!("Token amount {} exceeds i64::MAX", amount_str))
 }
 
 /// Extract swap fill amounts from balance diffs
@@ -100,7 +102,8 @@ pub fn compute_liquidity_amounts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_transaction_status::UiTokenAmount;
+    use solana_account_decoder::parse_token::UiTokenAmount;
+    use solana_transaction_status::option_serializer::OptionSerializer;
 
     fn mock_token_balance(account_index: u8, amount: &str) -> UiTransactionTokenBalance {
         UiTransactionTokenBalance {
@@ -112,8 +115,8 @@ mod tests {
                 amount: amount.to_string(),
                 ui_amount_string: amount.to_string(),
             },
-            owner: None,
-            program_id: None,
+            owner: OptionSerializer::None,
+            program_id: OptionSerializer::None,
         }
     }
 

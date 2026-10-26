@@ -3,8 +3,7 @@ use anyhow::{Context, Result};
 use apache_avro::{Schema, Writer, to_value};
 use reqwest::Client;
 use serde_json::json;
-use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::debug;
 
 pub struct Publisher {
     client: Client,
@@ -133,34 +132,30 @@ impl Publisher {
     }
 
     fn encode_swap(&self, event: &SwapEvent) -> Result<Vec<u8>> {
-        let value = to_value(event).context("Failed to convert SwapEvent to Avro value")?;
-
-        let mut writer = Writer::new(&self.schemas.swap_schema, Vec::new())?;
-        writer
-            .append_value_ref(&value)
-            .context("Failed to encode SwapEvent to Avro")?;
-
-        Ok(writer.into_inner()?)
+        self.encode_event(event, &self.schemas.swap_schema, "SwapEvent")
     }
 
     fn encode_mint(&self, event: &MintEvent) -> Result<Vec<u8>> {
-        let value = to_value(event).context("Failed to convert MintEvent to Avro value")?;
-
-        let mut writer = Writer::new(&self.schemas.mint_schema, Vec::new())?;
-        writer
-            .append_value_ref(&value)
-            .context("Failed to encode MintEvent to Avro")?;
-
-        Ok(writer.into_inner()?)
+        self.encode_event(event, &self.schemas.mint_schema, "MintEvent")
     }
 
     fn encode_burn(&self, event: &BurnEvent) -> Result<Vec<u8>> {
-        let value = to_value(event).context("Failed to convert BurnEvent to Avro value")?;
+        self.encode_event(event, &self.schemas.burn_schema, "BurnEvent")
+    }
 
-        let mut writer = Writer::new(&self.schemas.burn_schema, Vec::new())?;
+    fn encode_event<T: serde::Serialize>(
+        &self,
+        event: &T,
+        schema: &Schema,
+        event_type: &str,
+    ) -> Result<Vec<u8>> {
+        let value = to_value(event)
+            .with_context(|| format!("Failed to convert {} to Avro value", event_type))?;
+
+        let mut writer = Writer::new(schema, Vec::new())?;
         writer
             .append_value_ref(&value)
-            .context("Failed to encode BurnEvent to Avro")?;
+            .with_context(|| format!("Failed to encode {} to Avro", event_type))?;
 
         Ok(writer.into_inner()?)
     }
@@ -182,6 +177,7 @@ mod tests {
 
     fn mock_base_event() -> BaseEvent {
         BaseEvent {
+            event_type: "Swap".to_string(),
             event_id: "test:0".to_string(),
             block_number: 100,
             block_timestamp: 1000000,
@@ -200,14 +196,8 @@ mod tests {
 
     #[test]
     fn test_swap_encoding() {
-        let publisher = Publisher::new(
-            "localhost".to_string(),
-            3501,
-            "kafka-pubsub".to_string(),
-            "trading".to_string(),
-            "liquidity".to_string(),
-        )
-        .unwrap();
+        let publisher =
+            Publisher::new("localhost", 3501, "kafka-pubsub", "trading", "liquidity").unwrap();
 
         let swap = SwapEvent {
             base: mock_base_event(),
@@ -223,8 +213,13 @@ mod tests {
             gas_price: "1".to_string(),
         };
 
-        let encoded = publisher.encode_swap(&swap);
-        assert!(encoded.is_ok());
-        assert!(!encoded.unwrap().is_empty());
+        let encoded = publisher
+            .encode_swap(&swap)
+            .expect("encode_swap should succeed");
+        assert!(!encoded.is_empty(), "encoded binary should not be empty");
+        assert!(
+            encoded.len() > 10,
+            "encoded data should have reasonable size"
+        );
     }
 }

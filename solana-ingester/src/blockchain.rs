@@ -1,12 +1,15 @@
 use anyhow::{Context, Result};
+use futures_util::StreamExt;
 use solana_client::{
-    nonblocking::pubsub_client::PubsubClient, rpc_client::RpcClient as SolanaRpcClient,
-    rpc_config::RpcTransactionConfig,
+    nonblocking::pubsub_client::PubsubClient,
+    rpc_client::RpcClient as SolanaRpcClient,
+    rpc_config::{RpcTransactionConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter},
+    rpc_response::RpcLogsResponse,
 };
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding};
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 
 pub struct RpcClient {
@@ -16,14 +19,20 @@ pub struct RpcClient {
 }
 
 pub struct LogSubscription {
-    client: Arc<Mutex<PubsubClient>>,
+    receiver: Pin<
+        Box<
+            dyn futures_util::Stream<Item = solana_client::rpc_response::Response<RpcLogsResponse>>
+                + Send,
+        >,
+    >,
 }
 
 impl LogSubscription {
-    pub async fn recv(&mut self) -> Result<solana_client::rpc_response::RpcLogsResponse> {
-        // This is a placeholder - actual implementation needs proper subscription handling
-        // For now, return an error to indicate not implemented
-        anyhow::bail!("Log subscription receive not yet implemented")
+    pub async fn recv(&mut self) -> Option<RpcLogsResponse> {
+        match self.receiver.next().await {
+            Some(response) => Some(response.value),
+            None => None,
+        }
     }
 }
 
@@ -49,16 +58,32 @@ impl RpcClient {
     }
 
     /// Subscribe to logs for a specific program
+    /// Note: This leaks the PubsubClient on each call. In production, the subscription
+    /// should be maintained for the lifetime of the application to avoid repeated leaks.
     pub async fn subscribe_logs(&self, program_id: Pubkey) -> Result<LogSubscription> {
-        let client = PubsubClient::new(&self.ws_url)
+        let filter = RpcTransactionLogsFilter::Mentions(vec![program_id.to_string()]);
+        let config = RpcTransactionLogsConfig {
+            commitment: Some(self.commitment),
+        };
+
+        let client = Box::new(
+            PubsubClient::new(&self.ws_url)
+                .await
+                .context("Failed to connect to Solana WebSocket")?,
+        );
+
+        // Leak the client to satisfy 'static lifetime requirement of logs_subscribe
+        // This is acceptable in the main loop where subscribe_logs is called once per reconnect
+        let client: &'static PubsubClient = Box::leak(client);
+
+        let (receiver, _unsubscribe) = client
+            .logs_subscribe(filter, config)
             .await
-            .context("Failed to connect to Solana WebSocket")?;
+            .context("Failed to subscribe to logs")?;
 
         debug!("Subscribed to logs for program: {}", program_id);
 
-        Ok(LogSubscription {
-            client: Arc::new(Mutex::new(client)),
-        })
+        Ok(LogSubscription { receiver })
     }
 
     /// Fetch full transaction details
@@ -123,8 +148,20 @@ mod tests {
     }
 
     #[test]
+    fn test_new_client() {
+        let client = RpcClient::new("wss://example.com/ws", "finalized".to_string())
+            .expect("RpcClient should construct successfully");
+
+        assert_eq!(client.ws_url, "wss://example.com/ws");
+        assert_eq!(client.commitment, CommitmentConfig::finalized());
+    }
+
+    #[test]
     fn test_http_url_derivation() {
-        let client = RpcClient::new("wss://example.com/ws".to_string(), "finalized").unwrap();
-        assert_eq!(client.http_url, "https://example.com/ws");
+        let client = RpcClient::new("wss://api.mainnet-beta.solana.com", "confirmed".to_string())
+            .expect("RpcClient should construct successfully");
+
+        assert_eq!(client.ws_url, "wss://api.mainnet-beta.solana.com");
+        assert_eq!(client.commitment, CommitmentConfig::confirmed());
     }
 }

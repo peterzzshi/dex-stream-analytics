@@ -1,6 +1,4 @@
 use anyhow::{Context, Result};
-use pyth_solana_receiver_sdk::price_update::{PriceUpdateV2, VerificationLevel};
-use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -95,17 +93,18 @@ impl PythOracle {
         Ok(Some(pubkey))
     }
 
-    async fn fetch_pyth_price(&self, price_feed: Pubkey) -> Result<f64> {
-        // TODO: Implement actual Pyth price fetching using pyth-sdk-solana
+    async fn fetch_pyth_price(&self, _price_feed: Pubkey) -> Result<f64> {
+        // TODO: Implement actual Pyth price fetching using pyth-solana-receiver-sdk
         // For now, return a placeholder to unblock compilation
         //
         // Implementation notes:
-        // 1. Create RpcClient with self.rpc_url
-        // 2. Fetch account data for price_feed pubkey
-        // 3. Deserialize using pyth_sdk_solana::state::load_price_account
-        // 4. Check price.agg.status == Trading
-        // 5. Check price.timestamp is recent (within MAX_PRICE_AGE_SECONDS)
-        // 6. Return price.agg.price adjusted by price.expo (price * 10^expo)
+        // 1. Use pyth-solana-receiver-sdk (NOT legacy pyth-sdk-solana)
+        // 2. Create RpcClient with self.rpc_url
+        // 3. Fetch account data for price_feed pubkey
+        // 4. Deserialize using pyth_solana_receiver_sdk to load price data
+        // 5. Check price status is Trading
+        // 6. Check price timestamp is recent (within MAX_PRICE_AGE_SECONDS)
+        // 7. Return price adjusted by exponent
 
         warn!("Pyth price fetching not yet implemented, returning placeholder");
 

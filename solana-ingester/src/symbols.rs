@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use solana_client::rpc_client::RpcClient;
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;

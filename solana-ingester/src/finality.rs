@@ -143,6 +143,7 @@ mod tests {
     fn mock_swap_event(slot: i64) -> Event {
         Event::Swap(SwapEvent {
             base: BaseEvent {
+                event_type: "Swap".to_string(),
                 event_id: format!("test:{}", slot),
                 block_number: slot,
                 block_timestamp: 1000000,
@@ -172,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_immediate_confirmation() {
-        let mut buffer = FinalityBuffer::new("finalized".to_string());
+        let mut buffer = FinalityBuffer::new("finalized".to_string(), 1000);
 
         let event = mock_swap_event(100);
         let result = buffer.add(event, 150); // Event at 100, finalized at 150
@@ -184,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_buffering_and_release() {
-        let mut buffer = FinalityBuffer::new("finalized".to_string());
+        let mut buffer = FinalityBuffer::new("finalized".to_string(), 1000);
 
         // Add events at slots 100, 101, 102
         buffer.add(mock_swap_event(100), 95);
@@ -206,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_flush() {
-        let mut buffer = FinalityBuffer::new("finalized".to_string());
+        let mut buffer = FinalityBuffer::new("finalized".to_string(), 1000);
 
         buffer.add(mock_swap_event(100), 95);
         buffer.add(mock_swap_event(101), 95);

@@ -70,16 +70,17 @@ impl Config {
 fn expand_env_vars(input: &str) -> Result<String> {
     let mut result = input.to_string();
 
-    // Simple regex-free expansion: find ${...} patterns
     while let Some(start) = result.find("${") {
-        if let Some(end) = result[start..].find('}') {
-            let var_name = &result[start + 2..start + end];
-            let value = env::var(var_name)
-                .with_context(|| format!("Environment variable {} not set", var_name))?;
-            result.replace_range(start..start + end + 1, &value);
-        } else {
-            break;
-        }
+        let remaining = &result[start..];
+        let end = remaining
+            .find('}')
+            .context("Malformed environment variable placeholder: missing closing '}'")?;
+
+        let var_name = &remaining[2..end];
+        let value = env::var(var_name)
+            .with_context(|| format!("Environment variable {} not set", var_name))?;
+
+        result.replace_range(start..start + end + 1, &value);
     }
 
     Ok(result)
@@ -91,9 +92,26 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars() {
-        env::set_var("TEST_VAR", "test_value");
+        unsafe { env::set_var("TEST_VAR", "test_value") };
         let input = "rpc: ${TEST_VAR}";
-        let result = expand_env_vars(input).unwrap();
+        let result = expand_env_vars(input).expect("should expand TEST_VAR");
         assert_eq!(result, "rpc: test_value");
+    }
+
+    #[test]
+    fn test_expand_env_vars_malformed() {
+        let input = "rpc: ${UNCLOSED";
+        let result = expand_env_vars(input);
+        assert!(result.is_err(), "should error on malformed placeholder");
+        assert!(result.unwrap_err().to_string().contains("missing closing"));
+    }
+
+    #[test]
+    fn test_expand_env_vars_missing() {
+        unsafe { env::remove_var("DEFINITELY_NOT_SET_VAR") };
+        let input = "rpc: ${DEFINITELY_NOT_SET_VAR}";
+        let result = expand_env_vars(input);
+        assert!(result.is_err(), "should error on missing env var");
+        assert!(result.unwrap_err().to_string().contains("not set"));
     }
 }

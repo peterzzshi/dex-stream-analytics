@@ -183,8 +183,8 @@ async fn main() -> Result<()> {
 async fn process_log(
     log_response: RpcLogsResponse,
     rpc_client: &Arc<RpcClient>,
-    _oracle: &Arc<tokio::sync::Mutex<PythOracle>>,
-    _symbols: &Arc<tokio::sync::Mutex<SymbolCache>>,
+    oracle: &Arc<tokio::sync::Mutex<PythOracle>>,
+    symbols: &Arc<tokio::sync::Mutex<SymbolCache>>,
     finality_buffer: &Arc<tokio::sync::Mutex<FinalityBuffer>>,
     publisher: &Arc<Publisher>,
     config: &Config,
@@ -242,6 +242,8 @@ async fn process_log(
                     config,
                     pool_address,
                     rpc_client,
+                    symbols,
+                    oracle,
                 )
                 .await
                 {
@@ -267,6 +269,8 @@ async fn process_log(
                     config,
                     pool_address,
                     rpc_client,
+                    symbols,
+                    oracle,
                 )
                 .await
                 {
@@ -292,6 +296,8 @@ async fn process_instruction(
     config: &Config,
     pool_address: &str,
     rpc_client: &Arc<RpcClient>,
+    symbols: &Arc<tokio::sync::Mutex<SymbolCache>>,
+    oracle: &Arc<tokio::sync::Mutex<PythOracle>>,
 ) -> Result<()> {
     // Extract instruction data based on type
     let (program_id_index, data_base58) = match instruction {
@@ -336,6 +342,12 @@ async fn process_instruction(
         }
     };
 
+    // Skip failed transactions (Gap #6 fix)
+    if meta.err.is_some() {
+        debug!("Skipping failed transaction: {:?}", signature);
+        return Ok(());
+    }
+
     // Extract pre/post token balances
     let (pre_balances, post_balances) = match (&meta.pre_token_balances, &meta.post_token_balances)
     {
@@ -363,6 +375,12 @@ async fn process_instruction(
 
     let event_timestamp = chrono::Utc::now().timestamp_millis();
 
+    // Fetch token symbols (Gap #1 fix)
+    let symbol_cache = symbols.lock().await;
+    let token0_symbol = symbol_cache.get_symbol(&token0).await;
+    let token1_symbol = symbol_cache.get_symbol(&token1).await;
+    drop(symbol_cache); // Release lock early
+
     // Create event based on instruction type
     let event = match decoded {
         crate::decoder::DecodedInstruction::Swap { .. } => {
@@ -382,7 +400,23 @@ async fn process_instruction(
                 0.0
             };
 
-            let volume_usd = Some((amount1_out.max(amount1_in) as f64) / 1e6);
+            // Fetch oracle prices for volume USD calculation (Gap #2 fix)
+            let oracle_lock = oracle.lock().await;
+            let token0_price = oracle_lock.fetch_price(&token0).await?.unwrap_or(0.0);
+            let token1_price = oracle_lock.fetch_price(&token1).await?.unwrap_or(0.0);
+            drop(oracle_lock); // Release lock early
+
+            // Calculate volume USD using actual token prices
+            // Use the "in" amount (what user sold) for volume calculation
+            let volume_usd = if amount0_in > 0 && token0_price > 0.0 {
+                // Token0 sold: SOL has 9 decimals
+                Some(token0_price * (amount0_in as f64) / 1e9)
+            } else if amount1_in > 0 && token1_price > 0.0 {
+                // Token1 sold: USDC has 6 decimals
+                Some(token1_price * (amount1_in as f64) / 1e6)
+            } else {
+                None
+            };
 
             Event::Swap(crate::events::SwapEvent {
                 base: crate::events::BaseEvent {
@@ -397,8 +431,8 @@ async fn process_instruction(
                     pair_address: pool_address.to_string(),
                     token0: token0.clone(),
                     token1: token1.clone(),
-                    token0_symbol: None,
-                    token1_symbol: None,
+                    token0_symbol,
+                    token1_symbol,
                     event_timestamp,
                 },
                 sender: user_authority.clone(),
@@ -431,8 +465,8 @@ async fn process_instruction(
                     pair_address: pool_address.to_string(),
                     token0: token0.clone(),
                     token1: token1.clone(),
-                    token0_symbol: None,
-                    token1_symbol: None,
+                    token0_symbol: token0_symbol.clone(),
+                    token1_symbol: token1_symbol.clone(),
                     event_timestamp,
                 },
                 sender: user_authority,
@@ -459,8 +493,8 @@ async fn process_instruction(
                     pair_address: pool_address.to_string(),
                     token0: token0.clone(),
                     token1: token1.clone(),
-                    token0_symbol: None,
-                    token1_symbol: None,
+                    token0_symbol,
+                    token1_symbol,
                     event_timestamp,
                 },
                 sender: user_authority,

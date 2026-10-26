@@ -55,10 +55,12 @@ Monitored Solidity events:
   see [ARCHITECTURE.md](ARCHITECTURE.md#future-work)). An event's full identity is
   `(blockNumber, txHash, logIndex)`.
 - **Optionality**: only truly optional fields use Avro `["null", "type"]` unions.
-- **No chain field yet**: events carry no `chain`/`chainName` while the pipeline is
-  single-chain. When a second chain is added, both fields join every input schema — the pool key
-  becomes `(chain, pairAddress)`, with `chain` a CAIP-2 string (`eip155:137`, `solana:5eykt...`),
-  not an EIP-155 numeric chain ID, since the latter can't name a Solana cluster.
+- **Chain field**: events carry no `chain`/`chainName` yet — the schema change lands with the
+  multi-chain rollout, not with the second ingester. When it does, both fields join every input
+  schema and the pool key becomes `(chain, pairAddress)`, with `chain` a CAIP-2 string (`eip155:137`, `solana:5eykt...`,
+  `cosmos:osmosis-1`) — not an EIP-155 numeric chain ID, since
+  the latter can name neither a Solana cluster nor a Cosmos chain. The set of supported chain
+  families is EVM, Solana, and Cosmos (see [ARCHITECTURE.md](ARCHITECTURE.md#future-work)).
 
 ## Input Event Schemas
 

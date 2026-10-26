@@ -117,6 +117,59 @@ services:
     profiles:
       - live
 
+  # Solana ingester: Rust service listening to Solana blockchain events
+  # Only runs with --profile solana; requires SOLANA_RPC_URL in .env
+  solana-ingester:
+    build:
+      context: ./solana-ingester
+      dockerfile: Dockerfile
+    container_name: solana-ingester
+    environment:
+      - CONFIG_PATH=/app/config/ingester.yaml
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL}
+    volumes:
+      # Pools and commitment level live in YAML — mount so edits need no rebuild.
+      - ./solana-ingester/config:/app/config:ro
+    ports:
+      - "3001:3001"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      dapr-placement:
+        condition: service_started
+    networks:
+      - dex-analytics-network
+    restart: unless-stopped
+    profiles:
+      - solana
+
+  # DAPR sidecar for solana-ingester
+  solana-ingester-dapr:
+    image: daprio/daprd:1.12.0
+    container_name: solana-ingester-dapr
+    command: [
+      "./daprd",
+      "-app-id", "solana-ingester",
+      "-app-port", "3001",
+      "-app-protocol", "http",
+      "-app-channel-address", "solana-ingester",
+      "-dapr-http-port", "3501",
+      "-dapr-grpc-port", "50003",
+      "-components-path", "/components",
+      "-config", "/config/config.yaml",
+      "-log-level", "info",
+      "-placement-host-address", "dapr-placement:50006"
+    ]
+    volumes:
+      - ./dapr/components:/components
+      - ./dapr/config:/config
+    depends_on:
+      - solana-ingester
+    networks:
+      - dex-analytics-network
+    profiles:
+      - solana
+
   # Flink JobManager in application mode: builds the aggregator jar and runs
   # the StreamProcessor job on startup (no manual `flink run` needed).
   flink-jobmanager:

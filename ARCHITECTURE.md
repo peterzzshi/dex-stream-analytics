@@ -78,21 +78,26 @@ Swap events produce **trading** analytics; Mint/Burn events produce **liquidity*
 
 ### Chain-Agnostic Pool Identity
 
-The pipeline is single-chain today (WMATIC/USDC on Polygon) but the domain model treats a
-chain as an attribute of a pool, not an identity of one. **A pool is identified by
-`(chain, pairAddress)`** — a pair address alone is ambiguous, because the same address can
-exist on another chain and the same logical market (WETH/USDC) is a *different pool* on each
-chain.
+The domain model treats a chain as an attribute of a pool, not an identity of one. **A pool is
+identified by `(chain, pairAddress)`** — a pair address alone is ambiguous, because the same
+address can exist on another chain and the same logical market (WETH/USDC) is a *different pool*
+on each chain.
+
+Three chain families are in scope: EVM, Solana, and Cosmos. `evm-ingester` and
+`solana-ingester` exist today (WMATIC/USDC on Polygon, RAY/USDC on Solana);
+`cosmos-ingester` is planned. The remaining gaps below — the `chain` event field and the Flink
+key — are scheduled with the multi-chain schema change, not with the second ingester shipping.
 
 That distinction is enforced at three places, so adding a chain is additive:
 
-| Layer        | Today                                                                    | Multi-chain                                                           |
-|--------------|--------------------------------------------------------------------------|-----------------------------------------------------------------------|
-| Ingester     | single instance (`evm-ingester`), pool set in `config/evm-ingester.yaml` | one ingester binary per chain family, `chain` + `name` per YAML entry |
-| Event schema | no `chain` field                                                         | `chain` (CAIP-2 string) + `chainName` (string) on every event         |
-| Flink key    | `pairAddress`                                                            | `(chain, pairAddress)`                                                |
+| Layer        | Today                                                                   | Multi-chain                                                   |
+|--------------|-------------------------------------------------------------------------|---------------------------------------------------------------|
+| Ingester     | one binary per family (`evm-ingester`, `solana-ingester`), pool in YAML | adds `cosmos-ingester`; `chain` + `name` per YAML entry       |
+| Event schema | no `chain` field                                                        | `chain` (CAIP-2 string) + `chainName` (string) on every event |
+| Flink key    | `pairAddress`                                                           | `(chain, pairAddress)`                                        |
 
-`chain` is CAIP-2 (`eip155:137`, `solana:5eykt...`), not EIP-155's bare numeric chain ID —
+`chain` is CAIP-2 (`eip155:137`, `solana:5eykt...`, `cosmos:osmosis-1`), not EIP-155's bare
+numeric chain ID —
 EIP-155 can't name a non-EVM cluster, so the chain-neutral form is canonical even today,
 with only one chain monitored.
 
@@ -261,6 +266,18 @@ it test events. The `live` profile adds `evm-ingester` and requires an EVM WebSo
    within a chain family the design already generalizes over, rather than testing the seam
    itself. One YAML entry per deployment in `evm-ingester`, each with its own `chain`/`name`;
    the aggregator needs only the key change — `(chain, pairAddress)`.
+3. **Cosmos SDK family** (`cosmos-ingester`, planned): the third chain family, Osmosis first,
+   then Injective and dYdX v4. A swap arrives as ABCI event attributes on a `tm.event='Tx'`
+   subscription — not EVM logs and not Solana instructions — so the decoder is family-specific
+   while the Dapr publisher, Avro encoding, event types, and finality buffer are reused. Two
+   things this family does not share with the others: finality is *instant* (Tendermint commits
+   irreversibly, so the buffer runs at depth 0 and becomes a batching/backpressure mechanism
+   rather than a reorg gate), and there is no on-chain price oracle equivalent to Chainlink or
+   Pyth, so USD values come from pool reserves or an off-chain feed frozen at ingest. Chain
+   identity is `cosmos:osmosis-1` — the CAIP-2 namespace rule, which is precisely why that
+   decision was made before a non-EVM chain existed. Scheduled *after* the shared crate is
+   extracted from the two Rust ingesters, so it is built against the abstraction rather than
+   in parallel with it.
 
 **Beyond chain breadth:**
 - **Uniswap V3/V4 support**: V3 keeps `(token0, token1, fee)` pool addressability but replaces

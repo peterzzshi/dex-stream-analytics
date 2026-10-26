@@ -2821,6 +2821,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpl-token-metadata"
+version = "4.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caf0f61b553e424a6234af1268456972ee66c2222e1da89079242251fa7479e5"
+dependencies = [
+ "borsh 0.10.4",
+ "num-derive 0.3.3",
+ "num-traits",
+ "solana-program 1.18.26",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2926,6 +2939,17 @@ name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
+
+[[package]]
+name = "num-derive"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "876a53fff98e03a936a674b29568b0e605f06b29372c2489ff4de23f1949743d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
 
 [[package]]
 name = "num-derive"
@@ -3373,7 +3397,7 @@ dependencies = [
  "serde",
  "sha3 0.10.9",
  "slow_primes",
- "solana-program 1.18.26",
+ "solana-program 2.0.25",
  "thiserror 1.0.69",
 ]
 
@@ -4597,18 +4621,20 @@ dependencies = [
 name = "solana-ingester"
 version = "0.1.0"
 dependencies = [
+ "anchor-lang",
  "anyhow",
  "apache-avro",
  "base64 0.23.1",
  "bs58 0.5.1",
  "chrono",
-    "futures-util",
+ "futures-util",
+ "mpl-token-metadata",
  "pyth-solana-receiver-sdk",
  "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
-    "solana-account-decoder",
+ "solana-account-decoder",
  "solana-client",
  "solana-sdk",
  "solana-transaction-status",
@@ -4852,7 +4878,7 @@ dependencies = [
  "log",
  "memoffset",
  "num-bigint 0.4.8",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "parking_lot",
  "rand 0.8.8",
@@ -4903,7 +4929,7 @@ dependencies = [
  "log",
  "memoffset",
  "num-bigint 0.4.8",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "parking_lot",
  "rand 0.8.8",
@@ -4977,7 +5003,7 @@ dependencies = [
  "itertools 0.12.1",
  "libc",
  "log",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "percentage",
  "rand 0.8.8",
@@ -5081,7 +5107,7 @@ dependencies = [
  "console",
  "dialoguer",
  "log",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "parking_lot",
  "qstring",
@@ -5605,7 +5631,7 @@ checksum = "f0cb5dd78227039d3c430b04fa5d1101766907db2fced2da993d40658b352173"
 dependencies = [
  "bincode",
  "log",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "rustc_version",
  "serde",
@@ -5633,7 +5659,7 @@ dependencies = [
  "itertools 0.12.1",
  "lazy_static",
  "merlin",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "rand 0.7.3",
  "serde",
@@ -5681,7 +5707,7 @@ checksum = "68034596cf4804880d265f834af1ff2f821ad5293e41fa0f8f59086c181fc38e"
 dependencies = [
  "assert_matches",
  "borsh 1.8.1",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "solana-program 2.0.25",
  "spl-token",
@@ -5753,7 +5779,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7b28bed65356558133751cc32b48a7a5ddfc59ac4e941314630bbed1ac10532"
 dependencies = [
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "solana-program 2.0.25",
  "spl-program-error-derive",
@@ -5794,7 +5820,7 @@ checksum = "70a0f06ac7f23dc0984931b1fe309468f14ea58e32660439c1cef19456f5d0e3"
 dependencies = [
  "arrayref",
  "bytemuck",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "num_enum",
  "solana-program 2.0.25",
@@ -5809,7 +5835,7 @@ checksum = "d9c10f3483e48679619c76598d4e4aebb955bc49b0a5cc63323afbf44135c9bf"
 dependencies = [
  "arrayref",
  "bytemuck",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "num_enum",
  "solana-program 2.0.25",

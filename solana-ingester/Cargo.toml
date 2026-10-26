@@ -47,3 +47,7 @@ base64 = "0.23.1"
 
 # HTTP server for health checks
 warp = { version = "0.4.3", features = ["server"] }
+anchor-lang = "1.2.1"
+
+# SPL Token Metadata
+mpl-token-metadata = "4.1"

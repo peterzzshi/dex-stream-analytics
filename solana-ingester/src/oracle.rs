@@ -1,10 +1,14 @@
-use anyhow::{Context, Result};
+use anchor_lang::AccountDeserialize;
+use anyhow::{Context, Result, bail};
+use pyth_solana_receiver_sdk::price_update::{PriceUpdateV2, VerificationLevel};
+use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info};
 
 // Hardcoded Pyth mainnet price feed accounts
 const SOL_USD_PYTH: &str = "H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG";
@@ -93,23 +97,55 @@ impl PythOracle {
         Ok(Some(pubkey))
     }
 
-    async fn fetch_pyth_price(&self, _price_feed: Pubkey) -> Result<f64> {
-        // TODO: Implement actual Pyth price fetching using pyth-solana-receiver-sdk
-        // For now, return a placeholder to unblock compilation
-        //
-        // Implementation notes:
-        // 1. Use pyth-solana-receiver-sdk (NOT legacy pyth-sdk-solana)
-        // 2. Create RpcClient with self.rpc_url
-        // 3. Fetch account data for price_feed pubkey
-        // 4. Deserialize using pyth_solana_receiver_sdk to load price data
-        // 5. Check price status is Trading
-        // 6. Check price timestamp is recent (within MAX_PRICE_AGE_SECONDS)
-        // 7. Return price adjusted by exponent
+    async fn fetch_pyth_price(&self, price_feed: Pubkey) -> Result<f64> {
+        // Create RPC client
+        let rpc_client = RpcClient::new(self.rpc_url.clone());
 
-        warn!("Pyth price fetching not yet implemented, returning placeholder");
+        // Fetch the price feed account data
+        let account_data = rpc_client
+            .get_account_data(&price_feed)
+            .context("Failed to fetch Pyth price feed account")?;
 
-        // Placeholder: return typical SOL price
-        Ok(150.0)
+        // Deserialize the price feed using pyth-solana-receiver-sdk.
+        // PriceUpdateV2::price_message is a flat PriceFeedMessage (no separate
+        // "trading status" enum in this SDK version, unlike legacy pyth-sdk-solana).
+        let price_update = PriceUpdateV2::try_deserialize(&mut account_data.as_slice())
+            .context("Failed to deserialize Pyth price feed")?;
+
+        // Only trust fully Wormhole-verified updates.
+        if price_update.verification_level != VerificationLevel::Full {
+            bail!(
+                "Price feed verification level too low: {:?}",
+                price_update.verification_level
+            );
+        }
+
+        let message = price_update.price_message;
+
+        // Check timestamp freshness (within last MAX_PRICE_AGE_SECONDS)
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let price_age = current_time - message.publish_time;
+        if price_age > MAX_PRICE_AGE_SECONDS {
+            bail!("Price feed too old: {} seconds", price_age);
+        }
+
+        // Apply exponent to get actual price: price * 10^exponent
+        let price = (message.price as f64) * 10f64.powi(message.exponent);
+
+        // Sanity check: price should be positive and reasonable
+        if price <= 0.0 {
+            bail!("Invalid price: {}", price);
+        }
+
+        info!(
+            "Fetched Pyth price for feed {}: ${:.4} (age: {}s)",
+            price_feed, price, price_age
+        );
+
+        Ok(price)
     }
 }
 

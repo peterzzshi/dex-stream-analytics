@@ -1,5 +1,9 @@
 use anyhow::Result;
+use mpl_token_metadata::accounts::Metadata;
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::debug;
@@ -7,6 +11,9 @@ use tracing::debug;
 // Hardcoded symbols for common tokens
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+// Metaplex Token Metadata Program ID
+const TOKEN_METADATA_PROGRAM_ID: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 
 pub struct SymbolCache {
     rpc_url: String,
@@ -52,21 +59,52 @@ impl SymbolCache {
         }
     }
 
-    async fn fetch_metadata_symbol(&self, _token_mint: &str) -> Result<String> {
-        // TODO: Implement SPL Token Metadata fetching
-        //
-        // Implementation notes:
-        // 1. Derive metadata PDA: Pubkey::find_program_address(
-        //    &[b"metadata", TOKEN_METADATA_PROGRAM_ID.as_ref(), mint.as_ref()],
-        //    &TOKEN_METADATA_PROGRAM_ID
-        // )
-        // 2. Fetch account data via RpcClient
-        // 3. Deserialize using mpl-token-metadata crate (Metadata struct)
-        // 4. Return metadata.data.symbol
-        //
-        // For now, return error to preserve type safety
+    async fn fetch_metadata_symbol(&self, token_mint: &str) -> Result<String> {
+        // Parse mint pubkey
+        let mint_pubkey = Pubkey::from_str(token_mint)
+            .map_err(|e| anyhow::anyhow!("Invalid mint pubkey {}: {}", token_mint, e))?;
 
-        anyhow::bail!("SPL Token Metadata fetching not yet implemented")
+        // Parse metadata program ID
+        let metadata_program_id = Pubkey::from_str(TOKEN_METADATA_PROGRAM_ID)
+            .map_err(|e| anyhow::anyhow!("Invalid metadata program ID: {}", e))?;
+
+        // Derive metadata PDA
+        let (metadata_pda, _bump) = Pubkey::find_program_address(
+            &[
+                b"metadata",
+                metadata_program_id.as_ref(),
+                mint_pubkey.as_ref(),
+            ],
+            &metadata_program_id,
+        );
+
+        debug!(
+            "Fetching metadata for mint {} at PDA {}",
+            token_mint, metadata_pda
+        );
+
+        // Fetch account data (blocking call, run in tokio blocking thread)
+        let rpc_url = self.rpc_url.clone();
+        let account_data = tokio::task::spawn_blocking(move || {
+            let client = RpcClient::new(rpc_url);
+            client.get_account_data(&metadata_pda)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Task join error: {}", e))??;
+
+        // Deserialize metadata
+        let metadata = Metadata::safe_deserialize(&account_data)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize metadata: {}", e))?;
+
+        // Extract symbol, trimming null bytes and whitespace
+        let symbol = metadata.symbol.trim_end_matches('\0').trim().to_string();
+
+        if symbol.is_empty() {
+            anyhow::bail!("Empty symbol in metadata for {}", token_mint);
+        }
+
+        debug!("Fetched symbol '{}' for mint {}", symbol, token_mint);
+        Ok(symbol)
     }
 }
 

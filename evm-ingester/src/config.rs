@@ -93,6 +93,47 @@ pub struct Chain {
     pub venue: String,
     pub confirmations: u64,
     pub pools: Vec<Pool>,
+    #[serde(default)]
+    pub retry: RetryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    #[serde(default = "default_rpc_max_retries")]
+    pub rpc_max_retries: u32,
+    #[serde(default = "default_rpc_initial_backoff_ms")]
+    pub rpc_initial_backoff_ms: u64,
+    #[serde(default = "default_rpc_max_backoff_ms")]
+    pub rpc_max_backoff_ms: u64,
+    #[serde(default = "default_rpc_timeout_ms")]
+    pub rpc_timeout_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            rpc_max_retries: default_rpc_max_retries(),
+            rpc_initial_backoff_ms: default_rpc_initial_backoff_ms(),
+            rpc_max_backoff_ms: default_rpc_max_backoff_ms(),
+            rpc_timeout_ms: default_rpc_timeout_ms(),
+        }
+    }
+}
+
+fn default_rpc_max_retries() -> u32 {
+    3
+}
+
+fn default_rpc_initial_backoff_ms() -> u64 {
+    100
+}
+
+fn default_rpc_max_backoff_ms() -> u64 {
+    5000
+}
+
+fn default_rpc_timeout_ms() -> u64 {
+    30000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +201,7 @@ impl Config {
                 pair_address: env::var("POOL_ADDRESS").context("POOL_ADDRESS not set")?,
                 name: env::var("POOL_NAME").context("POOL_NAME not set")?,
             }],
+            retry: RetryConfig::default(),
         };
 
         // Validate pool addresses

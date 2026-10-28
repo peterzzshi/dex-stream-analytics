@@ -17,6 +17,7 @@ mod finality;
 mod listener;
 mod oracle;
 mod publisher;
+mod rpc_retry;
 
 use config::Config;
 use dlq::FileSink;
@@ -25,6 +26,7 @@ use finality::Buffer;
 use listener::Listener;
 use oracle::ChainlinkOracle;
 use publisher::DaprPublisher;
+use rpc_retry::RetryableProvider;
 
 const EVENT_CHANNEL_BUFFER: usize = 1000;
 const DLQ_CHANNEL_BUFFER: usize = 100;
@@ -110,6 +112,12 @@ async fn run() -> Result<()> {
             }
         };
 
+        // Create retryable RPC provider for this chain
+        let rpc = Arc::new(RetryableProvider::new(
+            Arc::clone(&provider),
+            chain_config.retry.clone(),
+        ));
+
         // Create oracle for this chain
         let oracle = Arc::new(ChainlinkOracle::new(Arc::clone(&provider)));
 
@@ -136,6 +144,7 @@ async fn run() -> Result<()> {
                 chain_config.name.clone(),
                 pool_config.clone(),
                 Arc::clone(&oracle),
+                Arc::clone(&rpc),
             );
 
             // Event processing channel
@@ -232,7 +241,7 @@ async fn run() -> Result<()> {
 async fn subscribe_to_logs(
     provider: Arc<Provider<Ws>>,
     pool_address: &str,
-    listener: Listener<ChainlinkOracle<Provider<Ws>>>,
+    listener: Listener<ChainlinkOracle<Provider<Ws>>, Provider<Ws>>,
     event_tx: mpsc::Sender<Box<dyn Event>>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<()> {

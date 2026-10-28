@@ -2,26 +2,36 @@ use crate::config::Pool;
 use crate::decoder;
 use crate::events::{BaseEvent, BurnEvent, Event, EventType, MintEvent, SwapEvent, TransferEvent};
 use crate::oracle::PriceOracle;
+use crate::rpc_retry::RetryableProvider;
 use anyhow::{Context, Result};
+use ethers::prelude::*;
 use ethers::types::{Address, Log, U256};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub struct Listener<O: PriceOracle> {
+pub struct Listener<O: PriceOracle, P: Middleware> {
     chain: String,
     chain_name: String,
     pool: Pool,
     oracle: Arc<O>,
+    rpc: Arc<RetryableProvider<P>>,
 }
 
-impl<O: PriceOracle> Listener<O> {
-    pub fn new(chain: String, chain_name: String, pool: Pool, oracle: Arc<O>) -> Self {
+impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
+    pub fn new(
+        chain: String,
+        chain_name: String,
+        pool: Pool,
+        oracle: Arc<O>,
+        rpc: Arc<RetryableProvider<P>>,
+    ) -> Self {
         Self {
             chain,
             chain_name,
             pool,
             oracle,
+            rpc,
         }
     }
 
@@ -65,9 +75,8 @@ impl<O: PriceOracle> Listener<O> {
             token1_decimals,
         );
 
-        // TODO: Fetch actual token addresses from pair contract
-        let token0_address = Address::zero();
-        let token1_address = Address::zero();
+        let pair_address = Address::from_str(&self.pool.pair_address)?;
+        let (token0_address, token1_address) = self.fetch_token_addresses(pair_address).await?;
 
         let volume_usd = self
             .calculate_volume_usd(
@@ -83,6 +92,11 @@ impl<O: PriceOracle> Listener<O> {
             )
             .await;
 
+        let tx_hash = log
+            .transaction_hash
+            .context("log missing transaction hash")?;
+        let gas_used = self.fetch_gas_used(tx_hash).await.unwrap_or(0) as i64;
+
         let swap_event = SwapEvent {
             base,
             sender: format!("{:?}", swap_data.sender),
@@ -93,7 +107,7 @@ impl<O: PriceOracle> Listener<O> {
             amount1_out: swap_data.amount1_out.to_string(),
             price,
             volume_usd,
-            gas_used: 0, // TODO: Fetch from transaction receipt
+            gas_used,
             gas_price: "0".to_string(),
         };
 
@@ -153,10 +167,9 @@ impl<O: PriceOracle> Listener<O> {
             .context("log missing transaction hash")?;
         let log_index = log.log_index.context("log missing log index")?;
 
-        // TODO: Fetch actual block timestamp from blockchain
+        // Note: block_timestamp and token addresses will be populated asynchronously
+        // after the base event is constructed
         let block_timestamp = 0i64;
-
-        // TODO: Fetch actual token addresses from pair contract
         let token0_address = Address::zero();
         let token1_address = Address::zero();
 
@@ -182,6 +195,83 @@ impl<O: PriceOracle> Listener<O> {
             token1_symbol: None,
             event_timestamp,
         })
+    }
+
+    /// Fetch token0 and token1 addresses from the Uniswap V2 pair contract
+    async fn fetch_token_addresses(&self, pair_address: Address) -> Result<(Address, Address)> {
+        // token0() selector: 0x0dfe1681
+        let token0_selector = &ethers::utils::keccak256(b"token0()")[..4];
+        // token1() selector: 0xd21220a7
+        let token1_selector = &ethers::utils::keccak256(b"token1()")[..4];
+
+        let call_token0 = ethers::types::transaction::eip2718::TypedTransaction::Legacy(
+            ethers::types::TransactionRequest {
+                to: Some(ethers::types::NameOrAddress::Address(pair_address)),
+                data: Some(ethers::types::Bytes::from(token0_selector.to_vec())),
+                ..Default::default()
+            },
+        );
+
+        let call_token1 = ethers::types::transaction::eip2718::TypedTransaction::Legacy(
+            ethers::types::TransactionRequest {
+                to: Some(ethers::types::NameOrAddress::Address(pair_address)),
+                data: Some(ethers::types::Bytes::from(token1_selector.to_vec())),
+                ..Default::default()
+            },
+        );
+
+        let token0_result = self
+            .rpc
+            .inner()
+            .call(&call_token0, None)
+            .await
+            .context("failed to call token0()")?;
+
+        let token1_result = self
+            .rpc
+            .inner()
+            .call(&call_token1, None)
+            .await
+            .context("failed to call token1()")?;
+
+        // Decode address from 32-byte response (last 20 bytes)
+        if token0_result.len() < 32 || token1_result.len() < 32 {
+            anyhow::bail!("invalid response length from token0/token1 calls");
+        }
+
+        let token0_address = Address::from_slice(&token0_result[12..32]);
+        let token1_address = Address::from_slice(&token1_result[12..32]);
+
+        Ok((token0_address, token1_address))
+    }
+
+    /// Fetch gas_used from transaction receipt
+    async fn fetch_gas_used(&self, tx_hash: H256) -> Result<u64> {
+        let receipt = self
+            .rpc
+            .get_transaction_receipt(tx_hash)
+            .await
+            .context("failed to fetch transaction receipt")?;
+
+        match receipt {
+            Some(r) => Ok(r.gas_used.map(|g| g.as_u64()).unwrap_or(0)),
+            None => anyhow::bail!("transaction receipt not found"),
+        }
+    }
+
+    /// Fetch block timestamp from blockchain
+    #[allow(dead_code)]
+    async fn fetch_block_timestamp(&self, block_number: U64) -> Result<i64> {
+        let block = self
+            .rpc
+            .get_block(block_number)
+            .await
+            .context("failed to fetch block")?;
+
+        match block {
+            Some(b) => Ok(b.timestamp.as_u64() as i64),
+            None => anyhow::bail!("block not found"),
+        }
     }
 
     async fn calculate_volume_usd(

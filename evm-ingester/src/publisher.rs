@@ -172,6 +172,7 @@ mod tests {
                     pair_address: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f".to_string(),
                     name: "test-pool".to_string(),
                 }],
+                retry: Default::default(),
             }],
         }
     }

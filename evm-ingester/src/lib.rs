@@ -9,6 +9,7 @@ pub mod finality;
 pub mod listener;
 pub mod oracle;
 pub mod publisher;
+pub mod rpc_retry;
 pub mod types;
 
 pub use avro::AvroEncoder;
@@ -17,4 +18,5 @@ pub use dlq::FileSink;
 pub use error::{IngesterError, Result};
 pub use events::{BaseEvent, BurnEvent, Event, EventType, MintEvent, SwapEvent, TransferEvent};
 pub use finality::Buffer;
+pub use rpc_retry::RetryableProvider;
 pub use types::{PoolAddress, TokenAddress, TokenAmount, TokenMetadata};

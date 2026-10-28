@@ -54,41 +54,40 @@ services:
       - dex-analytics-network
 
   # DAPR placement service for actor runtime
-  dapr-placement:
-    image: daprio/dapr:1.12.0
-    container_name: dapr-placement
-    command: ["./placement", "-port", "50006", "-log-level", "debug"]
-    ports:
-      - "50006:50006"
-    networks:
-      - dex-analytics-network
-
-  # EVM ingester: Go service listening to EVM blockchain events
-  # Only runs with --profile live; requires ETH_RPC_URL in .env
-  # For local dev, use scripts/produce_test_events.py to feed the pipeline instead.
+  # EVM ingester: Rust service listening to EVM blockchain events
+  # Requires ETH_RPC_URL in .env
   evm-ingester:
     build:
       context: ./evm-ingester
       dockerfile: Dockerfile
     container_name: evm-ingester
     environment:
-      - CONFIG_PATH=/app/config/evm-ingester.yaml
+      # Secrets
       - ETH_RPC_URL=${ETH_RPC_URL}
-    volumes:
-      # Chains and pools live in YAML, not env vars — mount so edits need no rebuild.
-      - ./evm-ingester/config:/app/config:ro
+      # Infrastructure
+      - DAPR_HOST=evm-ingester-dapr
+      - DAPR_HTTP_PORT=3500
+      - PUBSUB_NAME=kafka-pubsub
+      - APP_PORT=3000
+      # Topics
+      - TOPIC_TRADING=dex-trading-events
+      - TOPIC_LIQUIDITY=dex-liquidity-events
+      # Chain config
+      - CHAIN_ID=${EVM_CHAIN_ID}
+      - CHAIN_NAME=${EVM_CHAIN_NAME}
+      - CHAIN_VENUE=${EVM_CHAIN_VENUE}
+      - CHAIN_CONFIRMATIONS=${EVM_CHAIN_CONFIRMATIONS}
+      # Pool config
+      - POOL_ADDRESS=${EVM_POOL_ADDRESS}
+      - POOL_NAME=${EVM_POOL_NAME}
     ports:
       - "3000:3000"
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      dapr-placement:
-        condition: service_started
     networks:
       - dex-analytics-network
     restart: unless-stopped
-    profiles:
-      - live
 
   # DAPR sidecar for evm-ingester
   evm-ingester-dapr:
@@ -104,8 +103,7 @@ services:
       "-dapr-grpc-port", "50001",
       "-components-path", "/components",
       "-config", "/config/config.yaml",
-      "-log-level", "info",
-      "-placement-host-address", "dapr-placement:50006"
+      "-log-level", "info"
     ]
     volumes:
       - ./dapr/components:/components
@@ -114,34 +112,43 @@ services:
       - evm-ingester
     networks:
       - dex-analytics-network
-    profiles:
-      - live
 
   # Solana ingester: Rust service listening to Solana blockchain events
-  # Only runs with --profile solana; requires SOLANA_RPC_URL in .env
+  # Requires SOLANA_RPC_URL in .env
   solana-ingester:
     build:
       context: ./solana-ingester
       dockerfile: Dockerfile
     container_name: solana-ingester
     environment:
-      - CONFIG_PATH=/app/config/ingester.yaml
+      # Secrets
       - SOLANA_RPC_URL=${SOLANA_RPC_URL}
-    volumes:
-      # Pools and commitment level live in YAML — mount so edits need no rebuild.
-      - ./solana-ingester/config:/app/config:ro
+      # Infrastructure
+      - DAPR_HOST=solana-ingester-dapr
+      - DAPR_HTTP_PORT=3501
+      - PUBSUB_NAME=kafka-pubsub
+      - APP_PORT=3001
+      # Topics
+      - TOPIC_TRADING=dex-trading-events
+      - TOPIC_LIQUIDITY=dex-liquidity-events
+      # Chain config
+      - CHAIN_ID=solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp
+      - CHAIN_NAME=Solana
+      - CHAIN_VENUE=raydium-amm-v4
+      - SOLANA_COMMITMENT=${SOLANA_COMMITMENT}
+      # Pool config
+      - POOL_NAME=${SOLANA_POOL_NAME}
+      - POOL_ADDRESS=${SOLANA_POOL_ADDRESS}
+      - POOL_TOKEN0=${SOLANA_POOL_TOKEN0}
+      - POOL_TOKEN1=${SOLANA_POOL_TOKEN1}
     ports:
       - "3001:3001"
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      dapr-placement:
-        condition: service_started
     networks:
       - dex-analytics-network
     restart: unless-stopped
-    profiles:
-      - solana
 
   # DAPR sidecar for solana-ingester
   solana-ingester-dapr:
@@ -157,8 +164,7 @@ services:
       "-dapr-grpc-port", "50003",
       "-components-path", "/components",
       "-config", "/config/config.yaml",
-      "-log-level", "info",
-      "-placement-host-address", "dapr-placement:50006"
+      "-log-level", "info"
     ]
     volumes:
       - ./dapr/components:/components
@@ -167,8 +173,6 @@ services:
       - solana-ingester
     networks:
       - dex-analytics-network
-    profiles:
-      - solana
 
   # Flink JobManager in application mode: builds the aggregator jar and runs
   # the StreamProcessor job on startup (no manual `flink run` needed).
@@ -257,8 +261,6 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-      dapr-placement:
-        condition: service_started
     networks:
       - dex-analytics-network
     restart: unless-stopped
@@ -273,12 +275,11 @@ services:
       "-app-port", "8080",
       "-app-protocol", "http",
       "-app-channel-address", "analytics-service",
-      "-dapr-http-port", "3501",
+      "-dapr-http-port", "3502",
       "-dapr-grpc-port", "50002",
       "-components-path", "/components",
       "-config", "/config/config.yaml",
-      "-log-level", "info",
-      "-placement-host-address", "dapr-placement:50006"
+      "-log-level", "info"
     ]
     volumes:
       - ./dapr/components:/components

@@ -144,7 +144,7 @@ async fn run() -> Result<()> {
             // Spawn WebSocket subscription task
             let provider_clone = Arc::clone(&provider);
             let pool_address = pool_config.pair_address.clone();
-            let mut shutdown_rx_ws = shutdown_tx.subscribe();
+            let shutdown_rx_ws = shutdown_tx.subscribe();
             tasks.spawn(async move {
                 if let Err(e) = subscribe_to_logs(
                     provider_clone,

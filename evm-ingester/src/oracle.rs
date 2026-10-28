@@ -216,17 +216,20 @@ fn scale_price(answer: i64, decimals: u8) -> f64 {
 }
 
 /// Thread-safe price cache with TTL
+#[allow(dead_code)]
 pub struct PriceCache {
     entries: Arc<RwLock<HashMap<Address, CacheEntry>>>,
     ttl: Duration,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct CacheEntry {
     price: Option<f64>,
     expires_at: SystemTime,
 }
 
+#[allow(dead_code)]
 impl PriceCache {
     pub fn new(ttl: Duration) -> Self {
         Self {

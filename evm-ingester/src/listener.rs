@@ -50,7 +50,7 @@ impl<O: PriceOracle> Listener<O> {
 
         let base = self.build_base_event(&log, EventType::Swap)?;
 
-        let pair_address = Address::from_str(&self.pool.pair_address)?;
+        let _pair_address = Address::from_str(&self.pool.pair_address)?;
 
         // Simplified: use 18 decimals for both tokens as default
         let token0_decimals = 18u8;

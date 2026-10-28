@@ -1,49 +1,15 @@
 # Build stage
-FROM golang:1.25-alpine AS builder
-
-# Install build dependencies
-RUN apk add --no-cache git gcc musl-dev
-
-# Set working directory
-WORKDIR /app
-
-# Copy go mod files
-COPY go.mod go.sum ./
-
-# Download dependencies
-RUN go mod download
-
-# Copy source code
-COPY . .
-
-# Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o evm-ingester ./cmd/evm-ingester
+FROM rustlang/rust:nightly AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY schemas ./schemas
+RUN cargo build --release
 
 # Runtime stage
-FROM alpine:latest
-
-# Install CA certificates for HTTPS
-RUN apk --no-cache add ca-certificates tzdata
-
-# Create non-root user
-RUN addgroup -g 1000 appuser && \
-    adduser -D -u 1000 -G appuser appuser
-
-# Set working directory
-WORKDIR /home/appuser
-
-# Copy binary from builder
-COPY --from=builder --chown=appuser:appuser /app/evm-ingester .
-
-# Switch to non-root user
-USER appuser
-
-# Expose application port
-EXPOSE 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
-
-# Run the application
-CMD ["./evm-ingester"]
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /build/target/release/evm-ingester /app/evm-ingester
+COPY config ./config
+CMD ["/app/evm-ingester"]

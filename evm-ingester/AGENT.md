@@ -2,8 +2,14 @@
 
 Extends root `AGENT.md`.
 
-- Idiom: follow *Effective Go*; `gofmt`/`goimports` already enforced via lint.
-- Apply `/functional-programming-patterns` where it fits Go — pure functions, explicit data flow, side effects confined to `internal/*` boundary types (RPC, Kafka, cache).
-- Package layout: flat, one level under `internal/` (`internal/cache`, `internal/oracle`, ...). No nested subpackages — matches current layout.
-- Mocking: generate interface mocks with `mockery` for new tests; pair with the existing `testify` assertions.
-- No SQL database today. If one is introduced (e.g. persisting the finality buffer per the deferred fix in memory), use `ent` for schema and queries rather than hand-written SQL.
+- Idiom: follow Rust best practices; `rustfmt` enforced via `cargo fmt`.
+- Apply `/functional-programming-patterns` — pure functions, explicit data flow, side effects confined to module
+  boundaries.
+- Module layout: flat modules under `src/` (`avro`, `decoder`, `oracle`, `publisher`, `finality`, etc.). No nested
+  submodules.
+- Testing: use built-in Rust test framework with `#[cfg(test)]` modules; pair with `anyhow::Result` for error handling.
+- Dependencies:
+    - ethers 2.0+ with `ws` feature for WebSocket support
+    - Apache Avro 0.16+ (older version than solana-ingester; uses `Writer::append_value_ref` API)
+    - Use `tokio` for async runtime; `reqwest` for HTTP clients (Chainlink oracle)
+- No database today. Event buffering uses in-memory `FinalityBuffer` with block-based finality tracking.

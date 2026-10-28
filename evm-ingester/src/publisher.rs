@@ -8,15 +8,6 @@ use serde_json::json;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-impl EventType {
-    pub fn topic(&self) -> &'static str {
-        match self {
-            EventType::Swap => "trading",
-            EventType::Mint | EventType::Burn | EventType::Transfer => "liquidity",
-        }
-    }
-}
-
 pub struct DaprPublisher {
     client: Client,
     encoder: Arc<AvroEncoder>,
@@ -24,6 +15,8 @@ pub struct DaprPublisher {
     dapr_port: u16,
     pubsub_name: String,
     source: String,
+    trading_topic: String,
+    liquidity_topic: String,
 }
 
 impl DaprPublisher {
@@ -44,7 +37,16 @@ impl DaprPublisher {
             dapr_port: config.dapr.http_port,
             pubsub_name: config.dapr.pubsub_name.clone(),
             source,
+            trading_topic: config.topics.trading.clone(),
+            liquidity_topic: config.topics.liquidity.clone(),
         })
+    }
+
+    fn get_topic(&self, event_type: &EventType) -> &str {
+        match event_type {
+            EventType::Swap => &self.trading_topic,
+            EventType::Mint | EventType::Burn | EventType::Transfer => &self.liquidity_topic,
+        }
     }
 
     pub async fn publish(&self, event: &dyn Event) {
@@ -87,7 +89,7 @@ impl DaprPublisher {
 
     async fn create_cloud_event(&self, event: &dyn Event) -> Result<(String, String)> {
         let event_type = event.event_type();
-        let topic = event_type.topic().to_string();
+        let topic = self.get_topic(&event_type).to_string();
 
         let avro_payload = self
             .encoder
@@ -158,6 +160,8 @@ mod tests {
                 liquidity: "liquidity".to_string(),
             },
             app: AppConfig { port: 8080 },
+            buffer: Default::default(),
+            channels: Default::default(),
             chains: vec![Chain {
                 chain: "eip155:1".to_string(),
                 name: "ethereum".to_string(),

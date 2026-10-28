@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -17,7 +17,6 @@ const DEFAULT_FLUSH_PERIOD_SECS: u64 = 5;
 /// FileSink writes DLQ events to disk as newline-delimited JSON.
 /// Events are batched and flushed periodically or when batch size is reached.
 pub struct FileSink {
-    dir: String,
     buffer: Arc<Mutex<Buffer>>,
     flush_size: usize,
     flush_period: Duration,
@@ -53,7 +52,6 @@ impl FileSink {
         }));
 
         Ok(Self {
-            dir,
             buffer,
             flush_size: DEFAULT_FLUSH_SIZE,
             flush_period: Duration::from_secs(DEFAULT_FLUSH_PERIOD_SECS),

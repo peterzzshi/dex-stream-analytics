@@ -20,6 +20,15 @@ impl EventType {
         }
     }
 
+    #[cfg(test)]
+    pub fn topic(&self) -> &'static str {
+        match self {
+            EventType::Swap => "trading",
+            EventType::Mint | EventType::Burn | EventType::Transfer => "liquidity",
+        }
+    }
+
+    #[cfg(test)]
     pub fn all() -> Vec<EventType> {
         vec![
             EventType::Swap,
@@ -113,13 +122,6 @@ pub struct SwapEvent {
     pub volume_usd: Option<f64>,
     pub gas_used: i64,
     pub gas_price: String,
-}
-
-impl SwapEvent {
-    pub fn with_price(mut self, price: f64) -> Self {
-        self.price = price;
-        self
-    }
 }
 
 impl Event for SwapEvent {

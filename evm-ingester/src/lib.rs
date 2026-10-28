@@ -1,15 +1,20 @@
 pub mod avro;
 pub mod config;
+pub mod contract;
 pub mod decoder;
 pub mod dlq;
+pub mod error;
 pub mod events;
 pub mod finality;
 pub mod listener;
 pub mod oracle;
 pub mod publisher;
+pub mod types;
 
 pub use avro::AvroEncoder;
 pub use config::Config;
 pub use dlq::FileSink;
+pub use error::{IngesterError, Result};
 pub use events::{BaseEvent, BurnEvent, Event, EventType, MintEvent, SwapEvent, TransferEvent};
 pub use finality::Buffer;
+pub use types::{PoolAddress, TokenAddress, TokenAmount, TokenMetadata};

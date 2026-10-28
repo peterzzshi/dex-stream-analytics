@@ -49,6 +49,7 @@ impl Buffer {
 
     /// Returns a buffer with custom memory limits. Use for testing or
     /// resource-constrained deployments.
+    #[allow(dead_code)]
     pub fn with_limits(mut self, max_blocks: usize, max_events: usize) -> Self {
         self.max_pending_blocks = max_blocks;
         self.max_pending_events = max_events;
@@ -56,6 +57,7 @@ impl Buffer {
     }
 
     /// Returns the configured confirmation depth.
+    #[allow(dead_code)]
     pub fn required_confirmations(&self) -> u64 {
         self.required_confirmations
     }
@@ -91,6 +93,7 @@ impl Buffer {
 
     /// Updates the known chain tip and returns any newly confirmed events.
     /// Use this when receiving block-number updates without new events.
+    #[allow(dead_code)]
     pub fn advance_tip(&self, block_number: u64) -> AddResult {
         if self.required_confirmations == 0 {
             return AddResult::default();
@@ -129,6 +132,7 @@ impl Buffer {
     }
 
     /// Pending returns the count of events still buffered.
+    #[allow(dead_code)]
     pub fn pending(&self) -> usize {
         let inner = self.inner.lock().unwrap();
         inner.pending.values().map(|v| v.len()).sum()

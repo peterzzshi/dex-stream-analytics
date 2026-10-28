@@ -3,12 +3,18 @@ use std::collections::HashMap;
 use tracing::{debug, warn};
 
 const DEFAULT_BUFFER_SIZE_LIMIT: usize = 500;
+const DEDUP_RETENTION_SLOTS: u64 = 100;
 
 pub struct FinalityBuffer {
     commitment_level: String,
     pending: HashMap<u64, Vec<Event>>,
+    seen_events: HashMap<String, u64>,
+    duplicates_filtered: usize,
     highest_slot: u64,
     size_limit: usize,
+    last_finalized_slot: u64,
+    events_released: usize,
+    events_evicted: usize,
 }
 
 pub struct AddResult {
@@ -21,8 +27,13 @@ impl FinalityBuffer {
         Self {
             commitment_level,
             pending: HashMap::new(),
+            seen_events: HashMap::new(),
+            duplicates_filtered: 0,
             highest_slot: 0,
             size_limit,
+            last_finalized_slot: 0,
+            events_released: 0,
+            events_evicted: 0,
         }
     }
 
@@ -31,6 +42,16 @@ impl FinalityBuffer {
     /// and any evicted events (if buffer size limit exceeded)
     pub fn add(&mut self, event: Event, finalized_slot: u64) -> AddResult {
         let slot = event.slot() as u64;
+
+        let event_id = self.get_event_id(&event);
+
+        // Check for duplicate
+        if self.seen_events.contains_key(&event_id) {
+            self.duplicates_filtered += 1;
+            debug!("Filtered duplicate event {} at slot {}", event_id, slot);
+            return AddResult::default();
+        }
+        self.seen_events.insert(event_id, slot);
 
         // Update highest slot seen
         if slot > self.highest_slot {
@@ -73,9 +94,33 @@ impl FinalityBuffer {
 
     /// Advance finalized slot and release all events <= slot
     pub fn advance_finalized_slot(&mut self, finalized_slot: u64) -> Vec<Event> {
+        // Detect reorg (finalized slot should never go backward)
+        if finalized_slot < self.last_finalized_slot {
+            warn!(
+                "Potential reorg detected: finalized slot went backward from {} to {}",
+                self.last_finalized_slot, finalized_slot
+            );
+        }
+
+        // Skip if no progress
+        if finalized_slot <= self.last_finalized_slot {
+            return vec![];
+        }
+
         let mut confirmed = Vec::new();
 
-        // Collect all slots <= finalized_slot
+        // Clean up old event IDs (keep retention window beyond finalized slot)
+        if finalized_slot > DEDUP_RETENTION_SLOTS {
+            let cleanup_threshold = finalized_slot - DEDUP_RETENTION_SLOTS;
+            self.seen_events
+                .retain(|_, &mut event_slot| event_slot > cleanup_threshold);
+            debug!(
+                "Cleaned up dedup cache, {} entries remain",
+                self.seen_events.len()
+            );
+        }
+
+        // Release finalized events
         let slots_to_release: Vec<u64> = self
             .pending
             .keys()
@@ -85,9 +130,27 @@ impl FinalityBuffer {
 
         for slot in slots_to_release {
             if let Some(events) = self.pending.remove(&slot) {
-                debug!("Releasing {} events from slot {}", events.len(), slot);
+                let count = events.len();
+                debug!("Releasing {} events from slot {}", count, slot);
+                self.events_released += count;
                 confirmed.extend(events);
             }
+        }
+
+        self.last_finalized_slot = finalized_slot;
+
+        // Log buffer metrics periodically
+        if !confirmed.is_empty() {
+            let pending_count = self.pending_count();
+            let slot_lag = self.highest_slot.saturating_sub(finalized_slot);
+            debug!(
+                "Buffer metrics: pending={}, slot_lag={}, released_total={}, evicted_total={}, duplicates_filtered={}",
+                pending_count,
+                slot_lag,
+                self.events_released,
+                self.events_evicted,
+                self.duplicates_filtered
+            );
         }
 
         confirmed
@@ -95,6 +158,11 @@ impl FinalityBuffer {
 
     /// Flush all pending events (graceful shutdown)
     pub fn flush(&mut self) -> Vec<Event> {
+        debug!(
+            "Flushing buffer: {} duplicates filtered total",
+            self.duplicates_filtered
+        );
+
         let mut all_events = Vec::new();
 
         for (slot, events) in self.pending.drain() {
@@ -112,10 +180,11 @@ impl FinalityBuffer {
         match oldest_slot {
             Some(slot) => {
                 let evicted = self.pending.remove(&slot).unwrap_or_default();
+                let count = evicted.len();
+                self.events_evicted += count;
                 warn!(
-                    "Evicted {} events from slot {} (oldest)",
-                    evicted.len(),
-                    slot
+                    "Evicted {} events from slot {} (oldest), total_evicted={}",
+                    count, slot, self.events_evicted
                 );
 
                 AddResult {
@@ -132,6 +201,35 @@ impl FinalityBuffer {
 
     pub fn pending_count(&self) -> usize {
         self.pending.values().map(|v| v.len()).sum()
+    }
+
+    pub fn duplicates_filtered(&self) -> usize {
+        self.duplicates_filtered
+    }
+
+    pub fn slot_lag(&self) -> u64 {
+        self.highest_slot.saturating_sub(self.last_finalized_slot)
+    }
+
+    pub fn last_finalized_slot(&self) -> u64 {
+        self.last_finalized_slot
+    }
+
+    fn get_event_id(&self, event: &Event) -> String {
+        match event {
+            Event::Swap(e) => e.base.event_id.clone(),
+            Event::Mint(e) => e.base.event_id.clone(),
+            Event::Burn(e) => e.base.event_id.clone(),
+        }
+    }
+}
+
+impl Default for AddResult {
+    fn default() -> Self {
+        Self {
+            confirmed: vec![],
+            evicted: vec![],
+        }
     }
 }
 
@@ -215,5 +313,72 @@ mod tests {
         let flushed = buffer.flush();
         assert_eq!(flushed.len(), 2);
         assert_eq!(buffer.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_duplicate_filtering() {
+        let mut buffer = FinalityBuffer::new("finalized".to_string(), 1000);
+
+        let event1 = mock_swap_event(100);
+        let event2 = mock_swap_event(100); // Same event_id
+
+        // Add first event
+        let result1 = buffer.add(event1, 95);
+        assert_eq!(result1.confirmed.len(), 0);
+        assert_eq!(buffer.pending_count(), 1);
+        assert_eq!(buffer.duplicates_filtered(), 0);
+
+        // Add duplicate - should be filtered
+        let result2 = buffer.add(event2, 95);
+        assert_eq!(result2.confirmed.len(), 0);
+        assert_eq!(buffer.pending_count(), 1); // Still only 1 event
+        assert_eq!(buffer.duplicates_filtered(), 1);
+    }
+
+    #[test]
+    fn test_dedup_cache_cleanup() {
+        let mut buffer = FinalityBuffer::new("finalized".to_string(), 1000);
+
+        // Add events at slots 100, 101, 102
+        buffer.add(mock_swap_event(100), 95);
+        buffer.add(mock_swap_event(101), 95);
+        buffer.add(mock_swap_event(102), 95);
+
+        // Advance to slot 250 (triggers cleanup of events before slot 150)
+        // cleanup_threshold = 250 - 100 = 150, so slot 100 events are cleaned up
+        buffer.advance_finalized_slot(250);
+
+        // Try to add duplicate of slot 100 event - should NOT be filtered
+        // because it was cleaned up (slot 100 < threshold 150)
+        let duplicate = mock_swap_event(100);
+        let result = buffer.add(duplicate, 95);
+        assert_eq!(result.confirmed.len(), 0);
+        assert_eq!(buffer.duplicates_filtered(), 0); // Not filtered, was cleaned up
+    }
+
+    #[test]
+    fn test_reorg_detection() {
+        let mut buffer = FinalityBuffer::new("finalized".to_string(), 1000);
+
+        buffer.add(mock_swap_event(100), 95);
+        buffer.advance_finalized_slot(100);
+
+        // Try to advance backward (simulating reorg) - should warn but not release events
+        let released = buffer.advance_finalized_slot(90);
+        assert_eq!(released.len(), 0);
+        assert_eq!(buffer.last_finalized_slot(), 100); // Should stay at 100
+    }
+
+    #[test]
+    fn test_slot_lag_metric() {
+        let mut buffer = FinalityBuffer::new("finalized".to_string(), 1000);
+
+        buffer.add(mock_swap_event(100), 95);
+        buffer.add(mock_swap_event(105), 95);
+
+        assert_eq!(buffer.slot_lag(), 105); // highest_slot=105, last_finalized=0
+
+        buffer.advance_finalized_slot(100);
+        assert_eq!(buffer.slot_lag(), 5); // highest_slot=105, last_finalized=100
     }
 }

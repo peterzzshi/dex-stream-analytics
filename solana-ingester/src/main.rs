@@ -91,19 +91,43 @@ async fn main() -> Result<()> {
     )));
 
     // Initialize finality buffer
-    let _finality_buffer = Arc::new(tokio::sync::Mutex::new(FinalityBuffer::new(
+    let finality_buffer = Arc::new(tokio::sync::Mutex::new(FinalityBuffer::new(
         config.solana.commitment.clone(),
         config.solana.finality_buffer_size,
     )));
 
     // Initialize publisher
-    let _publisher = Arc::new(Publisher::new(
+    let publisher = Arc::new(Publisher::new(
         &config.dapr.host,
         config.dapr.http_port,
         &config.dapr.pubsub_name,
         &config.topics.trading,
         &config.topics.liquidity,
+        &config.topics.dlq,
+        config.retry.publish_max_retries,
+        config.retry.publish_initial_backoff_ms,
     )?);
+
+    // Start periodic finality polling task
+    let finality_buffer_clone = finality_buffer.clone();
+    let publisher_clone = publisher.clone();
+    let rpc_client_clone = rpc_client.clone();
+    let poll_interval_secs = config.solana.finality_poll_interval_secs;
+
+    tokio::spawn(async move {
+        finality_polling_task(
+            finality_buffer_clone,
+            publisher_clone,
+            rpc_client_clone,
+            poll_interval_secs,
+        )
+        .await;
+    });
+
+    info!(
+        "Started finality polling task (interval: {}s)",
+        poll_interval_secs
+    );
 
     // Parse Raydium program ID
     let program_id =
@@ -132,8 +156,8 @@ async fn main() -> Result<()> {
                             &rpc_client,
                             &_oracle,
                             &_symbols,
-                            &_finality_buffer,
-                            &_publisher,
+                            &finality_buffer,
+                            &publisher,
                             &config,
                             &pool_address,
                         ).await {
@@ -173,17 +197,55 @@ async fn main() -> Result<()> {
     }
 
     // Flush finality buffer on shutdown
-    let pending_events = _finality_buffer.lock().await.flush();
+    let pending_events = finality_buffer.lock().await.flush();
     info!("Flushing {} pending events", pending_events.len());
 
     for event in pending_events {
-        if let Err(e) = _publisher.publish_event(event).await {
+        if let Err(e) = publisher.publish_event(event).await {
             error!("Failed to publish pending event during shutdown: {}", e);
         }
     }
 
     info!("Solana ingester stopped");
     Ok(())
+}
+
+async fn finality_polling_task(
+    finality_buffer: Arc<tokio::sync::Mutex<FinalityBuffer>>,
+    publisher: Arc<Publisher>,
+    rpc_client: Arc<RpcClient>,
+    interval_secs: u64,
+) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        interval.tick().await;
+
+        match rpc_client.get_finalized_slot().await {
+            Ok(finalized_slot) => {
+                let mut buffer = finality_buffer.lock().await;
+                let released = buffer.advance_finalized_slot(finalized_slot);
+
+                if !released.is_empty() {
+                    debug!(
+                        "Finality poll released {} events at slot {}",
+                        released.len(),
+                        finalized_slot
+                    );
+
+                    for event in released {
+                        if let Err(e) = publisher.publish_event(event).await {
+                            error!("Failed to publish finalized event: {}", e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Finality poll failed to fetch finalized slot: {}", e);
+            }
+        }
+    }
 }
 
 async fn process_log(

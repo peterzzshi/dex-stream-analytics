@@ -35,7 +35,7 @@ pub struct SwapEvent {
 }
 
 impl Serialize for SwapEvent {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -96,7 +96,8 @@ pub struct BurnEvent {
     pub liquidity: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
 pub enum Event {
     Swap(SwapEvent),
     Mint(MintEvent),

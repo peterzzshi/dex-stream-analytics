@@ -26,6 +26,7 @@ pub struct DaprConfig {
 pub struct TopicsConfig {
     pub trading: String,
     pub liquidity: String,
+    pub dlq: String,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +42,7 @@ pub struct SolanaConfig {
     pub chain_name: String,
     pub venue: String,
     pub finality_buffer_size: usize,
+    pub finality_poll_interval_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +78,8 @@ pub struct TokensConfig {
 pub struct RetryConfig {
     pub reconnect_delay_short_secs: u64,
     pub reconnect_delay_long_secs: u64,
+    pub publish_max_retries: u32,
+    pub publish_initial_backoff_ms: u64,
 }
 
 impl Config {
@@ -100,6 +104,7 @@ impl Config {
         let topics = TopicsConfig {
             trading: get_env("TOPIC_TRADING").context("TOPIC_TRADING not set")?,
             liquidity: get_env("TOPIC_LIQUIDITY").context("TOPIC_LIQUIDITY not set")?,
+            dlq: get_env("TOPIC_DLQ").context("TOPIC_DLQ not set")?,
         };
 
         let app = AppConfig {
@@ -119,6 +124,10 @@ impl Config {
                 .context("FINALITY_BUFFER_SIZE not set")?
                 .parse()
                 .context("FINALITY_BUFFER_SIZE must be a valid number")?,
+            finality_poll_interval_secs: get_env("FINALITY_POLL_INTERVAL_SECS")
+                .unwrap_or_else(|_| "10".to_string())
+                .parse()
+                .context("FINALITY_POLL_INTERVAL_SECS must be a valid number")?,
         };
 
         let programs = ProgramsConfig {
@@ -180,6 +189,14 @@ impl Config {
                 .context("RECONNECT_DELAY_LONG_SECS not set")?
                 .parse()
                 .context("RECONNECT_DELAY_LONG_SECS must be a valid number")?,
+            publish_max_retries: get_env("PUBLISH_MAX_RETRIES")
+                .unwrap_or_else(|_| "3".to_string())
+                .parse()
+                .context("PUBLISH_MAX_RETRIES must be a valid number")?,
+            publish_initial_backoff_ms: get_env("PUBLISH_INITIAL_BACKOFF_MS")
+                .unwrap_or_else(|_| "100".to_string())
+                .parse()
+                .context("PUBLISH_INITIAL_BACKOFF_MS must be a valid number")?,
         };
 
         Ok(Config {
@@ -210,6 +227,7 @@ mod tests {
         mock_env.insert("PUBSUB_NAME", "kafka-pubsub");
         mock_env.insert("TOPIC_TRADING", "dex-trading-events");
         mock_env.insert("TOPIC_LIQUIDITY", "dex-liquidity-events");
+        mock_env.insert("TOPIC_DLQ", "dex-dlq");
         mock_env.insert("APP_PORT", "3001");
         mock_env.insert("SOLANA_RPC_URL", "wss://api.mainnet-beta.solana.com");
         mock_env.insert("SOLANA_COMMITMENT", "finalized");
@@ -217,6 +235,7 @@ mod tests {
         mock_env.insert("CHAIN_NAME", "Solana");
         mock_env.insert("CHAIN_VENUE", "raydium-amm-v4");
         mock_env.insert("FINALITY_BUFFER_SIZE", "500");
+        mock_env.insert("FINALITY_POLL_INTERVAL_SECS", "10");
         mock_env.insert(
             "RAYDIUM_AMM_V4_PROGRAM",
             "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",

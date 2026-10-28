@@ -6,12 +6,12 @@ Real-time Flink pipeline that detects MEV and scores DEX pool health from live U
 
 Three independent toolchains, no root build/test command.
 
-**evm-ingester** (Go)
+**evm-ingester** (Rust)
 
-- Build: `cd evm-ingester && go build ./...`
-- Test: `cd evm-ingester && go test ./...` (single:
-  `go test ./internal/finality/... -run TestBufferHoldsEventsUntilConfirmed`)
-- Lint: `cd evm-ingester && golangci-lint run` ← run before finishing any evm-ingester task
+- Build: `cd evm-ingester && cargo build`
+- Test: `cd evm-ingester && cargo test` (single: `cargo test finality::tests::buffer_holds_events_until_confirmed`)
+- Lint: `cd evm-ingester && cargo fmt --check && cargo clippy -- -D warnings` ← run before finishing any evm-ingester
+  task
 
 **aggregator** (Java 21 / Flink, Maven)
 - Build: `cd aggregator && mvn -DskipTests package`
@@ -28,7 +28,7 @@ Full stack: `docker compose up -d --build` (see root `README.md` for the live-ch
 
 ## Architecture
 
-`evm-ingester/` (Go) → `aggregator/` (Flink/Java) → `analytics-service/` (Kotlin/Ktor), connected by Kafka with Dapr
+`evm-ingester/` (Rust) → `aggregator/` (Flink/Java) → `analytics-service/` (Kotlin/Ktor), connected by Kafka with Dapr
 pub/sub at the edges. Cross-component contracts are the Avro schemas and Kafka topic names, not shared code. Full
 diagram: `ARCHITECTURE.md`; schemas: `DATA_MODEL.md`.
 
@@ -49,8 +49,7 @@ Invariants:
 ## Workflow
 
 - Small commits, plain imperative messages (match existing history: `Add Kotlin analytics-service`, not Conventional Commits).
-- Never commit on your own initiative — stage/propose changes and leave the commit itself to me.
-- Ask before adding a dependency; name which ecosystem (`evm-ingester/go.mod`, `aggregator/pom.xml`,
+- Ask before adding a dependency; name which ecosystem (`evm-ingester/Cargo.toml`, `aggregator/pom.xml`,
   `analytics-service/build.gradle.kts`) — each is independent.
 - If a doc and the code it describes disagree, surface the conflict before changing either.
 - **After completing each task, update `SESSION-HANDOFF.md` with current state, what changed, and what's next.**

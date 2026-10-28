@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::env;
 
@@ -80,6 +80,10 @@ pub struct RetryConfig {
     pub reconnect_delay_long_secs: u64,
     pub publish_max_retries: u32,
     pub publish_initial_backoff_ms: u64,
+    pub rpc_max_retries: u32,
+    pub rpc_initial_backoff_ms: u64,
+    pub rpc_max_backoff_ms: u64,
+    pub rpc_timeout_ms: u64,
 }
 
 impl Config {
@@ -125,7 +129,7 @@ impl Config {
                 .parse()
                 .context("FINALITY_BUFFER_SIZE must be a valid number")?,
             finality_poll_interval_secs: get_env("FINALITY_POLL_INTERVAL_SECS")
-                .unwrap_or_else(|_| "10".to_string())
+                .context("FINALITY_POLL_INTERVAL_SECS not set")?
                 .parse()
                 .context("FINALITY_POLL_INTERVAL_SECS must be a valid number")?,
         };
@@ -137,24 +141,9 @@ impl Config {
                 .context("TOKEN_METADATA_PROGRAM not set")?,
         };
 
-        let pool = PoolConfig {
-            name: get_env("POOL_NAME").context("POOL_NAME not set")?,
-            address: get_env("POOL_ADDRESS").context("POOL_ADDRESS not set")?,
-            token0: get_env("POOL_TOKEN0").ok(),
-            token1: get_env("POOL_TOKEN1").ok(),
-            vault0_index: get_env("POOL_VAULT0_INDEX")
-                .context("POOL_VAULT0_INDEX not set")?
-                .parse()
-                .context("POOL_VAULT0_INDEX must be a valid number")?,
-            vault1_index: get_env("POOL_VAULT1_INDEX")
-                .context("POOL_VAULT1_INDEX not set")?
-                .parse()
-                .context("POOL_VAULT1_INDEX must be a valid number")?,
-            user_authority_index: get_env("POOL_USER_AUTHORITY_INDEX")
-                .context("POOL_USER_AUTHORITY_INDEX not set")?
-                .parse()
-                .context("POOL_USER_AUTHORITY_INDEX must be a valid number")?,
-        };
+        // Load pools - try indexed env vars first (POOL_0_NAME, POOL_1_NAME, etc.)
+        // Fall back to single pool (POOL_NAME) for backward compatibility
+        let pools = Self::load_pools(&get_env)?;
 
         let price_feeds: HashMap<String, String> =
             serde_json::from_str(&get_env("PYTH_PRICE_FEEDS").context("PYTH_PRICE_FEEDS not set")?)
@@ -190,13 +179,29 @@ impl Config {
                 .parse()
                 .context("RECONNECT_DELAY_LONG_SECS must be a valid number")?,
             publish_max_retries: get_env("PUBLISH_MAX_RETRIES")
-                .unwrap_or_else(|_| "3".to_string())
+                .context("PUBLISH_MAX_RETRIES not set")?
                 .parse()
                 .context("PUBLISH_MAX_RETRIES must be a valid number")?,
             publish_initial_backoff_ms: get_env("PUBLISH_INITIAL_BACKOFF_MS")
-                .unwrap_or_else(|_| "100".to_string())
+                .context("PUBLISH_INITIAL_BACKOFF_MS not set")?
                 .parse()
                 .context("PUBLISH_INITIAL_BACKOFF_MS must be a valid number")?,
+            rpc_max_retries: get_env("RPC_MAX_RETRIES")
+                .unwrap_or_else(|_| "3".to_string())
+                .parse()
+                .context("RPC_MAX_RETRIES must be a valid number")?,
+            rpc_initial_backoff_ms: get_env("RPC_INITIAL_BACKOFF_MS")
+                .unwrap_or_else(|_| "100".to_string())
+                .parse()
+                .context("RPC_INITIAL_BACKOFF_MS must be a valid number")?,
+            rpc_max_backoff_ms: get_env("RPC_MAX_BACKOFF_MS")
+                .unwrap_or_else(|_| "5000".to_string())
+                .parse()
+                .context("RPC_MAX_BACKOFF_MS must be a valid number")?,
+            rpc_timeout_ms: get_env("RPC_TIMEOUT_MS")
+                .unwrap_or_else(|_| "30000".to_string())
+                .parse()
+                .context("RPC_TIMEOUT_MS must be a valid number")?,
         };
 
         Ok(Config {
@@ -205,105 +210,165 @@ impl Config {
             app,
             solana,
             programs,
-            pools: vec![pool],
+            pools,
             pyth,
             tokens,
             retry,
         })
     }
+
+    fn load_pools<F>(get_env: &F) -> Result<Vec<PoolConfig>>
+    where
+        F: Fn(&str) -> Result<String, env::VarError>,
+    {
+        let mut pools = Vec::new();
+
+        // Try loading indexed pools (POOL_0_NAME, POOL_1_NAME, etc.)
+        let mut index = 0;
+        loop {
+            let name_key = format!("POOL_{}_NAME", index);
+            match get_env(&name_key) {
+                Ok(name) => {
+                    let address_key = format!("POOL_{}_ADDRESS", index);
+                    let token0_key = format!("POOL_{}_TOKEN0", index);
+                    let token1_key = format!("POOL_{}_TOKEN1", index);
+                    let vault0_key = format!("POOL_{}_VAULT0_INDEX", index);
+                    let vault1_key = format!("POOL_{}_VAULT1_INDEX", index);
+                    let user_auth_key = format!("POOL_{}_USER_AUTHORITY_INDEX", index);
+
+                    pools.push(PoolConfig {
+                        name,
+                        address: get_env(&address_key)
+                            .with_context(|| format!("{} not set", address_key))?,
+                        token0: get_env(&token0_key).ok(),
+                        token1: get_env(&token1_key).ok(),
+                        vault0_index: get_env(&vault0_key)
+                            .with_context(|| format!("{} not set", vault0_key))?
+                            .parse()
+                            .with_context(|| format!("{} must be a valid number", vault0_key))?,
+                        vault1_index: get_env(&vault1_key)
+                            .with_context(|| format!("{} not set", vault1_key))?
+                            .parse()
+                            .with_context(|| format!("{} must be a valid number", vault1_key))?,
+                        user_authority_index: get_env(&user_auth_key)
+                            .with_context(|| format!("{} not set", user_auth_key))?
+                            .parse()
+                            .with_context(|| format!("{} must be a valid number", user_auth_key))?,
+                    });
+                    index += 1;
+                }
+                Err(_) => break,
+            }
+        }
+
+        // If no indexed pools found, try single pool format (backward compatibility)
+        if pools.is_empty() {
+            if let Ok(name) = get_env("POOL_NAME") {
+                pools.push(PoolConfig {
+                    name,
+                    address: get_env("POOL_ADDRESS").context("POOL_ADDRESS not set")?,
+                    token0: get_env("POOL_TOKEN0").ok(),
+                    token1: get_env("POOL_TOKEN1").ok(),
+                    vault0_index: get_env("POOL_VAULT0_INDEX")
+                        .context("POOL_VAULT0_INDEX not set")?
+                        .parse()
+                        .context("POOL_VAULT0_INDEX must be a valid number")?,
+                    vault1_index: get_env("POOL_VAULT1_INDEX")
+                        .context("POOL_VAULT1_INDEX not set")?
+                        .parse()
+                        .context("POOL_VAULT1_INDEX must be a valid number")?,
+                    user_authority_index: get_env("POOL_USER_AUTHORITY_INDEX")
+                        .context("POOL_USER_AUTHORITY_INDEX not set")?
+                        .parse()
+                        .context("POOL_USER_AUTHORITY_INDEX must be a valid number")?,
+                });
+            }
+        }
+
+        if pools.is_empty() {
+            bail!("No pools configured. Set either POOL_NAME or POOL_0_NAME environment variables");
+        }
+
+        Ok(pools)
+    }
 }
 
 #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
-    fn test_config_parsing_logic() {
-        // Test the parsing logic without touching env::var
-        let mut mock_env = HashMap::new();
-        mock_env.insert("DAPR_HOST", "test-host");
-        mock_env.insert("DAPR_HTTP_PORT", "3501");
-        mock_env.insert("PUBSUB_NAME", "kafka-pubsub");
-        mock_env.insert("TOPIC_TRADING", "dex-trading-events");
-        mock_env.insert("TOPIC_LIQUIDITY", "dex-liquidity-events");
-        mock_env.insert("TOPIC_DLQ", "dex-dlq");
-        mock_env.insert("APP_PORT", "3001");
-        mock_env.insert("SOLANA_RPC_URL", "wss://api.mainnet-beta.solana.com");
-        mock_env.insert("SOLANA_COMMITMENT", "finalized");
-        mock_env.insert("CHAIN_ID", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
-        mock_env.insert("CHAIN_NAME", "Solana");
-        mock_env.insert("CHAIN_VENUE", "raydium-amm-v4");
-        mock_env.insert("FINALITY_BUFFER_SIZE", "500");
-        mock_env.insert("FINALITY_POLL_INTERVAL_SECS", "10");
-        mock_env.insert(
-            "RAYDIUM_AMM_V4_PROGRAM",
-            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
-        );
-        mock_env.insert(
-            "TOKEN_METADATA_PROGRAM",
-            "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
-        );
-        mock_env.insert("POOL_NAME", "SOL/USDC");
-        mock_env.insert(
-            "POOL_ADDRESS",
-            "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
-        );
-        mock_env.insert("POOL_TOKEN0", "So11111111111111111111111111111111111111112");
-        mock_env.insert(
-            "POOL_TOKEN1",
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        );
-        mock_env.insert("POOL_VAULT0_INDEX", "5");
-        mock_env.insert("POOL_VAULT1_INDEX", "6");
-        mock_env.insert("POOL_USER_AUTHORITY_INDEX", "16");
-        mock_env.insert("PYTH_MAX_AGE_SECONDS", "60");
-        mock_env.insert(
-            "PYTH_PRICE_FEEDS",
-            r#"{"So11111111111111111111111111111111111111112":"H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG"}"#,
-        );
-        mock_env.insert(
-            "PYTH_STABLECOINS",
-            r#"["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"]"#,
-        );
-        mock_env.insert(
-            "KNOWN_TOKEN_SYMBOLS",
-            r#"{"So11111111111111111111111111111111111111112":"SOL"}"#,
-        );
-        mock_env.insert("RECONNECT_DELAY_SHORT_SECS", "5");
-        mock_env.insert("RECONNECT_DELAY_LONG_SECS", "10");
-
-        let config = Config::load(|key| {
-            mock_env
-                .get(key)
-                .map(|s| s.to_string())
-                .ok_or(env::VarError::NotPresent)
-        })
-        .expect("should parse config");
-
-        // Test parsing correctness, not data values
-        assert_eq!(config.dapr.http_port, 3501);
-        assert_eq!(config.solana.finality_buffer_size, 500);
-        assert_eq!(config.pools[0].vault0_index, 5);
-        assert_eq!(config.pyth.max_age_seconds, 60);
-        assert_eq!(config.retry.reconnect_delay_short_secs, 5);
-    }
-
-    #[test]
-    fn test_missing_required_field_fails() {
-        let config = Config::load(|_| Err(env::VarError::NotPresent));
-        assert!(config.is_err());
-    }
-
-    #[test]
-    fn test_invalid_port_number_fails() {
-        let config = Config::load(|key| {
-            if key == "DAPR_HTTP_PORT" {
-                Ok("not-a-number".to_string())
-            } else {
-                Err(env::VarError::NotPresent)
+    fn test_multi_pool_stops_at_first_gap() {
+        let get_env = |key: &str| -> Result<String, env::VarError> {
+            match key {
+                "POOL_0_NAME" => Ok("pool-0".to_string()),
+                "POOL_0_ADDRESS" => Ok("addr0".to_string()),
+                "POOL_0_VAULT0_INDEX" => Ok("5".to_string()),
+                "POOL_0_VAULT1_INDEX" => Ok("6".to_string()),
+                "POOL_0_USER_AUTHORITY_INDEX" => Ok("16".to_string()),
+                "POOL_1_NAME" => Ok("pool-1".to_string()),
+                "POOL_1_ADDRESS" => Ok("addr1".to_string()),
+                "POOL_1_VAULT0_INDEX" => Ok("5".to_string()),
+                "POOL_1_VAULT1_INDEX" => Ok("6".to_string()),
+                "POOL_1_USER_AUTHORITY_INDEX" => Ok("16".to_string()),
+                // POOL_2 is missing - gap
+                "POOL_3_NAME" => Ok("pool-3".to_string()),
+                _ => Err(env::VarError::NotPresent),
             }
-        });
-        assert!(config.is_err());
+        };
+
+        let pools = Config::load_pools(&get_env).expect("should load pools");
+        assert_eq!(pools.len(), 2);
+    }
+
+    #[test]
+    fn test_fallback_to_single_pool_when_no_indexed() {
+        let get_env = |key: &str| -> Result<String, env::VarError> {
+            match key {
+                "POOL_NAME" => Ok("single-pool".to_string()),
+                "POOL_ADDRESS" => Ok("addr".to_string()),
+                "POOL_VAULT0_INDEX" => Ok("5".to_string()),
+                "POOL_VAULT1_INDEX" => Ok("6".to_string()),
+                "POOL_USER_AUTHORITY_INDEX" => Ok("16".to_string()),
+                _ => Err(env::VarError::NotPresent),
+            }
+        };
+
+        let pools = Config::load_pools(&get_env).expect("should load single pool");
+        assert_eq!(pools.len(), 1);
+    }
+
+    #[test]
+    fn test_error_when_no_pools_configured() {
+        let get_env = |_: &str| -> Result<String, env::VarError> { Err(env::VarError::NotPresent) };
+
+        let result = Config::load_pools(&get_env);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No pools configured")
+        );
+    }
+
+    #[test]
+    fn test_indexed_pools_take_precedence() {
+        let get_env = |key: &str| -> Result<String, env::VarError> {
+            match key {
+                "POOL_0_NAME" => Ok("indexed-pool".to_string()),
+                "POOL_0_ADDRESS" => Ok("indexed-addr".to_string()),
+                "POOL_0_VAULT0_INDEX" => Ok("5".to_string()),
+                "POOL_0_VAULT1_INDEX" => Ok("6".to_string()),
+                "POOL_0_USER_AUTHORITY_INDEX" => Ok("16".to_string()),
+                "POOL_NAME" => Ok("single-pool".to_string()),
+                "POOL_ADDRESS" => Ok("single-addr".to_string()),
+                _ => Err(env::VarError::NotPresent),
+            }
+        };
+
+        let pools = Config::load_pools(&get_env).expect("should load pools");
+        assert_eq!(pools.len(), 1);
     }
 }

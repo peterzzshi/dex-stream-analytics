@@ -203,7 +203,7 @@ impl Publisher {
     }
 
     /// Publish failed event to DLQ with error metadata
-    async fn publish_to_dlq(&self, event: Event, error_msg: String) -> Result<()> {
+    pub async fn publish_to_dlq(&self, event: Event, error_msg: String) -> Result<()> {
         let (event_id, pool_address) = match &event {
             Event::Swap(e) => (e.base.event_id.clone(), e.base.pair_address.clone()),
             Event::Mint(e) => (e.base.event_id.clone(), e.base.pair_address.clone()),

@@ -4630,6 +4630,7 @@ dependencies = [
  "futures-util",
  "mpl-token-metadata",
  "pyth-solana-receiver-sdk",
+ "rand 0.8.8",
  "reqwest",
  "serde",
  "serde_json",

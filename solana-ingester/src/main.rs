@@ -6,6 +6,7 @@ mod events;
 mod finality;
 mod oracle;
 mod publisher;
+mod rpc_retry;
 mod symbols;
 
 use anyhow::{Context, Result};
@@ -18,13 +19,24 @@ use tokio::signal;
 use tracing::{debug, error, info, warn};
 
 use crate::blockchain::RpcClient;
-use crate::config::Config;
+use crate::config::{Config, PoolConfig};
 use crate::decoder::decode_instruction;
 use crate::events::Event;
 use crate::finality::FinalityBuffer;
 use crate::oracle::PythOracle;
 use crate::publisher::Publisher;
+use crate::rpc_retry::RetryableRpcClient;
 use crate::symbols::SymbolCache;
+
+#[derive(Clone)]
+struct SharedResources {
+    rpc_client: Arc<RetryableRpcClient>,
+    oracle: Arc<tokio::sync::Mutex<PythOracle>>,
+    symbols: Arc<tokio::sync::Mutex<SymbolCache>>,
+    finality_buffer: Arc<tokio::sync::Mutex<FinalityBuffer>>,
+    publisher: Arc<Publisher>,
+    config: Arc<Config>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,15 +58,13 @@ async fn main() -> Result<()> {
         config.solana.chain_name
     );
 
-    let pool_address = config
-        .pools
-        .first()
-        .context("No pools configured")?
-        .address
-        .clone();
-    let pool_name = config.pools.first().unwrap().name.clone();
+    info!("Configured pools:");
+    for pool in &config.pools {
+        info!("  - {} at {}", pool.name, pool.address);
+    }
 
-    info!("Monitoring pool: {} at {}", pool_name, pool_address);
+    // Wrap config in Arc for sharing across tasks
+    let config = Arc::new(config);
 
     // Start health check server
     let app_port = config.app.port;
@@ -73,6 +83,12 @@ async fn main() -> Result<()> {
         "Connected to Solana RPC with commitment: {:?}",
         config.solana.commitment
     );
+
+    // Wrap with retry logic
+    let retryable_rpc_client = Arc::new(RetryableRpcClient::new(
+        rpc_client.clone(),
+        config.retry.clone(),
+    ));
 
     // Initialize oracle and symbol cache (they use HTTP RPC URL directly)
     let http_rpc_url = config
@@ -111,7 +127,7 @@ async fn main() -> Result<()> {
     // Start periodic finality polling task
     let finality_buffer_clone = finality_buffer.clone();
     let publisher_clone = publisher.clone();
-    let rpc_client_clone = rpc_client.clone();
+    let rpc_client_clone = retryable_rpc_client.clone();
     let poll_interval_secs = config.solana.finality_poll_interval_secs;
 
     tokio::spawn(async move {
@@ -129,79 +145,51 @@ async fn main() -> Result<()> {
         poll_interval_secs
     );
 
+    // Create shared resources
+    let shared = SharedResources {
+        rpc_client: retryable_rpc_client.clone(),
+        oracle: _oracle,
+        symbols: _symbols,
+        finality_buffer,
+        publisher,
+        config: config.clone(),
+    };
+
     // Parse Raydium program ID
     let program_id =
         Pubkey::from_str(&config.programs.raydium_amm_v4).context("Invalid Raydium program ID")?;
 
     info!("All components initialized successfully");
 
-    // Subscribe to logs
-    let mut subscription = rpc_client
-        .subscribe_logs(program_id)
-        .await
-        .context("Failed to subscribe to Raydium program logs")?;
+    // Spawn monitoring task for each pool
+    let mut pool_tasks = Vec::new();
+    for pool in config.pools.iter() {
+        let pool_clone = pool.clone();
+        let shared_clone = shared.clone();
+        let program_id_clone = program_id;
 
-    info!("Subscribed to Raydium AMM v4 program logs");
-    info!("Ingester ready. Press Ctrl+C to stop.");
+        let task = tokio::spawn(async move {
+            monitor_pool(pool_clone, shared_clone, program_id_clone).await;
+        });
 
-    // Main event loop
-    loop {
-        tokio::select! {
-            // Handle incoming log messages
-            log_result = subscription.recv() => {
-                match log_result {
-                    Some(log_response) => {
-                        if let Err(e) = process_log(
-                            log_response,
-                            &rpc_client,
-                            &_oracle,
-                            &_symbols,
-                            &finality_buffer,
-                            &publisher,
-                            &config,
-                            &pool_address,
-                        ).await {
-                            error!("Failed to process log: {}", e);
-                        }
-                    }
-                    None => {
-                        warn!("WebSocket subscription closed, attempting to reconnect...");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(
-                            config.retry.reconnect_delay_short_secs,
-                        ))
-                        .await;
-
-                        match rpc_client.subscribe_logs(program_id).await {
-                            Ok(new_sub) => {
-                                subscription = new_sub;
-                                info!("Reconnected to Raydium program logs");
-                            }
-                            Err(e) => {
-                                error!("Failed to reconnect: {}", e);
-                                tokio::time::sleep(tokio::time::Duration::from_secs(
-                                    config.retry.reconnect_delay_long_secs,
-                                ))
-                                .await;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Handle shutdown signal
-            _ = signal::ctrl_c() => {
-                info!("Shutdown signal received");
-                break;
-            }
-        }
+        pool_tasks.push(task);
+        info!("Started monitoring task for pool: {}", pool.name);
     }
 
+    info!("Ingester ready. Press Ctrl+C to stop.");
+
+    // Wait for shutdown signal
+    signal::ctrl_c()
+        .await
+        .context("Failed to wait for ctrl+c")?;
+    info!("Shutdown signal received");
+
     // Flush finality buffer on shutdown
-    let pending_events = finality_buffer.lock().await.flush();
+    let pending_events = shared.finality_buffer.lock().await.flush();
     info!("Flushing {} pending events", pending_events.len());
 
     for event in pending_events {
-        if let Err(e) = publisher.publish_event(event).await {
+        if let Err(e) = shared.publisher.publish_event(event).await {
             error!("Failed to publish pending event during shutdown: {}", e);
         }
     }
@@ -213,7 +201,7 @@ async fn main() -> Result<()> {
 async fn finality_polling_task(
     finality_buffer: Arc<tokio::sync::Mutex<FinalityBuffer>>,
     publisher: Arc<Publisher>,
-    rpc_client: Arc<RpcClient>,
+    rpc_client: Arc<RetryableRpcClient>,
     interval_secs: u64,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
@@ -248,15 +236,65 @@ async fn finality_polling_task(
     }
 }
 
+async fn monitor_pool(pool: PoolConfig, shared: SharedResources, program_id: Pubkey) {
+    let pool_address = pool.address.clone();
+    let pool_name = pool.name.clone();
+
+    info!("[{}] Starting monitoring task", pool_name);
+
+    loop {
+        // Subscribe to logs using the inner RPC client (WebSocket doesn't need retry wrapper)
+        match shared.rpc_client.inner().subscribe_logs(program_id).await {
+            Ok(mut subscription) => {
+                info!("[{}] Subscribed to Raydium AMM v4 program logs", pool_name);
+
+                // Process logs until subscription closes
+                while let Some(log_response) = subscription.recv().await {
+                    if let Err(e) = process_log(
+                        log_response,
+                        &shared.rpc_client,
+                        &shared.oracle,
+                        &shared.symbols,
+                        &shared.finality_buffer,
+                        &shared.publisher,
+                        &shared.config,
+                        &pool_address,
+                        &pool,
+                    )
+                    .await
+                    {
+                        error!("[{}] Failed to process log: {}", pool_name, e);
+                    }
+                }
+
+                warn!(
+                    "[{}] WebSocket subscription closed, attempting to reconnect...",
+                    pool_name
+                );
+            }
+            Err(e) => {
+                error!("[{}] Failed to subscribe to logs: {}", pool_name, e);
+            }
+        }
+
+        // Reconnect with exponential backoff
+        tokio::time::sleep(tokio::time::Duration::from_secs(
+            shared.config.retry.reconnect_delay_short_secs,
+        ))
+        .await;
+    }
+}
+
 async fn process_log(
     log_response: RpcLogsResponse,
-    rpc_client: &Arc<RpcClient>,
+    rpc_client: &Arc<RetryableRpcClient>,
     oracle: &Arc<tokio::sync::Mutex<PythOracle>>,
     symbols: &Arc<tokio::sync::Mutex<SymbolCache>>,
     finality_buffer: &Arc<tokio::sync::Mutex<FinalityBuffer>>,
     publisher: &Arc<Publisher>,
-    config: &Config,
+    config: &Arc<Config>,
     pool_address: &str,
+    pool_config: &PoolConfig,
 ) -> Result<()> {
     // Extract transaction signature from log response
     let signature = Signature::from_str(&log_response.signature)
@@ -309,6 +347,7 @@ async fn process_log(
                     publisher,
                     config,
                     pool_address,
+                    pool_config,
                     rpc_client,
                     symbols,
                     oracle,
@@ -336,6 +375,7 @@ async fn process_log(
                     publisher,
                     config,
                     pool_address,
+                    pool_config,
                     rpc_client,
                     symbols,
                     oracle,
@@ -361,9 +401,10 @@ async fn process_instruction(
     block_time: i64,
     finality_buffer: &Arc<tokio::sync::Mutex<FinalityBuffer>>,
     publisher: &Arc<Publisher>,
-    config: &Config,
+    config: &Arc<Config>,
     pool_address: &str,
-    rpc_client: &Arc<RpcClient>,
+    pool_config: &PoolConfig,
+    rpc_client: &Arc<RetryableRpcClient>,
     symbols: &Arc<tokio::sync::Mutex<SymbolCache>>,
     oracle: &Arc<tokio::sync::Mutex<PythOracle>>,
 ) -> Result<()> {
@@ -381,6 +422,11 @@ async fn process_instruction(
         .context("Program ID index out of bounds")?;
 
     if program_id_str != &config.programs.raydium_amm_v4 {
+        return Ok(());
+    }
+
+    // Filter by pool address - only process logs that reference this specific pool
+    if !account_keys.contains(&pool_address.to_string()) {
         return Ok(());
     }
 
@@ -429,9 +475,7 @@ async fn process_instruction(
         }
     };
 
-    // Get pool config for token identities
-    let pool_config = config.pools.first().context("No pools configured")?;
-
+    // Use the pool config passed for this specific pool
     let token0 = pool_config.token0.as_ref().context("Pool missing token0")?;
     let token1 = pool_config.token1.as_ref().context("Pool missing token1")?;
 
@@ -602,12 +646,24 @@ async fn process_instruction(
         publisher.publish_event(confirmed_event).await?;
     }
 
-    // Log evicted events (buffer overflow)
+    // Publish evicted events to DLQ (buffer overflow)
     if !result.evicted.is_empty() {
         warn!(
-            "Evicted {} events from finality buffer",
-            result.evicted.len()
+            "Buffer overflow: evicting {} events at slot {}",
+            result.evicted.len(),
+            finalized_slot
         );
+        for evicted_event in result.evicted {
+            if let Err(e) = publisher
+                .publish_to_dlq(
+                    evicted_event,
+                    format!("Finality buffer overflow at slot {}", finalized_slot),
+                )
+                .await
+            {
+                error!("Failed to publish evicted event to DLQ: {}", e);
+            }
+        }
     }
 
     Ok(())

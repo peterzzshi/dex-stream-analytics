@@ -36,6 +36,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
 thiserror = "2.0.21"
 
+# Random number generation (for retry jitter)
+rand = "0.8"
+
 # Base58 (Solana addresses)
 bs58 = "0.5"
 

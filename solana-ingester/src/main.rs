@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use solana_client::rpc_response::RpcLogsResponse;
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
 use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
-use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::signal;
@@ -27,8 +26,6 @@ use crate::oracle::PythOracle;
 use crate::publisher::Publisher;
 use crate::symbols::SymbolCache;
 
-const RAYDIUM_AMM_V4_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
@@ -41,10 +38,8 @@ async fn main() -> Result<()> {
 
     info!("Starting Solana ingester");
 
-    // Load configuration
-    let config_path =
-        env::var("CONFIG_PATH").unwrap_or_else(|_| "config/ingester.yaml".to_string());
-    let config = Config::load(&config_path).context("Failed to load configuration")?;
+    // Load configuration from environment variables
+    let config = Config::load_from_env().context("Failed to load configuration")?;
 
     info!(
         "Loaded configuration for chain: {}",
@@ -87,13 +82,18 @@ async fn main() -> Result<()> {
         .replace("ws://", "http://");
     let _oracle = Arc::new(tokio::sync::Mutex::new(PythOracle::new(
         http_rpc_url.clone(),
+        config.pyth.clone(),
     )));
-    let _symbols = Arc::new(tokio::sync::Mutex::new(SymbolCache::new(http_rpc_url)));
+    let _symbols = Arc::new(tokio::sync::Mutex::new(SymbolCache::new(
+        http_rpc_url,
+        config.tokens.clone(),
+        config.programs.token_metadata.clone(),
+    )));
 
     // Initialize finality buffer
     let _finality_buffer = Arc::new(tokio::sync::Mutex::new(FinalityBuffer::new(
         config.solana.commitment.clone(),
-        500,
+        config.solana.finality_buffer_size,
     )));
 
     // Initialize publisher
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
 
     // Parse Raydium program ID
     let program_id =
-        Pubkey::from_str(RAYDIUM_AMM_V4_PROGRAM).context("Invalid Raydium program ID")?;
+        Pubkey::from_str(&config.programs.raydium_amm_v4).context("Invalid Raydium program ID")?;
 
     info!("All components initialized successfully");
 
@@ -142,7 +142,10 @@ async fn main() -> Result<()> {
                     }
                     None => {
                         warn!("WebSocket subscription closed, attempting to reconnect...");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            config.retry.reconnect_delay_short_secs,
+                        ))
+                        .await;
 
                         match rpc_client.subscribe_logs(program_id).await {
                             Ok(new_sub) => {
@@ -151,7 +154,10 @@ async fn main() -> Result<()> {
                             }
                             Err(e) => {
                                 error!("Failed to reconnect: {}", e);
-                                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_secs(
+                                    config.retry.reconnect_delay_long_secs,
+                                ))
+                                .await;
                             }
                         }
                     }
@@ -308,11 +314,11 @@ async fn process_instruction(
     };
 
     // Verify this is a Raydium instruction
-    let program_id = account_keys
+    let program_id_str = account_keys
         .get(program_id_index as usize)
         .context("Program ID index out of bounds")?;
 
-    if program_id != RAYDIUM_AMM_V4_PROGRAM {
+    if program_id_str != &config.programs.raydium_amm_v4 {
         return Ok(());
     }
 
@@ -367,9 +373,9 @@ async fn process_instruction(
     let token0 = pool_config.token0.as_ref().context("Pool missing token0")?;
     let token1 = pool_config.token1.as_ref().context("Pool missing token1")?;
 
-    // Extract sender/recipient from account keys (user authority is typically account 16 for swaps)
+    // Extract sender/recipient from account keys
     let user_authority = account_keys
-        .get(16)
+        .get(pool_config.user_authority_index)
         .unwrap_or(&pool_address.to_string())
         .clone();
 
@@ -384,10 +390,14 @@ async fn process_instruction(
     // Create event based on instruction type
     let event = match decoded {
         crate::decoder::DecodedInstruction::Swap { .. } => {
-            // Compute actual swap amounts from balance diffs (vault indices 5 and 6 for Raydium)
-            let (vault0_diff, vault1_diff) =
-                balances::compute_balance_diff(pre_balances, post_balances, 5, 6)
-                    .context("Failed to compute balance diffs for swap")?;
+            // Compute actual swap amounts from balance diffs
+            let (vault0_diff, vault1_diff) = balances::compute_balance_diff(
+                pre_balances,
+                post_balances,
+                pool_config.vault0_index,
+                pool_config.vault1_index,
+            )
+            .context("Failed to compute balance diffs for swap")?;
 
             let (amount0_in, amount1_in, amount0_out, amount1_out) =
                 balances::extract_swap_amounts(vault0_diff, vault1_diff);
@@ -448,9 +458,13 @@ async fn process_instruction(
             })
         }
         crate::decoder::DecodedInstruction::Deposit { .. } => {
-            let (amount0, amount1) =
-                balances::compute_liquidity_amounts(pre_balances, post_balances, 5, 6)
-                    .context("Failed to compute liquidity amounts")?;
+            let (amount0, amount1) = balances::compute_liquidity_amounts(
+                pre_balances,
+                post_balances,
+                pool_config.vault0_index,
+                pool_config.vault1_index,
+            )
+            .context("Failed to compute liquidity amounts")?;
 
             Event::Mint(crate::events::MintEvent {
                 base: crate::events::BaseEvent {
@@ -476,9 +490,13 @@ async fn process_instruction(
             })
         }
         crate::decoder::DecodedInstruction::Withdraw { .. } => {
-            let (amount0, amount1) =
-                balances::compute_liquidity_amounts(pre_balances, post_balances, 5, 6)
-                    .context("Failed to compute liquidity amounts")?;
+            let (amount0, amount1) = balances::compute_liquidity_amounts(
+                pre_balances,
+                post_balances,
+                pool_config.vault0_index,
+                pool_config.vault1_index,
+            )
+            .context("Failed to compute liquidity amounts")?;
 
             Event::Burn(crate::events::BurnEvent {
                 base: crate::events::BaseEvent {

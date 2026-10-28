@@ -8,28 +8,25 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-// Hardcoded symbols for common tokens
-const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-
-// Metaplex Token Metadata Program ID
-const TOKEN_METADATA_PROGRAM_ID: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
+use crate::config::TokensConfig;
 
 pub struct SymbolCache {
     rpc_url: String,
+    token_metadata_program_id: String,
     cache: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl SymbolCache {
-    pub fn new(rpc_url: String) -> Self {
-        let mut cache = HashMap::new();
-
-        // Pre-populate hardcoded symbols
-        cache.insert(SOL_MINT.to_string(), "SOL".to_string());
-        cache.insert(USDC_MINT.to_string(), "USDC".to_string());
+    pub fn new(
+        rpc_url: String,
+        tokens_config: TokensConfig,
+        token_metadata_program_id: String,
+    ) -> Self {
+        let cache = tokens_config.known_symbols.clone();
 
         Self {
             rpc_url,
+            token_metadata_program_id,
             cache: Arc::new(RwLock::new(cache)),
         }
     }
@@ -65,7 +62,7 @@ impl SymbolCache {
             .map_err(|e| anyhow::anyhow!("Invalid mint pubkey {}: {}", token_mint, e))?;
 
         // Parse metadata program ID
-        let metadata_program_id = Pubkey::from_str(TOKEN_METADATA_PROGRAM_ID)
+        let metadata_program_id = Pubkey::from_str(&self.token_metadata_program_id)
             .map_err(|e| anyhow::anyhow!("Invalid metadata program ID: {}", e))?;
 
         // Derive metadata PDA
@@ -112,14 +109,35 @@ impl SymbolCache {
 mod tests {
     use super::*;
 
+    fn test_tokens_config() -> TokensConfig {
+        let mut known_symbols = HashMap::new();
+        known_symbols.insert(
+            "So11111111111111111111111111111111111111112".to_string(),
+            "SOL".to_string(),
+        );
+        known_symbols.insert(
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+            "USDC".to_string(),
+        );
+        TokensConfig { known_symbols }
+    }
+
     #[tokio::test]
     async fn test_hardcoded_symbols() {
-        let cache = SymbolCache::new("https://api.mainnet-beta.solana.com".to_string());
+        let cache = SymbolCache::new(
+            "https://api.mainnet-beta.solana.com".to_string(),
+            test_tokens_config(),
+            "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s".to_string(),
+        );
 
-        let sol_symbol = cache.get_symbol(SOL_MINT).await;
+        let sol_symbol = cache
+            .get_symbol("So11111111111111111111111111111111111111112")
+            .await;
         assert_eq!(sol_symbol, Some("SOL".to_string()));
 
-        let usdc_symbol = cache.get_symbol(USDC_MINT).await;
+        let usdc_symbol = cache
+            .get_symbol("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+            .await;
         assert_eq!(usdc_symbol, Some("USDC".to_string()));
     }
 }

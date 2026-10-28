@@ -10,18 +10,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-// Hardcoded Pyth mainnet price feed accounts
-const SOL_USD_PYTH: &str = "H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG";
-const USDC_USD_PYTH: &str = "Gnt27xtC473ZT2Mw5u8wZ68Z3gULkSTb5DuxJy7eJotD";
-
-// Stablecoin shortcut
-const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-
-// Maximum age for Pyth prices (seconds)
-const MAX_PRICE_AGE_SECONDS: i64 = 60;
+use crate::config::PythConfig;
 
 pub struct PythOracle {
     rpc_url: String,
+    config: PythConfig,
     cache: Arc<RwLock<HashMap<String, CachedPrice>>>,
 }
 
@@ -32,9 +25,10 @@ struct CachedPrice {
 }
 
 impl PythOracle {
-    pub fn new(rpc_url: String) -> Self {
+    pub fn new(rpc_url: String, config: PythConfig) -> Self {
         Self {
             rpc_url,
+            config,
             cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -43,7 +37,7 @@ impl PythOracle {
     /// Returns None if price feed not available or price is stale
     pub async fn fetch_price(&self, token_mint: &str) -> Result<Option<f64>> {
         // Stablecoin shortcut
-        if token_mint == USDC_MINT {
+        if self.config.stablecoins.contains(&token_mint.to_string()) {
             return Ok(Some(1.0));
         }
 
@@ -52,7 +46,7 @@ impl PythOracle {
             let cache = self.cache.read().await;
             if let Some(cached) = cache.get(token_mint) {
                 let age = chrono::Utc::now().timestamp() - cached.timestamp;
-                if age < MAX_PRICE_AGE_SECONDS {
+                if age < self.config.max_age_seconds {
                     debug!("Cache hit for {}: ${:.4}", token_mint, cached.price);
                     return Ok(Some(cached.price));
                 }
@@ -84,11 +78,10 @@ impl PythOracle {
     }
 
     fn get_price_feed_account(&self, token_mint: &str) -> Result<Option<Pubkey>> {
-        // Hardcoded mapping for SOL and USDC
-        let feed_str = match token_mint {
-            "So11111111111111111111111111111111111111112" => SOL_USD_PYTH, // Wrapped SOL
-            USDC_MINT => USDC_USD_PYTH,
-            _ => return Ok(None),
+        // Lookup from config
+        let feed_str = match self.config.price_feeds.get(token_mint) {
+            Some(feed) => feed,
+            None => return Ok(None),
         };
 
         let pubkey = Pubkey::from_str(feed_str)
@@ -128,7 +121,7 @@ impl PythOracle {
             .unwrap()
             .as_secs() as i64;
         let price_age = current_time - message.publish_time;
-        if price_age > MAX_PRICE_AGE_SECONDS {
+        if price_age > self.config.max_age_seconds {
             bail!("Price feed too old: {} seconds", price_age);
         }
 
@@ -153,16 +146,43 @@ impl PythOracle {
 mod tests {
     use super::*;
 
+    fn test_config() -> PythConfig {
+        let mut price_feeds = HashMap::new();
+        price_feeds.insert(
+            "So11111111111111111111111111111111111111112".to_string(),
+            "H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG".to_string(),
+        );
+        price_feeds.insert(
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+            "Gnt27xtC473ZT2Mw5u8wZ68Z3gULkSTb5DuxJy7eJotD".to_string(),
+        );
+
+        PythConfig {
+            max_age_seconds: 60,
+            price_feeds,
+            stablecoins: vec!["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()],
+        }
+    }
+
     #[tokio::test]
     async fn test_usdc_price() {
-        let oracle = PythOracle::new("https://api.mainnet-beta.solana.com".to_string());
-        let price = oracle.fetch_price(USDC_MINT).await.unwrap();
+        let oracle = PythOracle::new(
+            "https://api.mainnet-beta.solana.com".to_string(),
+            test_config(),
+        );
+        let price = oracle
+            .fetch_price("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+            .await
+            .unwrap();
         assert_eq!(price, Some(1.0));
     }
 
     #[test]
     fn test_sol_feed_account() {
-        let oracle = PythOracle::new("https://api.mainnet-beta.solana.com".to_string());
+        let oracle = PythOracle::new(
+            "https://api.mainnet-beta.solana.com".to_string(),
+            test_config(),
+        );
         let feed = oracle
             .get_price_feed_account("So11111111111111111111111111111111111111112")
             .unwrap();

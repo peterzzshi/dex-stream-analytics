@@ -58,7 +58,10 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
     async fn parse_swap_event(&self, log: Log) -> Result<Box<dyn Event>> {
         let swap_data = decoder::parse_swap_log(&log)?;
 
-        let base = self.build_base_event(&log, EventType::Swap)?;
+        let block_number = log.block_number.context("log missing block number")?;
+        let block_timestamp = self.fetch_block_timestamp(block_number).await?;
+
+        let base = self.build_base_event(&log, EventType::Swap, block_timestamp)?;
 
         let _pair_address = Address::from_str(&self.pool.pair_address)?;
 
@@ -117,7 +120,10 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
     async fn parse_mint_event(&self, log: Log) -> Result<Box<dyn Event>> {
         let mint_data = decoder::parse_mint_log(&log)?;
 
-        let base = self.build_base_event(&log, EventType::Mint)?;
+        let block_number = log.block_number.context("log missing block number")?;
+        let block_timestamp = self.fetch_block_timestamp(block_number).await?;
+
+        let base = self.build_base_event(&log, EventType::Mint, block_timestamp)?;
 
         let mint_event = MintEvent {
             base,
@@ -132,7 +138,10 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
     async fn parse_burn_event(&self, log: Log) -> Result<Box<dyn Event>> {
         let burn_data = decoder::parse_burn_log(&log)?;
 
-        let base = self.build_base_event(&log, EventType::Burn)?;
+        let block_number = log.block_number.context("log missing block number")?;
+        let block_timestamp = self.fetch_block_timestamp(block_number).await?;
+
+        let base = self.build_base_event(&log, EventType::Burn, block_timestamp)?;
 
         let burn_event = BurnEvent {
             base,
@@ -148,7 +157,10 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
     async fn parse_transfer_event(&self, log: Log) -> Result<Box<dyn Event>> {
         let transfer_data = decoder::parse_transfer_log(&log)?;
 
-        let base = self.build_base_event(&log, EventType::Transfer)?;
+        let block_number = log.block_number.context("log missing block number")?;
+        let block_timestamp = self.fetch_block_timestamp(block_number).await?;
+
+        let base = self.build_base_event(&log, EventType::Transfer, block_timestamp)?;
 
         let transfer_event = TransferEvent {
             base,
@@ -160,16 +172,18 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         Ok(Box::new(transfer_event))
     }
 
-    fn build_base_event(&self, log: &Log, event_type: EventType) -> Result<BaseEvent> {
+    fn build_base_event(
+        &self,
+        log: &Log,
+        event_type: EventType,
+        block_timestamp: i64,
+    ) -> Result<BaseEvent> {
         let block_number = log.block_number.context("log missing block number")?;
         let tx_hash = log
             .transaction_hash
             .context("log missing transaction hash")?;
         let log_index = log.log_index.context("log missing log index")?;
 
-        // Note: block_timestamp and token addresses will be populated asynchronously
-        // after the base event is constructed
-        let block_timestamp = 0i64;
         let token0_address = Address::zero();
         let token1_address = Address::zero();
 
@@ -260,7 +274,6 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
     }
 
     /// Fetch block timestamp from blockchain
-    #[allow(dead_code)]
     async fn fetch_block_timestamp(&self, block_number: U64) -> Result<i64> {
         let block = self
             .rpc

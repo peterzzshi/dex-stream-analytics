@@ -310,7 +310,7 @@ async fn process_log(
 
     // Extract slot and timestamp
     let slot = tx.slot;
-    let block_time = tx.block_time.unwrap_or(0);
+    let block_time = tx.block_time.context("transaction missing block_time")?;
 
     // Parse transaction to find Raydium instructions
     let transaction = match &tx.transaction.transaction {

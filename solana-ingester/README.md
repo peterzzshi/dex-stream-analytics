@@ -12,44 +12,22 @@ publishing to shared Kafka topics with EVM events.
 docker compose --profile live up -d solana-ingester
 ```
 
-The `live` profile mounts `config/solana-ingester.yaml` and requires `SOLANA_RPC_URL` and `SOLANA_WS_URL` to be set in
-`.env`.
+Set `SOLANA_RPC_URL` in `.env`. It embeds an API key, so it is never written to a file in the repo or image.
 
 ## Configuration
 
-`config/solana-ingester.yaml` holds structural config — Dapr coordinates, topic names, program addresses, and finality
-settings:
+Environment variables only; `src/config.rs` is the source of truth. Groups:
 
-```yaml
-dapr:
-  host: solana-ingester-dapr
-  grpcPort: 50001
-  pubsubName: kafka-pubsub
+- **Dapr and topics:** `DAPR_HOST`, `DAPR_HTTP_PORT`, `PUBSUB_NAME`, `TOPIC_TRADING`, `TOPIC_LIQUIDITY`, `TOPIC_DLQ`
+- **Chain:** `CHAIN_ID` (CAIP-2), `CHAIN_NAME`, `CHAIN_VENUE`, `SOLANA_RPC_URL`, `SOLANA_COMMITMENT`
+- **Pools:** `POOL_{n}_NAME`, `_ADDRESS`, `_TOKEN0`, `_TOKEN1`, `_VAULT0_INDEX`, `_VAULT1_INDEX`,
+  `_USER_AUTHORITY_INDEX` (a single pool can use the unindexed `POOL_*` names)
+- **Programs and oracle:** `RAYDIUM_AMM_V4_PROGRAM`, `TOKEN_METADATA_PROGRAM`, `PYTH_PRICE_FEEDS`,
+  `PYTH_STABLECOINS`, `PYTH_MAX_AGE_SECONDS`, `KNOWN_TOKEN_SYMBOLS`
+- **Finality and retry:** `FINALITY_BUFFER_SIZE`, `FINALITY_POLL_INTERVAL_SECS`, `PUBLISH_*`, `RPC_*`,
+  `RECONNECT_DELAY_*`, `APP_PORT`
 
-topics:
-  trading: dex-trading-events
-  liquidity: dex-liquidity-events
-
-solana:
-  chain: solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp  # CAIP-2 (mainnet-beta)
-  rpcUrl: ${SOLANA_RPC_URL}
-  wsUrl: ${SOLANA_WS_URL}
-  venue: raydium-amm-v4
-  commitment: finalized  # processed/confirmed/finalized
-  programs:
-    - address: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
-      name: Raydium AMM v4
-```
-
-Environment variables:
-
-| Variable         | Required | Description                                                   |
-|------------------|----------|---------------------------------------------------------------|
-| `CONFIG_PATH`    | yes      | Path to YAML config                                           |
-| `SOLANA_RPC_URL` | yes      | HTTP RPC endpoint (e.g., https://api.mainnet-beta.solana.com) |
-| `SOLANA_WS_URL`  | yes      | WebSocket endpoint (e.g., wss://api.mainnet-beta.solana.com)  |
-
-Secrets never live in the YAML: only the `${VAR}` reference does.
+All are required except the four `RPC_*` retry settings, which have defaults.
 
 ## Design Notes
 
@@ -60,7 +38,8 @@ Secrets never live in the YAML: only the `${VAR}` reference does.
   reorg risk).
 - **Enrichment at ingest**: Pyth pricing and SPL token metadata resolved here, so Flink reprocessing reproduces the same
   values.
-- **Failure visibility**: Decode and publish failures are logged. No dead-letter topic or metric yet.
+- **Failure visibility**: Publishes retry with backoff, then fall back to the DLQ topic (`TOPIC_DLQ`). Decode failures
+  are logged. No metrics.
 
 ## Test
 

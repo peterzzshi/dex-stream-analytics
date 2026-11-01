@@ -15,3 +15,6 @@ Present proposed changes before refactoring beyond the scope of a review/analysi
 
 Tests assert behavior and outcomes, not implementation. Every test must contain a real assertion; flag tests that query
 empty/unpopulated state.
+
+Unit tests are for pure function behavior and do no IO: no file, schema, classpath resource, env var, or network reads.
+Use embedded constants or generated classes instead. Do not record test counts in docs.

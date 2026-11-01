@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
-use tracing::{error, info, warn, Level};
+use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 mod avro;
@@ -266,6 +266,15 @@ async fn subscribe_to_logs(
             log_result = stream.next() => {
                 match log_result {
                     Some(log) => {
+                        if log.removed == Some(true) {
+                            warn!(
+                                pool = %pool_address,
+                                tx_hash = ?log.transaction_hash,
+                                log_index = ?log.log_index,
+                                "Log removed by chain reorg, dropping"
+                            );
+                            continue;
+                        }
                         match listener.process_log(log).await {
                             Ok(event) => {
                                 if let Err(e) = event_tx.send(event).await {

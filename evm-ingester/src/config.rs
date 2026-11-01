@@ -145,61 +145,68 @@ pub struct Pool {
 
 impl Config {
     pub fn load_from_env() -> Result<Self> {
+        Self::load(|key| env::var(key))
+    }
+
+    fn load<F>(get_env: F) -> Result<Self>
+    where
+        F: Fn(&str) -> Result<String, env::VarError>,
+    {
         let dapr = DaprConfig {
-            host: env::var("DAPR_HOST").context("DAPR_HOST not set")?,
-            http_port: env::var("DAPR_HTTP_PORT")
+            host: get_env("DAPR_HOST").context("DAPR_HOST not set")?,
+            http_port: get_env("DAPR_HTTP_PORT")
                 .context("DAPR_HTTP_PORT not set")?
                 .parse()
                 .context("DAPR_HTTP_PORT must be a valid port number")?,
-            pubsub_name: env::var("PUBSUB_NAME").context("PUBSUB_NAME not set")?,
+            pubsub_name: get_env("PUBSUB_NAME").context("PUBSUB_NAME not set")?,
         };
 
         let topics = TopicsConfig {
-            trading: env::var("TOPIC_TRADING").context("TOPIC_TRADING not set")?,
-            liquidity: env::var("TOPIC_LIQUIDITY").context("TOPIC_LIQUIDITY not set")?,
+            trading: get_env("TOPIC_TRADING").context("TOPIC_TRADING not set")?,
+            liquidity: get_env("TOPIC_LIQUIDITY").context("TOPIC_LIQUIDITY not set")?,
         };
 
         let app = AppConfig {
-            port: env::var("APP_PORT")
+            port: get_env("APP_PORT")
                 .context("APP_PORT not set")?
                 .parse()
                 .context("APP_PORT must be a valid port number")?,
         };
 
         let buffer = BufferConfig {
-            max_events_per_block: env::var("BUFFER_MAX_EVENTS_PER_BLOCK")
+            max_events_per_block: get_env("BUFFER_MAX_EVENTS_PER_BLOCK")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(default_max_events_per_block()),
-            max_blocks_in_memory: env::var("BUFFER_MAX_BLOCKS_IN_MEMORY")
+            max_blocks_in_memory: get_env("BUFFER_MAX_BLOCKS_IN_MEMORY")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(default_max_blocks_in_memory()),
         };
 
         let channels = ChannelConfig {
-            event_buffer_size: env::var("CHANNEL_EVENT_BUFFER_SIZE")
+            event_buffer_size: get_env("CHANNEL_EVENT_BUFFER_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(default_event_buffer_size()),
-            dlq_buffer_size: env::var("CHANNEL_DLQ_BUFFER_SIZE")
+            dlq_buffer_size: get_env("CHANNEL_DLQ_BUFFER_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(default_dlq_buffer_size()),
         };
 
         let chain = Chain {
-            chain: env::var("CHAIN_ID").context("CHAIN_ID not set")?,
-            name: env::var("CHAIN_NAME").context("CHAIN_NAME not set")?,
-            rpc: env::var("ETH_RPC_URL").context("ETH_RPC_URL not set")?,
-            venue: env::var("CHAIN_VENUE").unwrap_or_else(|_| "uniswap-v2".to_string()),
-            confirmations: env::var("CHAIN_CONFIRMATIONS")
+            chain: get_env("CHAIN_ID").context("CHAIN_ID not set")?,
+            name: get_env("CHAIN_NAME").context("CHAIN_NAME not set")?,
+            rpc: get_env("ETH_RPC_URL").context("ETH_RPC_URL not set")?,
+            venue: get_env("CHAIN_VENUE").unwrap_or_else(|_| "uniswap-v2".to_string()),
+            confirmations: get_env("CHAIN_CONFIRMATIONS")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3),
             pools: vec![Pool {
-                pair_address: env::var("POOL_ADDRESS").context("POOL_ADDRESS not set")?,
-                name: env::var("POOL_NAME").context("POOL_NAME not set")?,
+                pair_address: get_env("POOL_ADDRESS").context("POOL_ADDRESS not set")?,
+                name: get_env("POOL_NAME").context("POOL_NAME not set")?,
             }],
             retry: RetryConfig::default(),
         };
@@ -264,44 +271,78 @@ mod tests {
     }
 
     #[test]
-    fn test_load_from_env() {
-        env::set_var("DAPR_HOST", "evm-ingester-dapr");
-        env::set_var("DAPR_HTTP_PORT", "3500");
-        env::set_var("PUBSUB_NAME", "kafka-pubsub");
-        env::set_var("TOPIC_TRADING", "dex-trading-events");
-        env::set_var("TOPIC_LIQUIDITY", "dex-liquidity-events");
-        env::set_var("APP_PORT", "3000");
-        env::set_var("CHAIN_ID", "eip155:11155111");
-        env::set_var("CHAIN_NAME", "sepolia");
-        env::set_var("ETH_RPC_URL", "wss://eth-sepolia.example.com");
-        env::set_var("CHAIN_VENUE", "uniswap-v2");
-        env::set_var("CHAIN_CONFIRMATIONS", "3");
-        env::set_var("POOL_ADDRESS", "0xBCE3c0dCA52B1e7053142749296A03f5044017dD");
-        env::set_var("POOL_NAME", "TEST/WETH");
+    fn test_load_applies_defaults_for_optional_vars() {
+        let config = Config::load(lookup(&required_vars())).expect("should load");
 
-        let config = Config::load_from_env().expect("should load config from env");
-
-        assert_eq!(config.dapr.host, "evm-ingester-dapr");
         assert_eq!(config.dapr.http_port, 3500);
-        assert_eq!(config.chains.len(), 1);
-        assert_eq!(config.chains[0].name, "sepolia");
+        assert_eq!(config.chains[0].venue, "uniswap-v2");
         assert_eq!(config.chains[0].confirmations, 3);
-        assert_eq!(config.chains[0].pools.len(), 1);
-        assert_eq!(config.chains[0].pools[0].name, "TEST/WETH");
+        assert_eq!(config.buffer.max_blocks_in_memory, 100);
+        assert_eq!(config.channels.event_buffer_size, 1000);
+    }
 
-        // Clean up
-        env::remove_var("DAPR_HOST");
-        env::remove_var("DAPR_HTTP_PORT");
-        env::remove_var("PUBSUB_NAME");
-        env::remove_var("TOPIC_TRADING");
-        env::remove_var("TOPIC_LIQUIDITY");
-        env::remove_var("APP_PORT");
-        env::remove_var("CHAIN_ID");
-        env::remove_var("CHAIN_NAME");
-        env::remove_var("ETH_RPC_URL");
-        env::remove_var("CHAIN_VENUE");
-        env::remove_var("CHAIN_CONFIRMATIONS");
-        env::remove_var("POOL_ADDRESS");
-        env::remove_var("POOL_NAME");
+    #[test]
+    fn test_load_reads_overrides() {
+        let mut vars = required_vars();
+        vars.push(("CHAIN_VENUE", "sushiswap-v2"));
+        vars.push(("CHAIN_CONFIRMATIONS", "12"));
+        vars.push(("BUFFER_MAX_BLOCKS_IN_MEMORY", "7"));
+
+        let config = Config::load(lookup(&vars)).expect("should load");
+
+        assert_eq!(config.chains[0].venue, "sushiswap-v2");
+        assert_eq!(config.chains[0].confirmations, 12);
+        assert_eq!(config.buffer.max_blocks_in_memory, 7);
+    }
+
+    #[test]
+    fn test_load_fails_when_required_var_missing() {
+        let vars: Vec<_> = required_vars()
+            .into_iter()
+            .filter(|(k, _)| *k != "TOPIC_LIQUIDITY")
+            .collect();
+
+        let err = Config::load(lookup(&vars)).unwrap_err();
+
+        assert!(err.to_string().contains("TOPIC_LIQUIDITY"));
+    }
+
+    #[test]
+    fn test_load_rejects_invalid_pool_address() {
+        let mut vars = required_vars();
+        vars.retain(|(k, _)| *k != "POOL_ADDRESS");
+        vars.push(("POOL_ADDRESS", "not-an-address"));
+
+        let err = Config::load(lookup(&vars)).unwrap_err();
+
+        assert!(err.to_string().contains("Invalid EVM address"));
+    }
+
+    fn required_vars() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("DAPR_HOST", "evm-ingester-dapr"),
+            ("DAPR_HTTP_PORT", "3500"),
+            ("PUBSUB_NAME", "kafka-pubsub"),
+            ("TOPIC_TRADING", "dex-trading-events"),
+            ("TOPIC_LIQUIDITY", "dex-liquidity-events"),
+            ("APP_PORT", "3000"),
+            ("CHAIN_ID", "eip155:11155111"),
+            ("CHAIN_NAME", "sepolia"),
+            ("ETH_RPC_URL", "wss://eth-sepolia.example.com"),
+            ("POOL_ADDRESS", "0xBCE3c0dCA52B1e7053142749296A03f5044017dD"),
+            ("POOL_NAME", "TEST/WETH"),
+        ]
+    }
+
+    fn lookup<'a>(
+        vars: &'a [(&'static str, &'static str)],
+    ) -> impl Fn(&str) -> Result<String, env::VarError> + 'a {
+        move |key| {
+            vars.iter()
+                .rev()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string())
+                .ok_or(env::VarError::NotPresent)
+        }
     }
 }

@@ -1,8 +1,8 @@
 # Data Model
 
-Schema definitions, field semantics, and data flow for the DEX analytics pipeline. Avro schemas
-are embedded per component: `evm-ingester/internal/avro/` (producer) and
-`aggregator/src/main/resources/avro/` (consumer).
+Schema definitions, field semantics, and data flow for the DEX analytics pipeline. The four event
+schemas currently exist as copies in `evm-ingester/schemas/`, `solana-ingester/src/avro/` and
+`aggregator/src/main/resources/avro/`; `EXTRACTION-PLAN.md` consolidates them into a root `schemas/`.
 
 ## Data Flow
 

@@ -1,5 +1,5 @@
 # Build stage
-FROM rustlang/rust:nightly AS builder
+FROM rust:latest AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
@@ -11,5 +11,4 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /build/target/release/evm-ingester /app/evm-ingester
-COPY config ./config
 CMD ["/app/evm-ingester"]

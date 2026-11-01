@@ -14,27 +14,26 @@ Apache Flink pipeline processing live DEX events from both EVM and Solana chains
 - **Market analytics**: TWAP, OHLC, volume from on-chain events
 - **Multi-chain support**: EVM (Uniswap V2) and Solana (Raydium AMM v4) ingesters publishing to shared Kafka topics
 
-The pipeline, topics, and aggregations are chain-neutral; adding a chain means adding an ingester (or an ingester config
-entry), not
-changing the aggregator or analytics service.
+The pipeline, topics, and aggregations are chain-neutral; adding a chain means adding an ingester instance,
+not changing the aggregator or analytics service.
 
 **Chain families**: EVM (log-based) and Solana (account-diff-based) are implemented. Cosmos SDK (ABCI
-event-attribute-based,
-Osmosis first) is the planned third family —
-see [EVM-TO-RUST-MIGRATION.md](EVM-TO-RUST-MIGRATION.md#chain-expansion-strategy).
+event-attribute-based, Osmosis first) is the planned third family, see
+[ARCHITECTURE.md](ARCHITECTURE.md#future-work).
 
 ## Tech Stack
 
 | Component            | Language          | Purpose                                |
 |----------------------|-------------------|----------------------------------------|
-| `evm-ingester/`      | Go                | EVM listener + Chainlink pricing       |
+| `evm-ingester/`      | Rust              | EVM listener + Chainlink pricing       |
 | `solana-ingester/`   | Rust              | Solana listener + Pyth pricing         |
 | `aggregator/`        | Java 21 / Flink 2 | Stream processing (4 window pipelines) |
 | `analytics-service/` | Kotlin / Ktor     | REST API + pool health scoring         |
 | `dapr/`              | YAML              | Pub/sub component configs              |
 
-Avro schemas are embedded per component: `evm-ingester/internal/avro/`, `solana-ingester/src/avro/`, and
-`aggregator/src/main/resources/avro/`.
+Avro event schemas are currently copied per component (`evm-ingester/schemas/`, `solana-ingester/src/avro/`,
+`aggregator/src/main/resources/avro/`). [EXTRACTION-PLAN.md](EXTRACTION-PLAN.md) consolidates them into a single
+root `schemas/` directory.
 
 ## Documentation
 

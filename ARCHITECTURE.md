@@ -10,11 +10,16 @@ graph TD
         POLY[Polygon]
         PAIR[Uniswap V2 Pair<br/>WMATIC/USDC]
         CHAIN[Chainlink Price Feeds]
+        SOL[Solana]
+        RAY[Raydium AMM v4 Pool<br/>RAY/USDC]
+        PYTH[Pyth Price Feeds]
     end
 
-    subgraph "Ingester · Go"
+    subgraph "Ingesters · Rust"
         ING[evm-ingester]
+        SING[solana-ingester]
         DAPR_I[Dapr sidecar]
+        DAPR_S[Dapr sidecar]
     end
 
     subgraph "Kafka · KRaft"
@@ -43,10 +48,16 @@ graph TD
     PAIR -. "logs filtered by pair + topics" .-> ING
     CHAIN -- "RPC · latestRoundData" --> ING
 
+    SOL -- "WebSocket · logsSubscribe<br/>RPC · finalized slot" --> SING
+    RAY -. "transactions filtered by program + pool" .-> SING
+    PYTH -- "price accounts" --> SING
+
     ING --> DAPR_I
+    SING --> DAPR_S
 
     DAPR_I -- SwapEvent --> KT
     DAPR_I -- "Mint / Burn / Transfer" --> KL
+    DAPR_S -- "SwapEvent / Mint / Burn" --> KT & KL
 
     KT -- native connector --> F1
     KT -- native connector --> F4
@@ -90,11 +101,11 @@ key — are scheduled with the multi-chain schema change, not with the second in
 
 That distinction is enforced at three places, so adding a chain is additive:
 
-| Layer        | Today                                                                   | Multi-chain                                                   |
-|--------------|-------------------------------------------------------------------------|---------------------------------------------------------------|
-| Ingester     | one binary per family (`evm-ingester`, `solana-ingester`), pool in YAML | adds `cosmos-ingester`; `chain` + `name` per YAML entry       |
-| Event schema | no `chain` field                                                        | `chain` (CAIP-2 string) + `chainName` (string) on every event |
-| Flink key    | `pairAddress`                                                           | `(chain, pairAddress)`                                        |
+| Layer        | Today                                                                  | Multi-chain                                                    |
+|--------------|------------------------------------------------------------------------|----------------------------------------------------------------|
+| Ingester     | one binary per family (`evm-ingester`, `solana-ingester`), pool in env | adds `cosmos-ingester`; `CHAIN_ID` + `CHAIN_NAME` per instance |
+| Event schema | no `chain` field                                                       | `chain` (CAIP-2 string) + `chainName` (string) on every event  |
+| Flink key    | `pairAddress`                                                          | `(chain, pairAddress)`                                         |
 
 `chain` is CAIP-2 (`eip155:137`, `solana:5eykt...`, `cosmos:osmosis-1`), not EIP-155's bare
 numeric chain ID —
@@ -106,7 +117,7 @@ chain is a deployment fact (which RPC, which pair, which finality model), not an
 Reading it from env keeps one code path per chain family and makes a misconfigured chain a
 startup error rather than a mislabelled event.
 
-**Why Solana next, not another EVM chain**: the aggregator, Avro envelope, Kafka topics, and
+**Why Solana before another EVM chain**: the aggregator, Avro envelope, Kafka topics, and
 analytics service are already chain-neutral; adding Arbitrum or Base would only prove the
 seam works within one chain family. Solana forces the two abstractions that actually need
 testing — a non-EIP-155 chain identifier and a non-confirmation-count finality model — so it
@@ -133,33 +144,44 @@ USD volume is computed in the ingester using Chainlink on-chain price feeds with
 
 ### Finality Gate
 
-The ingester buffers events for N block confirmations (default 64) before publishing. This prevents reorg artifacts from entering the analytics pipeline at the cost of a small latency increase.
+The ingester buffers events for N block confirmations (`CHAIN_CONFIRMATIONS`, default 3) before publishing. This
+prevents reorg artifacts from entering the analytics pipeline at the cost of a small latency increase.
 
 ## Component Overview
 
-### evm-ingester (Go)
+### evm-ingester (Rust)
 
 Listens to a single Uniswap V2 pair contract over a WebSocket subscription (`eth_subscribe` on
 the four event topics). Enriches each raw log with the block timestamp, transaction gas data,
-token symbols, and a Chainlink USD price. Encodes to Avro and publishes via Dapr. One goroutine
-listens, one publishes through a buffered channel.
+token symbols, and a Chainlink USD price. Encodes to Avro and publishes via Dapr. A listener
+task feeds a publisher through a buffered channel.
 
 Named `evm-ingester` (not just `ingester`) because the design is one ingester binary per chain *family*, not per chain:
 a second EVM chain reuses this binary with a different RPC URL and
-pool address in its config; Solana is a different enough execution and account model (no event
+pool address in its env; Solana is a different enough execution and account model (no event
 logs, no EIP-155 chain ID, commitment-level finality) to need its own ingester,
 `solana-ingester` — see [Future Work](#future-work).
 
-**Deployment**: one Docker container today (the `live` profile), configured by
-`config/evm-ingester.yaml` — chains, pools, Dapr coordinates, and finality depth are all in that
-file, versioned and mounted read-only. Only the RPC URL is a secret, passed as `${ETH_RPC_URL}`.
-Adding another EVM chain means adding a YAML entry, not restarting with different env vars — the
-Kafka topics are shared.
+**Deployment**: one Docker container per chain (the `live` profile), configured entirely through
+environment variables: chain, pool, Dapr coordinates, topics and finality depth. No config file is
+baked into or mounted in the image, because the RPC URL embeds an API key (`ETH_RPC_URL`) and a
+config file leaked one before. Adding another EVM chain means another instance with its own env;
+the Kafka topics are shared.
 
 **Design note — enrichment happens here, not in Flink**: Chainlink reads and symbol lookups are
 cached in the ingester so the values written to the event are frozen at ingest. Flink replay
 then re-derives the same numbers deterministically; moving enrichment downstream would make
 reprocessing depend on the oracle's later state.
+
+### solana-ingester (Rust)
+
+Subscribes to Raydium AMM v4 transactions over WebSocket (`logsSubscribe`). Solana has no event
+logs, so a swap is decoded from the instruction and its fill amounts come from diffing the
+transaction's pre/post token balances. USD prices come from Pyth. Finality is a commitment level,
+not a confirmation count: the ingester polls the finalized slot over RPC and publishes buffered
+events once their slot is finalized. It publishes the same Avro events, CloudEvent envelope and
+topics as `evm-ingester`, plus a Dapr DLQ topic (`TOPIC_DLQ`). Configured by environment variables
+only. See [solana-ingester/README.md](solana-ingester/README.md).
 
 ### stream-aggregator (Flink / Java 21)
 
@@ -218,16 +240,17 @@ Input topics are keyed by `pairAddress`; output topics by `windowId`.
 
 ### Docker Compose Services
 
-| Service                                 | Purpose                                          | Port          |
-|-----------------------------------------|--------------------------------------------------|---------------|
-| kafka                                   | KRaft broker                                     | 9092          |
-| kafka-init                              | One-shot topic provisioning                      | —             |
-| redis                                   | Analytics store                                  | 6379          |
-| dapr-placement                          | Dapr placement                                   | 50006         |
-| flink-jobmanager                        | Builds and runs the Flink job (application mode) | 8081 (Web UI) |
-| flink-taskmanager                       | Flink workers                                    | —             |
-| analytics-service + sidecar             | Kotlin API                                       | 8080          |
-| evm-ingester + sidecar (`live` profile) | Go EVM listener                                  | —             |
+| Service                                 | Purpose                                                           | Port          |
+|-----------------------------------------|-------------------------------------------------------------------|---------------|
+| kafka                                   | KRaft broker                                                      | 9092          |
+| kafka-init                              | One-shot topic provisioning                                       | —             |
+| redis                                   | Analytics store                                                   | 6379          |
+| dapr-placement                          | Dapr placement                                                    | 50006         |
+| flink-jobmanager                        | Builds and runs the Flink job (application mode)                  | 8081 (Web UI) |
+| flink-taskmanager                       | Flink workers                                                     | —             |
+| analytics-service + sidecar             | Kotlin API                                                        | 8080          |
+| evm-ingester + sidecar (`live` profile) | Rust EVM listener                                                 | —             |
+| solana-ingester + sidecar               | Rust Solana listener (see `GAPS.md`: compose is missing env vars) | —             |
 
 The default `docker compose up -d` runs the full pipeline without chain access; `scripts/produce_test_events.py` feeds
 it test events. The `live` profile adds `evm-ingester` and requires an EVM WebSocket RPC endpoint (`ETH_RPC_URL`).
@@ -251,20 +274,14 @@ it test events. The `live` profile adds `evm-ingester` and requires an EVM WebSo
 ## Future Work
 
 **Chain breadth:**
-1. **Solana ingester**: a new ingester family (`solana-ingester`), not another instance of
-   `evm-ingester`. Solana has no event-log abstraction — a swap is an *instruction* inside a
-   transaction, decoded per-program (Raydium AMM v4, a constant-product venue matching Uniswap
-   V2's math). Fill amounts are not in the instruction arguments; they come from diffing the
-   transaction's `preTokenBalances`/`postTokenBalances`. Kafka, the CloudEvent envelope, Flink,
-   and the analytics service are reused unchanged. Requires one schema decision (a chain-neutral
-   field set: `chain` namespaced CAIP-2 style rather than EIP-155 numeric, and `gasUsed`/
-   `gasPrice` generalised to a fee concept) and one abstraction (finality is a commitment level,
-   not an N-confirmation count). Rust, not Go — Solana/Anchor tooling and Raydium's IDL-based
-   instruction decoding are Rust-first; Dapr's publish call is plain HTTP, so the Rust Dapr
-   SDK's alpha status doesn't factor into this choice.
+
+1. **Chain field on events**: `solana-ingester` is built and reuses Kafka, the CloudEvent
+   envelope, Flink and the analytics service unchanged. What remains is the schema decision:
+   a chain-neutral field set (`chain` as CAIP-2, and `gasUsed`/`gasPrice` generalised to a fee
+   concept) and the `(chain, pairAddress)` Flink key.
 2. **Multi-chain EVM** (Arbitrum, Base): lower priority than Solana — it adds deployments
    within a chain family the design already generalizes over, rather than testing the seam
-   itself. One YAML entry per deployment in `evm-ingester`, each with its own `chain`/`name`;
+   itself. One `evm-ingester` instance per deployment, each with its own `CHAIN_ID`/`CHAIN_NAME`;
    the aggregator needs only the key change — `(chain, pairAddress)`.
 3. **Cosmos SDK family** (`cosmos-ingester`, planned): the third chain family, Osmosis first,
    then Injective and dYdX v4. A swap arrives as ABCI event attributes on a `tm.event='Tx'`

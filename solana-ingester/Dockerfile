@@ -1,4 +1,4 @@
-FROM rust:1.75 as builder
+FROM rust:latest AS builder
 
 WORKDIR /app
 
@@ -7,7 +7,6 @@ COPY Cargo.toml Cargo.lock ./
 
 # Copy source
 COPY src ./src
-COPY config ./config
 
 # Build release binary
 RUN cargo build --release
@@ -21,11 +20,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy binary and config
+# Copy binary
 COPY --from=builder /app/target/release/solana-ingester /app/solana-ingester
-COPY --from=builder /app/config /app/config
 
-ENV CONFIG_PATH=/app/config/ingester.yaml
 ENV RUST_LOG=info
 
 EXPOSE 3001

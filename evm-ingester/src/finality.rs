@@ -6,6 +6,7 @@ use crate::events::Event;
 
 const DEFAULT_MAX_PENDING_BLOCKS: usize = 1000;
 const DEFAULT_MAX_PENDING_EVENTS: usize = 100_000;
+const DEDUP_RETENTION_BLOCKS: u64 = 100;
 
 /// Buffer holds events until their block reaches N confirmations.
 /// Events are released in block-number order once the chain tip advances
@@ -22,7 +23,10 @@ pub struct Buffer {
 
 struct BufferInner {
     pending: HashMap<u64, Vec<Box<dyn Event>>>,
+    seen_events: HashMap<String, u64>,
+    duplicates_filtered: usize,
     highest_block: u64,
+    last_finalized_block: u64,
 }
 
 /// AddResult carries both confirmed events and any evicted due to buffer limits.
@@ -42,7 +46,10 @@ impl Buffer {
             max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
             inner: Arc::new(Mutex::new(BufferInner {
                 pending: HashMap::new(),
+                seen_events: HashMap::new(),
+                duplicates_filtered: 0,
                 highest_block: 0,
+                last_finalized_block: 0,
             })),
         }
     }
@@ -75,6 +82,17 @@ impl Buffer {
         let mut inner = self.inner.lock().unwrap();
         let block_num = event.block_number() as u64;
 
+        let event_id = event.event_id().to_string();
+        if inner.seen_events.contains_key(&event_id) {
+            inner.duplicates_filtered += 1;
+            debug!(
+                "Filtered duplicate event {} at block {}",
+                event_id, block_num
+            );
+            return AddResult::default();
+        }
+        inner.seen_events.insert(event_id, block_num);
+
         inner
             .pending
             .entry(block_num)
@@ -87,6 +105,11 @@ impl Buffer {
 
         let evicted = self.evict_if_over_limit(&mut inner);
         let confirmed = self.release_confirmed(&mut inner);
+
+        if inner.highest_block >= self.required_confirmations {
+            let finalized_block = inner.highest_block - self.required_confirmations;
+            self.cleanup_dedup_cache(&mut inner, finalized_block);
+        }
 
         AddResult { confirmed, evicted }
     }
@@ -101,15 +124,47 @@ impl Buffer {
 
         let mut inner = self.inner.lock().unwrap();
 
+        // Detect reorg (chain tip should never move backward)
+        if block_number < inner.highest_block {
+            warn!(
+                "Potential reorg detected: chain tip went backward from {} to {}",
+                inner.highest_block, block_number
+            );
+        }
+
         if block_number > inner.highest_block {
             inner.highest_block = block_number;
         }
 
         let confirmed = self.release_confirmed(&mut inner);
 
+        if inner.highest_block >= self.required_confirmations {
+            let finalized_block = inner.highest_block - self.required_confirmations;
+            self.cleanup_dedup_cache(&mut inner, finalized_block);
+        }
+
         AddResult {
             confirmed,
             evicted: vec![],
+        }
+    }
+
+    /// Prunes dedup entries older than the retention window to bound memory.
+    fn cleanup_dedup_cache(&self, inner: &mut BufferInner, finalized_block: u64) {
+        if finalized_block <= inner.last_finalized_block {
+            return;
+        }
+        inner.last_finalized_block = finalized_block;
+
+        if finalized_block > DEDUP_RETENTION_BLOCKS {
+            let cleanup_threshold = finalized_block - DEDUP_RETENTION_BLOCKS;
+            inner
+                .seen_events
+                .retain(|_, &mut event_block| event_block > cleanup_threshold);
+            debug!(
+                "Cleaned up dedup cache, {} entries remain",
+                inner.seen_events.len()
+            );
         }
     }
 
@@ -136,6 +191,13 @@ impl Buffer {
     pub fn pending(&self) -> usize {
         let inner = self.inner.lock().unwrap();
         inner.pending.values().map(|v| v.len()).sum()
+    }
+
+    /// Returns the total number of duplicate events filtered since creation.
+    #[allow(dead_code)]
+    pub fn duplicates_filtered(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner.duplicates_filtered
     }
 
     fn evict_if_over_limit(&self, inner: &mut BufferInner) -> Vec<Box<dyn Event>> {
@@ -312,5 +374,55 @@ mod tests {
         let flushed = buffer.flush();
         assert_eq!(flushed.len(), 3);
         assert_eq!(buffer.pending(), 0);
+    }
+
+    #[test]
+    fn test_duplicate_filtering() {
+        let buffer = Buffer::new(10);
+
+        // Same block number => same event_id (see mock_event)
+        let result1 = buffer.add(mock_event(100));
+        assert_eq!(result1.confirmed.len(), 0);
+        assert_eq!(buffer.pending(), 1);
+        assert_eq!(buffer.duplicates_filtered(), 0);
+
+        let result2 = buffer.add(mock_event(100));
+        assert_eq!(result2.confirmed.len(), 0);
+        assert_eq!(buffer.pending(), 1); // still only 1 event, duplicate dropped
+        assert_eq!(buffer.duplicates_filtered(), 1);
+    }
+
+    #[test]
+    fn test_dedup_cache_cleanup() {
+        let buffer = Buffer::new(2);
+
+        buffer.add(mock_event(100));
+        buffer.add(mock_event(101));
+        // Block 102 - 2 = 100, so block 100 is released, finalized_block = 100
+        buffer.add(mock_event(102));
+
+        // Advance tip far enough that the retention window drops block 100's id
+        // last_finalized becomes 302 - 2 = 300; cleanup_threshold = 300 - 100 = 200
+        buffer.advance_tip(302);
+
+        // Re-adding block 100's event should NOT be filtered: its id was pruned
+        let result = buffer.add(mock_event(100));
+        assert_eq!(buffer.duplicates_filtered(), 0);
+        // It's immediately released again since it's far behind the new tip
+        assert_eq!(result.confirmed.len(), 1);
+    }
+
+    #[test]
+    fn test_reorg_detection_on_advance_tip() {
+        let buffer = Buffer::new(3);
+
+        buffer.add(mock_event(100));
+        buffer.advance_tip(103);
+        assert_eq!(buffer.pending(), 0);
+
+        // Chain tip moving backward (simulated reorg) should not panic or
+        // release anything new; highest_block should not regress.
+        let result = buffer.advance_tip(95);
+        assert_eq!(result.confirmed.len(), 0);
     }
 }

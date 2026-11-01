@@ -1,68 +1,53 @@
 # dex-stream-analytics
 
-Real-time Flink pipeline detecting MEV and scoring DEX pool health from live Uniswap V2 events.
+Real-time Flink pipeline detecting MEV and scoring DEX pool health from live DEX events (Uniswap V2 on EVM, Raydium AMM
+v4 on Solana).
 
 ## Commands
 
-Three independent toolchains, no root build/test.
+Independent toolchains, no root build/test. Run lint before finishing.
 
-**evm-ingester** (Rust)
-- Build: `cd evm-ingester && cargo build`
-- Test: `cd evm-ingester && cargo test`
-- Lint: `cd evm-ingester && cargo fmt --check && cargo clippy -- -D warnings` ← run before finishing
-
-**aggregator** (Java 21 / Flink, Maven)
-- Build: `cd aggregator && mvn -DskipTests package`
-- Test: `cd aggregator && mvn test`
-- Lint: none — Checkstyle commented out in `pom.xml`, don't re-enable
-
-**analytics-service** (Kotlin / Ktor, Gradle)
-- Build: `cd analytics-service && ./gradlew build`
-- Test: `cd analytics-service && ./gradlew test`
-- Lint: `cd analytics-service && ./gradlew ktlintCheck` ← run before finishing
-
-Full stack: `docker compose up -d --build`
+- **evm-ingester / solana-ingester** (Rust): `cd <dir> && cargo build | cargo test`, lint with
+  `cargo fmt --check && cargo clippy -- -D warnings`
+- **aggregator** (Java 21, Maven): `cd aggregator && mvn -DskipTests package | mvn test`. No lint configured.
+- **analytics-service** (Kotlin, Gradle): `cd analytics-service && ./gradlew build | ./gradlew test`, lint with
+  `./gradlew ktlintCheck`
+- Full stack: `docker compose up -d --build`
 
 ## Architecture
 
-`evm-ingester/` (Rust) → `aggregator/` (Flink/Java) → `analytics-service/` (Kotlin/Ktor), connected by Kafka with Dapr
-pub/sub. Cross-component contracts are Avro schemas and Kafka topic names. See `ARCHITECTURE.md` for diagram,
-`DATA_MODEL.md` for schemas.
+`evm-ingester/` and `solana-ingester/` (Rust) → `aggregator/` (Flink/Java) → `analytics-service/` (Kotlin/Ktor),
+connected by Kafka with Dapr pub/sub. Contracts are the Avro schemas and Kafka topic names. See `ARCHITECTURE.md`
+for the diagram, `DATA_MODEL.md` for schemas, `EXTRACTION-PLAN.md` for the planned shared ingester crate.
 
 Invariants:
 
 - Pool identity is `(chain, pairAddress)`, never bare `pairAddress`
-- Enrichment (Chainlink price, token symbols) happens in ingester at ingest time for deterministic Flink replay
-- Aggregator validates CloudEvent `type` field before Avro decode — liquidity topic carries mixed schemas
-  (Mint/Burn/Transfer)
+- Enrichment (USD price, token symbols) happens in the ingester at ingest time for deterministic Flink replay
+- The aggregator validates the CloudEvent `type` before Avro decode; the liquidity topic carries mixed schemas
 
 ## Conventions
 
 - Comment only the *why*, never the *what*
 - Pure functions in core; side effects (RPC, Kafka, Redis) at edges
-- Cross-cutting domain vocabulary lives in `CONTEXT.md` — check before introducing new terms
-- Component-specific conventions in `evm-ingester/AGENT.md`, `aggregator/AGENT.md`, `analytics-service/AGENT.md`
+- Domain vocabulary lives in `CONTEXT.md`; check it before introducing new terms
+- Component-specific conventions: `<component>/AGENT.md`
+- Config is environment variables only. No config files, since an API key leaked through one. Required config has no
+  fallback defaults and fails at startup.
+- Testing and git rules: `CLAUDE.md`. Mock only what the behavior needs.
 
-### Configuration
+### Rust ingesters (`evm-ingester`, `solana-ingester`)
 
-- No defaults for required config — fail fast at startup, no `.unwrap_or()` fallbacks
-- No redundant validation — trust type system and stdlib
-
-### Testing
-
-- Assert behavior, not data — test algorithms (gap detection, precedence), not stdlib (string parsing, HashMap)
-- Minimal mocking — only mock what's needed for the specific behavior
+- Follow Rust best practices; `cargo fmt` enforced. Apply `/functional-programming-patterns`: explicit data flow,
+  side effects confined to module boundaries.
+- Flat modules under `src/`, no nested submodules.
+- Built-in test framework with `#[cfg(test)]` modules. Inject lookups and clocks as parameters (see `Config::load`).
+- No database. Event buffering is an in-memory `FinalityBuffer` (block-based on EVM, slot-based on Solana).
 
 ## Workflow
 
 - Small commits, plain imperative messages (match history: `Add Kotlin analytics-service`)
-- Ask before adding dependencies; specify which ecosystem (`Cargo.toml`, `pom.xml`, `build.gradle.kts`)
+- Ask before adding dependencies; name the ecosystem (`Cargo.toml`, `pom.xml`, `build.gradle.kts`)
 - If doc and code disagree, surface the conflict before changing either
-- After each task, update `SESSION-HANDOFF.md` with current state and what's next
-
-### Carrying context across sessions
-
-- `PLAN.md` (root, create only for multi-session work): plan with checkboxes, delete when done
-- Decision records go in `ARCHITECTURE.md#design-decisions` — don't start a parallel log
-- `SESSION-HANDOFF.md` (root): current state + next steps, read at session start
-- Git history: small commits make `git log`/`git diff` double as context
+- Current state and next steps live in `SESSION-HANDOFF.md`; known gaps in `GAPS.md`; decisions in
+  `ARCHITECTURE.md#design-decisions`

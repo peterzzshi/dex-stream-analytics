@@ -1,7 +1,7 @@
 # Context
 
 Glossary for the DEX Stream Analytics domain. Terms only — no implementation detail,
-no decisions. Decisions live in `docs/adr/`.
+no decisions. Decisions live in `ARCHITECTURE.md`.
 
 ## Chain
 
@@ -21,14 +21,15 @@ a pair address alone does not identify a pool, because the same address string c
 collide across chains with different address formats (EVM `0x...` vs. Solana
 base58), and the same token pair legitimately has different addresses per chain.
 
-_Monitored pools today: WMATIC/USDC on Polygon. Next chain family: Solana (see
-[ARCHITECTURE.md](ARCHITECTURE.md#future-work))._
+_Monitored pools today: WMATIC/USDC on Polygon and RAY/USDC on Solana. Planned chain family:
+Cosmos (see [ARCHITECTURE.md](ARCHITECTURE.md#future-work))._
 
 ## Event
 
-A single decoded contract log from one pool: a `Swap`, `Mint`, `Burn`, or `Transfer`.
-An event's identity is `(blockNumber, txHash, logIndex)` — globally unique within a
-chain. The same tuple on two chains is two different events.
+A single decoded occurrence from one pool: a `Swap`, `Mint`, `Burn`, or `Transfer` (an EVM
+contract log, or a decoded Solana instruction). An event's identity is
+`(blockNumber, txHash, logIndex)` — globally unique within a chain; on Solana the block is a
+slot and the index is the instruction index. The same tuple on two chains is two different events.
 
 ## Window
 

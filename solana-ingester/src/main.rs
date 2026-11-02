@@ -3,13 +3,13 @@ mod blockchain;
 mod config;
 mod decoder;
 mod events;
-mod finality;
 mod oracle;
 mod publisher;
 mod rpc_retry;
 mod symbols;
 
 use anyhow::{Context, Result};
+use dex_ingester_common::{FinalityBuffer, FinalityMode};
 use solana_client::rpc_response::RpcLogsResponse;
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
 use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
@@ -22,7 +22,6 @@ use crate::blockchain::RpcClient;
 use crate::config::{Config, PoolConfig};
 use crate::decoder::decode_instruction;
 use crate::events::Event;
-use crate::finality::FinalityBuffer;
 use crate::oracle::PythOracle;
 use crate::publisher::Publisher;
 use crate::rpc_retry::RetryableRpcClient;
@@ -33,7 +32,7 @@ struct SharedResources {
     rpc_client: Arc<RetryableRpcClient>,
     oracle: Arc<tokio::sync::Mutex<PythOracle>>,
     symbols: Arc<tokio::sync::Mutex<SymbolCache>>,
-    finality_buffer: Arc<tokio::sync::Mutex<FinalityBuffer>>,
+    finality_buffer: Arc<FinalityBuffer>,
     publisher: Arc<Publisher>,
     config: Arc<Config>,
 }
@@ -107,10 +106,10 @@ async fn main() -> Result<()> {
     )));
 
     // Initialize finality buffer
-    let finality_buffer = Arc::new(tokio::sync::Mutex::new(FinalityBuffer::new(
-        config.solana.commitment.clone(),
-        config.solana.finality_buffer_size,
-    )));
+    let finality_buffer = Arc::new(
+        FinalityBuffer::new(FinalityMode::External)
+            .with_event_limit(config.solana.finality_buffer_size),
+    );
 
     // Initialize publisher
     let publisher = Arc::new(Publisher::new(
@@ -185,7 +184,7 @@ async fn main() -> Result<()> {
     info!("Shutdown signal received");
 
     // Flush finality buffer on shutdown
-    let pending_events = shared.finality_buffer.lock().await.flush();
+    let pending_events = shared.finality_buffer.flush();
     info!("Flushing {} pending events", pending_events.len());
 
     for event in pending_events {
@@ -199,7 +198,7 @@ async fn main() -> Result<()> {
 }
 
 async fn finality_polling_task(
-    finality_buffer: Arc<tokio::sync::Mutex<FinalityBuffer>>,
+    finality_buffer: Arc<FinalityBuffer>,
     publisher: Arc<Publisher>,
     rpc_client: Arc<RetryableRpcClient>,
     interval_secs: u64,
@@ -212,8 +211,7 @@ async fn finality_polling_task(
 
         match rpc_client.get_finalized_slot().await {
             Ok(finalized_slot) => {
-                let mut buffer = finality_buffer.lock().await;
-                let released = buffer.advance_finalized_slot(finalized_slot);
+                let released = finality_buffer.advance_finalized(finalized_slot);
 
                 if !released.is_empty() {
                     debug!(
@@ -290,7 +288,7 @@ async fn process_log(
     rpc_client: &Arc<RetryableRpcClient>,
     oracle: &Arc<tokio::sync::Mutex<PythOracle>>,
     symbols: &Arc<tokio::sync::Mutex<SymbolCache>>,
-    finality_buffer: &Arc<tokio::sync::Mutex<FinalityBuffer>>,
+    finality_buffer: &Arc<FinalityBuffer>,
     publisher: &Arc<Publisher>,
     config: &Arc<Config>,
     pool_address: &str,
@@ -399,7 +397,7 @@ async fn process_instruction(
     signature: Signature,
     slot: u64,
     block_time: i64,
-    finality_buffer: &Arc<tokio::sync::Mutex<FinalityBuffer>>,
+    finality_buffer: &Arc<FinalityBuffer>,
     publisher: &Arc<Publisher>,
     config: &Arc<Config>,
     pool_address: &str,
@@ -621,15 +619,14 @@ async fn process_instruction(
 
     // Add to finality buffer and advance if needed
     let finalized_slot = rpc_client.get_finalized_slot().await.unwrap_or(0);
-    let mut buffer = finality_buffer.lock().await;
 
     // Advance buffer to release finalized events
-    let released = buffer.advance_finalized_slot(finalized_slot);
+    let released = finality_buffer.advance_finalized(finalized_slot);
     for released_event in released {
         publisher.publish_event(released_event).await?;
     }
 
-    let result = buffer.add(event, finalized_slot);
+    let result = finality_buffer.add(event, Some(finalized_slot));
 
     // Publish confirmed events
     for confirmed_event in result.confirmed {

@@ -1,4 +1,8 @@
+mod finality;
+
 use serde::Serialize;
+
+pub use finality::{AddResult, FinalityBuffer, FinalityMode};
 
 pub const SWAP_SCHEMA: &str = include_str!("../../schemas/SwapEvent.avsc");
 pub const MINT_SCHEMA: &str = include_str!("../../schemas/MintEvent.avsc");
@@ -167,8 +171,8 @@ mod tests {
     }
 
     fn struct_field_names<T: serde::Serialize>(value: &T) -> Vec<String> {
-        let v = serde_json::to_value(value).expect("serialize must succeed");
-        let mut keys: Vec<String> = v
+        let json_value = serde_json::to_value(value).expect("serialize must succeed");
+        let mut keys: Vec<String> = json_value
             .as_object()
             .expect("must be object")
             .keys()

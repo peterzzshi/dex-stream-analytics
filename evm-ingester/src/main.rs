@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use dex_ingester_common::Event;
+use dex_ingester_common::{Event, FinalityBuffer, FinalityMode};
 use ethers::prelude::*;
 use ethers::providers::Ws;
 use std::sync::Arc;
@@ -14,7 +14,6 @@ mod config;
 mod decoder;
 mod dlq;
 mod events;
-mod finality;
 mod listener;
 mod oracle;
 mod publisher;
@@ -22,7 +21,6 @@ mod rpc_retry;
 
 use config::Config;
 use dlq::FileSink;
-use finality::Buffer;
 use listener::Listener;
 use oracle::ChainlinkOracle;
 use publisher::DaprPublisher;
@@ -124,7 +122,9 @@ async fn run() -> Result<()> {
                 "Starting pool listener"
             );
 
-            let buffer = Arc::new(Buffer::new(chain_config.confirmations));
+            let buffer = Arc::new(FinalityBuffer::new(FinalityMode::Depth(
+                chain_config.confirmations,
+            )));
 
             let listener = Listener::new(
                 chain_config.chain.clone(),
@@ -163,7 +163,7 @@ async fn run() -> Result<()> {
                 loop {
                     tokio::select! {
                         Some(event) = event_rx.recv() => {
-                            let result = buffer_clone.add(event);
+                            let result = buffer_clone.add(event, None);
 
                             for evicted in result.evicted {
                                 if let Err(e) = dlq_tx_clone.send(evicted).await {

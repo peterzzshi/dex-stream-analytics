@@ -1,9 +1,11 @@
 [package]
 name = "solana-ingester"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+rust-version = "1.85.0"
 
 [dependencies]
+dex-ingester-common = { path = "../common" }
 # Solana RPC
 solana-client = "2.0"
 solana-sdk = "2.0"
@@ -14,10 +16,10 @@ solana-account-decoder = "2.0"
 pyth-solana-receiver-sdk = "2.0"
 
 # Avro serialization
-apache-avro = "0.22.0"
+apache-avro = "0.16"
 
 # HTTP client (Dapr publish)
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12", features = ["json"] }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }

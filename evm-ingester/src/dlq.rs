@@ -1,4 +1,5 @@
 use anyhow::Result;
+use dex_ingester_common::Event;
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::Path;
@@ -8,14 +9,10 @@ use tokio::sync::mpsc;
 use tokio::time;
 use tracing::{error, info};
 
-use crate::events::Event;
-
 const DEFAULT_DLQ_DIR: &str = "./dlq";
 const DEFAULT_FLUSH_SIZE: usize = 100;
 const DEFAULT_FLUSH_PERIOD_SECS: u64 = 5;
 
-/// FileSink writes DLQ events to disk as newline-delimited JSON.
-/// Events are batched and flushed periodically or when batch size is reached.
 pub struct FileSink {
     buffer: Arc<Mutex<Buffer>>,
     flush_size: usize,
@@ -29,8 +26,6 @@ struct Buffer {
 }
 
 impl FileSink {
-    /// Creates a DLQ file sink that writes to the specified directory.
-    /// Events are written to a timestamped file in newline-delimited JSON format.
     pub fn new(dir: Option<String>) -> Result<Self> {
         let dir = dir.unwrap_or_else(|| DEFAULT_DLQ_DIR.to_string());
 
@@ -59,7 +54,6 @@ impl FileSink {
         })
     }
 
-    /// Starts the background periodic flusher.
     pub fn start_flusher(&mut self) {
         let (tx, mut rx) = mpsc::channel(1);
         self.shutdown_tx = Some(tx);
@@ -76,20 +70,22 @@ impl FileSink {
                             error!("Periodic DLQ flush failed: {}", e);
                         }
                     }
-                    _ = rx.recv() => {
-                        break;
-                    }
+                    _ = rx.recv() => { break; }
                 }
             }
         });
     }
 
-    /// Writes an event to the buffer. Returns immediately; actual disk write is async.
-    pub fn write(&self, event: &dyn Event) -> Result<()> {
+    pub fn write(&self, event: &Event) -> Result<()> {
         let mut buffer = self.buffer.lock().unwrap();
 
-        let event_map = event.to_map();
-        let json = serde_json::to_string(&event_map)?;
+        let meta = event.meta();
+        let json = serde_json::to_string(&serde_json::json!({
+            "eventId": meta.event_id,
+            "blockNumber": meta.block_number,
+            "pairAddress": meta.pair_address,
+            "type": meta.cloudevent_type,
+        }))?;
         buffer.events.push(json);
 
         if buffer.events.len() >= self.flush_size {
@@ -99,7 +95,6 @@ impl FileSink {
         Ok(())
     }
 
-    /// Flushes all buffered events to disk.
     pub fn flush(&self) -> Result<()> {
         Self::flush_buffer(&self.buffer)
     }
@@ -119,21 +114,17 @@ impl FileSink {
         }
 
         buffer.file.sync_all()?;
-
         info!("Flushed {} DLQ events to disk", buffer.events.len());
-
         buffer.events.clear();
         Ok(())
     }
 
-    /// Closes the sink, flushing remaining events.
     pub async fn close(mut self) -> Result<()> {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(()).await;
         }
 
         self.flush()?;
-
         Ok(())
     }
 }
@@ -141,27 +132,23 @@ impl FileSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{BaseEvent, EventType, SwapEvent};
+    use dex_ingester_common::{Event, SwapEvent};
     use tempfile::TempDir;
 
-    fn mock_event() -> SwapEvent {
-        SwapEvent {
-            base: BaseEvent {
-                event_type: EventType::Swap,
-                event_id: "test-event".to_string(),
-                block_number: 100,
-                block_timestamp: 1000000,
-                transaction_hash: "0xabc".to_string(),
-                log_index: 0,
-                chain: "eip155:1".to_string(),
-                chain_name: "Ethereum".to_string(),
-                pair_address: "0x123".to_string(),
-                token0: "0xtoken0".to_string(),
-                token1: "0xtoken1".to_string(),
-                token0_symbol: None,
-                token1_symbol: None,
-                event_timestamp: 1000000,
-            },
+    fn mock_event() -> Event {
+        Event::Swap(SwapEvent {
+            event_id: "test-event".to_string(),
+            block_number: 100,
+            block_timestamp: 1000000,
+            transaction_hash: "0xabc".to_string(),
+            log_index: 0,
+            chain: "eip155:1".to_string(),
+            chain_name: "Ethereum".to_string(),
+            pair_address: "0x123".to_string(),
+            token0: "0xtoken0".to_string(),
+            token1: "0xtoken1".to_string(),
+            token0_symbol: None,
+            token1_symbol: None,
             sender: "0xsender".to_string(),
             recipient: "0xrecipient".to_string(),
             amount0_in: "100".to_string(),
@@ -172,7 +159,8 @@ mod tests {
             volume_usd: Some(100.0),
             gas_used: 150000,
             gas_price: "50".to_string(),
-        }
+            event_timestamp: 1000000,
+        })
     }
 
     #[test]
@@ -182,10 +170,8 @@ mod tests {
 
         let event = mock_event();
         sink.write(&event)?;
-
         sink.flush()?;
 
-        // Check file was created and contains data
         let files: Vec<_> = fs::read_dir(temp_dir.path())?.collect();
         assert_eq!(files.len(), 1);
 

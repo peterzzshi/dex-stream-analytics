@@ -1,9 +1,9 @@
 use crate::config::Pool;
 use crate::decoder;
-use crate::events::{BaseEvent, BurnEvent, Event, EventType, MintEvent, SwapEvent, TransferEvent};
 use crate::oracle::PriceOracle;
 use crate::rpc_retry::RetryableProvider;
 use anyhow::{Context, Result};
+use dex_ingester_common::{BurnEvent, Event, MintEvent, SwapEvent, TransferEvent};
 use ethers::prelude::*;
 use ethers::types::{Address, Log, U256};
 use std::str::FromStr;
@@ -35,7 +35,7 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         }
     }
 
-    pub async fn process_log(&self, log: Log) -> Result<Box<dyn Event>> {
+    pub async fn process_log(&self, log: Log) -> Result<Event> {
         if log.topics.is_empty() {
             anyhow::bail!("log has no topics");
         }
@@ -55,17 +55,13 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         }
     }
 
-    async fn parse_swap_event(&self, log: Log) -> Result<Box<dyn Event>> {
+    async fn parse_swap_event(&self, log: Log) -> Result<Event> {
         let swap_data = decoder::parse_swap_log(&log)?;
 
         let block_number = log.block_number.context("log missing block number")?;
         let block_timestamp = self.fetch_block_timestamp(block_number).await?;
+        let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
 
-        let base = self.build_base_event(&log, EventType::Swap, block_timestamp)?;
-
-        let _pair_address = Address::from_str(&self.pool.pair_address)?;
-
-        // Simplified: use 18 decimals for both tokens as default
         let token0_decimals = 18u8;
         let token1_decimals = 18u8;
 
@@ -100,8 +96,19 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             .context("log missing transaction hash")?;
         let gas_used = self.fetch_gas_used(tx_hash).await.unwrap_or(0) as i64;
 
-        let swap_event = SwapEvent {
-            base,
+        Ok(Event::Swap(SwapEvent {
+            event_id,
+            block_number: block_number.as_u64() as i64,
+            block_timestamp,
+            transaction_hash: format!("{:?}", tx_hash),
+            log_index,
+            chain: self.chain.clone(),
+            chain_name: self.chain_name.clone(),
+            pair_address: self.pool.pair_address.clone(),
+            token0: format!("{:?}", token0_address),
+            token1: format!("{:?}", token1_address),
+            token0_symbol: None,
+            token1_symbol: None,
             sender: format!("{:?}", swap_data.sender),
             recipient: format!("{:?}", swap_data.recipient),
             amount0_in: swap_data.amount0_in.to_string(),
@@ -112,110 +119,119 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             volume_usd,
             gas_used,
             gas_price: "0".to_string(),
-        };
-
-        Ok(Box::new(swap_event))
+            event_timestamp,
+        }))
     }
 
-    async fn parse_mint_event(&self, log: Log) -> Result<Box<dyn Event>> {
+    async fn parse_mint_event(&self, log: Log) -> Result<Event> {
         let mint_data = decoder::parse_mint_log(&log)?;
 
         let block_number = log.block_number.context("log missing block number")?;
         let block_timestamp = self.fetch_block_timestamp(block_number).await?;
+        let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
 
-        let base = self.build_base_event(&log, EventType::Mint, block_timestamp)?;
-
-        let mint_event = MintEvent {
-            base,
+        Ok(Event::Mint(MintEvent {
+            event_id,
+            block_number: block_number.as_u64() as i64,
+            block_timestamp,
+            transaction_hash: format!(
+                "{:?}",
+                log.transaction_hash
+                    .context("log missing transaction hash")?
+            ),
+            log_index,
+            chain: self.chain.clone(),
+            chain_name: self.chain_name.clone(),
+            pair_address: self.pool.pair_address.clone(),
+            token0: format!("{:?}", Address::zero()),
+            token1: format!("{:?}", Address::zero()),
+            token0_symbol: None,
+            token1_symbol: None,
             sender: format!("{:?}", mint_data.sender),
             amount0: mint_data.amount0.to_string(),
             amount1: mint_data.amount1.to_string(),
-        };
-
-        Ok(Box::new(mint_event))
+            event_timestamp,
+        }))
     }
 
-    async fn parse_burn_event(&self, log: Log) -> Result<Box<dyn Event>> {
+    async fn parse_burn_event(&self, log: Log) -> Result<Event> {
         let burn_data = decoder::parse_burn_log(&log)?;
 
         let block_number = log.block_number.context("log missing block number")?;
         let block_timestamp = self.fetch_block_timestamp(block_number).await?;
+        let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
 
-        let base = self.build_base_event(&log, EventType::Burn, block_timestamp)?;
-
-        let burn_event = BurnEvent {
-            base,
+        Ok(Event::Burn(BurnEvent {
+            event_id,
+            block_number: block_number.as_u64() as i64,
+            block_timestamp,
+            transaction_hash: format!(
+                "{:?}",
+                log.transaction_hash
+                    .context("log missing transaction hash")?
+            ),
+            log_index,
+            chain: self.chain.clone(),
+            chain_name: self.chain_name.clone(),
+            pair_address: self.pool.pair_address.clone(),
+            token0: format!("{:?}", Address::zero()),
+            token1: format!("{:?}", Address::zero()),
+            token0_symbol: None,
+            token1_symbol: None,
             sender: format!("{:?}", burn_data.sender),
             recipient: format!("{:?}", burn_data.recipient),
             amount0: burn_data.amount0.to_string(),
             amount1: burn_data.amount1.to_string(),
-        };
-
-        Ok(Box::new(burn_event))
+            event_timestamp,
+        }))
     }
 
-    async fn parse_transfer_event(&self, log: Log) -> Result<Box<dyn Event>> {
+    async fn parse_transfer_event(&self, log: Log) -> Result<Event> {
         let transfer_data = decoder::parse_transfer_log(&log)?;
 
         let block_number = log.block_number.context("log missing block number")?;
         let block_timestamp = self.fetch_block_timestamp(block_number).await?;
+        let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
 
-        let base = self.build_base_event(&log, EventType::Transfer, block_timestamp)?;
-
-        let transfer_event = TransferEvent {
-            base,
+        Ok(Event::Transfer(TransferEvent {
+            event_id,
+            block_number: block_number.as_u64() as i64,
+            block_timestamp,
+            transaction_hash: format!(
+                "{:?}",
+                log.transaction_hash
+                    .context("log missing transaction hash")?
+            ),
+            log_index,
+            chain: self.chain.clone(),
+            chain_name: self.chain_name.clone(),
+            pair_address: self.pool.pair_address.clone(),
+            token0: format!("{:?}", Address::zero()),
+            token1: format!("{:?}", Address::zero()),
+            token0_symbol: None,
+            token1_symbol: None,
             from: format!("{:?}", transfer_data.from),
             to: format!("{:?}", transfer_data.to),
             value: transfer_data.value.to_string(),
-        };
-
-        Ok(Box::new(transfer_event))
+            event_timestamp,
+        }))
     }
 
-    fn build_base_event(
-        &self,
-        log: &Log,
-        event_type: EventType,
-        block_timestamp: i64,
-    ) -> Result<BaseEvent> {
-        let block_number = log.block_number.context("log missing block number")?;
+    fn extract_log_fields(&self, log: &Log) -> Result<(String, i32, i64)> {
         let tx_hash = log
             .transaction_hash
             .context("log missing transaction hash")?;
         let log_index = log.log_index.context("log missing log index")?;
-
-        let token0_address = Address::zero();
-        let token1_address = Address::zero();
-
         let event_id = format!("{:?}:{}", tx_hash, log_index);
         let event_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-
-        Ok(BaseEvent {
-            event_type,
-            event_id,
-            block_number: block_number.as_u64() as i64,
-            block_timestamp,
-            transaction_hash: format!("{:?}", tx_hash),
-            log_index: log_index.as_u32() as i32,
-            chain: self.chain.clone(),
-            chain_name: self.chain_name.clone(),
-            pair_address: self.pool.pair_address.clone(),
-            token0: format!("{:?}", token0_address),
-            token1: format!("{:?}", token1_address),
-            token0_symbol: None,
-            token1_symbol: None,
-            event_timestamp,
-        })
+        Ok((event_id, log_index.as_u32() as i32, event_timestamp))
     }
 
-    /// Fetch token0 and token1 addresses from the Uniswap V2 pair contract
     async fn fetch_token_addresses(&self, pair_address: Address) -> Result<(Address, Address)> {
-        // token0() selector: 0x0dfe1681
         let token0_selector = &ethers::utils::keccak256(b"token0()")[..4];
-        // token1() selector: 0xd21220a7
         let token1_selector = &ethers::utils::keccak256(b"token1()")[..4];
 
         let call_token0 = ethers::types::transaction::eip2718::TypedTransaction::Legacy(
@@ -248,7 +264,6 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             .await
             .context("failed to call token1()")?;
 
-        // Decode address from 32-byte response (last 20 bytes)
         if token0_result.len() < 32 || token1_result.len() < 32 {
             anyhow::bail!("invalid response length from token0/token1 calls");
         }
@@ -259,7 +274,6 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         Ok((token0_address, token1_address))
     }
 
-    /// Fetch gas_used from transaction receipt
     async fn fetch_gas_used(&self, tx_hash: H256) -> Result<u64> {
         let receipt = self
             .rpc
@@ -273,7 +287,6 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         }
     }
 
-    /// Fetch block timestamp from blockchain
     async fn fetch_block_timestamp(&self, block_number: U64) -> Result<i64> {
         let block = self
             .rpc
@@ -305,7 +318,6 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         let vol0 = non_zero_amount(amount0_in, amount0_out);
         let vol1 = non_zero_amount(amount1_in, amount1_out);
 
-        // Priority: stablecoin token1 > stablecoin token0 > oracle token0 > oracle token1 > swap price
         if let Some(1.0) = token1_price {
             return Some(to_usd(&vol1, token1_decimals, 1.0));
         }
@@ -353,7 +365,6 @@ fn ratio_to_f64(numerator: &U256, denominator: &U256, num_decimals: u8, denom_de
     }
 
     let decimal_diff = denom_decimals as i32 - num_decimals as i32;
-
     let num_f64 = u256_to_f64(numerator);
     let denom_f64 = u256_to_f64(denominator);
 
@@ -361,14 +372,10 @@ fn ratio_to_f64(numerator: &U256, denominator: &U256, num_decimals: u8, denom_de
         return 0.0;
     }
 
-    let ratio = num_f64 / denom_f64;
-    let adjustment = 10_f64.powi(decimal_diff);
-
-    ratio * adjustment
+    (num_f64 / denom_f64) * 10_f64.powi(decimal_diff)
 }
 
 fn u256_to_f64(value: &U256) -> f64 {
-    // Convert U256 to f64 - may lose precision for very large values
     let mut result = 0.0;
     let mut multiplier = 1.0;
 
@@ -390,9 +397,7 @@ fn non_zero_amount(amount_in: &U256, amount_out: &U256) -> U256 {
 }
 
 fn to_usd(amount: &U256, decimals: u8, usd_price: f64) -> f64 {
-    let amount_f64 = u256_to_f64(amount);
-    let divisor = 10_f64.powi(decimals as i32);
-    (amount_f64 / divisor) * usd_price
+    (u256_to_f64(amount) / 10_f64.powi(decimals as i32)) * usd_price
 }
 
 #[cfg(test)]
@@ -401,29 +406,25 @@ mod tests {
 
     #[test]
     fn test_calculate_swap_price_token0_to_token1() {
-        let amount0_in = U256::from(1000000000000000000u64); // 1 token0 (18 decimals)
+        let amount0_in = U256::from(1000000000000000000u64);
         let amount1_in = U256::zero();
         let amount0_out = U256::zero();
-        let amount1_out = U256::from(2000000u64); // 2 token1 (6 decimals)
+        let amount1_out = U256::from(2000000u64);
 
         let price =
             calculate_swap_price(&amount0_in, &amount1_in, &amount0_out, &amount1_out, 18, 6);
-
-        // price = amount1_out / amount0_in * 10^(18-6) = 2/1 * 10^12 = 2.0
         assert!((price - 2.0).abs() < 0.0001);
     }
 
     #[test]
     fn test_calculate_swap_price_token1_to_token0() {
         let amount0_in = U256::zero();
-        let amount1_in = U256::from(2000000u64); // 2 token1 (6 decimals)
-        let amount0_out = U256::from(1000000000000000000u64); // 1 token0 (18 decimals)
+        let amount1_in = U256::from(2000000u64);
+        let amount0_out = U256::from(1000000000000000000u64);
         let amount1_out = U256::zero();
 
         let price =
             calculate_swap_price(&amount0_in, &amount1_in, &amount0_out, &amount1_out, 18, 6);
-
-        // price = amount1_in / amount0_out * 10^(18-6) = 2/1 * 10^12 = 2.0
         assert!((price - 2.0).abs() < 0.0001);
     }
 
@@ -439,11 +440,11 @@ mod tests {
 
     #[test]
     fn test_to_usd() {
-        let amount = U256::from(1000000u64); // 1 USDC (6 decimals)
+        let amount = U256::from(1000000u64);
         let usd = to_usd(&amount, 6, 1.0);
         assert!((usd - 1.0).abs() < 0.0001);
 
-        let amount_eth = U256::from(1000000000000000000u64); // 1 ETH (18 decimals)
+        let amount_eth = U256::from(1000000000000000000u64);
         let usd_eth = to_usd(&amount_eth, 18, 2000.0);
         assert!((usd_eth - 2000.0).abs() < 0.0001);
     }

@@ -1,6 +1,6 @@
 use crate::events::{BurnEvent, Event, MintEvent, SwapEvent};
 use anyhow::{Context, Result};
-use apache_avro::{Schema, Writer, to_value};
+use apache_avro::{to_value, Schema, Writer};
 use reqwest::Client;
 use serde_json::json;
 use std::time::Duration;
@@ -62,6 +62,7 @@ struct AvroSchemas {
     swap_schema: Schema,
     mint_schema: Schema,
     burn_schema: Schema,
+    transfer_schema: Schema,
 }
 
 impl Publisher {
@@ -77,13 +78,15 @@ impl Publisher {
     ) -> Result<Self> {
         let dapr_url = format!("http://{}:{}", dapr_host, dapr_port);
 
-        // Load embedded Avro schemas
-        let swap_schema = Schema::parse_str(include_str!("avro/SwapEvent.avsc"))
+        // Load schemas from the shared common crate
+        let swap_schema = Schema::parse_str(dex_ingester_common::SWAP_SCHEMA)
             .context("Failed to parse SwapEvent schema")?;
-        let mint_schema = Schema::parse_str(include_str!("avro/MintEvent.avsc"))
+        let mint_schema = Schema::parse_str(dex_ingester_common::MINT_SCHEMA)
             .context("Failed to parse MintEvent schema")?;
-        let burn_schema = Schema::parse_str(include_str!("avro/BurnEvent.avsc"))
+        let burn_schema = Schema::parse_str(dex_ingester_common::BURN_SCHEMA)
             .context("Failed to parse BurnEvent schema")?;
+        let transfer_schema = Schema::parse_str(dex_ingester_common::TRANSFER_SCHEMA)
+            .context("Failed to parse TransferEvent schema")?;
 
         Ok(Self {
             client: Client::new(),
@@ -98,6 +101,7 @@ impl Publisher {
                 swap_schema,
                 mint_schema,
                 burn_schema,
+                transfer_schema,
             },
         })
     }
@@ -205,9 +209,10 @@ impl Publisher {
     /// Publish failed event to DLQ with error metadata
     pub async fn publish_to_dlq(&self, event: Event, error_msg: String) -> Result<()> {
         let (event_id, pool_address) = match &event {
-            Event::Swap(e) => (e.base.event_id.clone(), e.base.pair_address.clone()),
-            Event::Mint(e) => (e.base.event_id.clone(), e.base.pair_address.clone()),
-            Event::Burn(e) => (e.base.event_id.clone(), e.base.pair_address.clone()),
+            Event::Swap(e) => (e.event_id.clone(), e.pair_address.clone()),
+            Event::Mint(e) => (e.event_id.clone(), e.pair_address.clone()),
+            Event::Burn(e) => (e.event_id.clone(), e.pair_address.clone()),
+            Event::Transfer(e) => (e.event_id.clone(), e.pair_address.clone()),
         };
 
         let dlq_payload = json!({
@@ -262,8 +267,8 @@ impl Publisher {
                 (
                     &self.trading_topic,
                     binary,
-                    e.base.event_id.clone(),
-                    e.base.pair_address.clone(),
+                    e.event_id.clone(),
+                    e.pair_address.clone(),
                     "com.dex.events.swap",
                 )
             }
@@ -272,8 +277,8 @@ impl Publisher {
                 (
                     &self.liquidity_topic,
                     binary,
-                    e.base.event_id.clone(),
-                    e.base.pair_address.clone(),
+                    e.event_id.clone(),
+                    e.pair_address.clone(),
                     "com.dex.events.mint",
                 )
             }
@@ -282,9 +287,19 @@ impl Publisher {
                 (
                     &self.liquidity_topic,
                     binary,
-                    e.base.event_id.clone(),
-                    e.base.pair_address.clone(),
+                    e.event_id.clone(),
+                    e.pair_address.clone(),
                     "com.dex.events.burn",
+                )
+            }
+            Event::Transfer(e) => {
+                let binary = self.encode_transfer(e)?;
+                (
+                    &self.liquidity_topic,
+                    binary,
+                    e.event_id.clone(),
+                    e.pair_address.clone(),
+                    "com.dex.events.transfer",
                 )
             }
         };
@@ -340,6 +355,10 @@ impl Publisher {
         self.encode_event(event, &self.schemas.burn_schema, "BurnEvent")
     }
 
+    fn encode_transfer(&self, event: &dex_ingester_common::TransferEvent) -> Result<Vec<u8>> {
+        self.encode_event(event, &self.schemas.transfer_schema, "TransferEvent")
+    }
+
     fn encode_event<T: serde::Serialize>(
         &self,
         event: &T,
@@ -349,7 +368,7 @@ impl Publisher {
         let value = to_value(event)
             .with_context(|| format!("Failed to convert {} to Avro value", event_type))?;
 
-        let mut writer = Writer::new(schema, Vec::new())?;
+        let mut writer = Writer::new(schema, Vec::new());
         writer
             .append_value_ref(&value)
             .with_context(|| format!("Failed to encode {} to Avro", event_type))?;
@@ -360,7 +379,7 @@ impl Publisher {
 
 // Add base64 encoding support
 mod base64 {
-    use base64::{Engine as _, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine as _};
 
     pub fn encode(data: &[u8]) -> String {
         general_purpose::STANDARD.encode(data)
@@ -370,26 +389,6 @@ mod base64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::BaseEvent;
-
-    fn mock_base_event() -> BaseEvent {
-        BaseEvent {
-            event_type: "Swap".to_string(),
-            event_id: "test:0".to_string(),
-            block_number: 100,
-            block_timestamp: 1000000,
-            transaction_hash: "test_tx".to_string(),
-            log_index: 0,
-            chain: "solana:test".to_string(),
-            chain_name: "Solana".to_string(),
-            pair_address: "test_pair".to_string(),
-            token0: "token0".to_string(),
-            token1: "token1".to_string(),
-            token0_symbol: Some("TK0".to_string()),
-            token1_symbol: Some("TK1".to_string()),
-            event_timestamp: 1000000,
-        }
-    }
 
     #[test]
     fn test_swap_encoding() {
@@ -406,7 +405,18 @@ mod tests {
         .unwrap();
 
         let swap = SwapEvent {
-            base: mock_base_event(),
+            event_id: "test:0".to_string(),
+            block_number: 100,
+            block_timestamp: 1000000,
+            transaction_hash: "test_tx".to_string(),
+            log_index: 0,
+            chain: "solana:test".to_string(),
+            chain_name: "Solana".to_string(),
+            pair_address: "test_pair".to_string(),
+            token0: "token0".to_string(),
+            token1: "token1".to_string(),
+            token0_symbol: Some("TK0".to_string()),
+            token1_symbol: Some("TK1".to_string()),
             sender: "sender".to_string(),
             recipient: "recipient".to_string(),
             amount0_in: "1000".to_string(),
@@ -417,6 +427,7 @@ mod tests {
             volume_usd: Some(1000.0),
             gas_used: 5000,
             gas_price: "1".to_string(),
+            event_timestamp: 1000000,
         };
 
         let encoded = publisher

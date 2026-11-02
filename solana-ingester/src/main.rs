@@ -485,7 +485,7 @@ async fn process_instruction(
         .unwrap_or(&pool_address.to_string())
         .clone();
 
-    let event_timestamp = chrono::Utc::now().timestamp_millis();
+    let event_timestamp = chrono::Utc::now().timestamp();
 
     // Fetch token symbols (Gap #1 fix)
     let symbol_cache = symbols.lock().await;
@@ -535,22 +535,18 @@ async fn process_instruction(
             };
 
             Event::Swap(crate::events::SwapEvent {
-                base: crate::events::BaseEvent {
-                    event_type: "Swap".to_string(),
-                    event_id: format!("{}:{}", signature, idx),
-                    block_number: slot as i64,
-                    block_timestamp: block_time,
-                    transaction_hash: signature.to_string(),
-                    log_index: idx as i32,
-                    chain: config.solana.chain.clone(),
-                    chain_name: config.solana.chain_name.clone(),
-                    pair_address: pool_address.to_string(),
-                    token0: token0.clone(),
-                    token1: token1.clone(),
-                    token0_symbol,
-                    token1_symbol,
-                    event_timestamp,
-                },
+                event_id: format!("{}:{}", signature, idx),
+                block_number: slot as i64,
+                block_timestamp: block_time,
+                transaction_hash: signature.to_string(),
+                log_index: idx as i32,
+                chain: config.solana.chain.clone(),
+                chain_name: config.solana.chain_name.clone(),
+                pair_address: pool_address.to_string(),
+                token0: token0.clone(),
+                token1: token1.clone(),
+                token0_symbol,
+                token1_symbol,
                 sender: user_authority.clone(),
                 recipient: user_authority,
                 amount0_in: amount0_in.to_string(),
@@ -561,6 +557,7 @@ async fn process_instruction(
                 volume_usd,
                 gas_used: meta.compute_units_consumed.clone().unwrap_or(0) as i64,
                 gas_price: "0".to_string(),
+                event_timestamp,
             })
         }
         crate::decoder::DecodedInstruction::Deposit { .. } => {
@@ -573,26 +570,22 @@ async fn process_instruction(
             .context("Failed to compute liquidity amounts")?;
 
             Event::Mint(crate::events::MintEvent {
-                base: crate::events::BaseEvent {
-                    event_type: "Mint".to_string(),
-                    event_id: format!("{}:{}", signature, idx),
-                    block_number: slot as i64,
-                    block_timestamp: block_time,
-                    transaction_hash: signature.to_string(),
-                    log_index: idx as i32,
-                    chain: config.solana.chain.clone(),
-                    chain_name: config.solana.chain_name.clone(),
-                    pair_address: pool_address.to_string(),
-                    token0: token0.clone(),
-                    token1: token1.clone(),
-                    token0_symbol: token0_symbol.clone(),
-                    token1_symbol: token1_symbol.clone(),
-                    event_timestamp,
-                },
+                event_id: format!("{}:{}", signature, idx),
+                block_number: slot as i64,
+                block_timestamp: block_time,
+                transaction_hash: signature.to_string(),
+                log_index: idx as i32,
+                chain: config.solana.chain.clone(),
+                chain_name: config.solana.chain_name.clone(),
+                pair_address: pool_address.to_string(),
+                token0: token0.clone(),
+                token1: token1.clone(),
+                token0_symbol: token0_symbol.clone(),
+                token1_symbol: token1_symbol.clone(),
                 sender: user_authority,
                 amount0: amount0.to_string(),
                 amount1: amount1.to_string(),
-                liquidity: "0".to_string(),
+                event_timestamp,
             })
         }
         crate::decoder::DecodedInstruction::Withdraw { .. } => {
@@ -605,26 +598,23 @@ async fn process_instruction(
             .context("Failed to compute liquidity amounts")?;
 
             Event::Burn(crate::events::BurnEvent {
-                base: crate::events::BaseEvent {
-                    event_type: "Burn".to_string(),
-                    event_id: format!("{}:{}", signature, idx),
-                    block_number: slot as i64,
-                    block_timestamp: block_time,
-                    transaction_hash: signature.to_string(),
-                    log_index: idx as i32,
-                    chain: config.solana.chain.clone(),
-                    chain_name: config.solana.chain_name.clone(),
-                    pair_address: pool_address.to_string(),
-                    token0: token0.clone(),
-                    token1: token1.clone(),
-                    token0_symbol,
-                    token1_symbol,
-                    event_timestamp,
-                },
-                sender: user_authority,
+                event_id: format!("{}:{}", signature, idx),
+                block_number: slot as i64,
+                block_timestamp: block_time,
+                transaction_hash: signature.to_string(),
+                log_index: idx as i32,
+                chain: config.solana.chain.clone(),
+                chain_name: config.solana.chain_name.clone(),
+                pair_address: pool_address.to_string(),
+                token0: token0.clone(),
+                token1: token1.clone(),
+                token0_symbol,
+                token1_symbol,
+                sender: user_authority.clone(),
+                recipient: user_authority,
                 amount0: amount0.to_string(),
                 amount1: amount1.to_string(),
-                liquidity: "0".to_string(),
+                event_timestamp,
             })
         }
     };

@@ -1,8 +1,8 @@
 use crate::avro::AvroEncoder;
 use crate::config::Config;
-use crate::events::{Event, EventType};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use dex_ingester_common::Event;
 use reqwest::Client;
 use serde_json::json;
 use std::sync::Arc;
@@ -42,44 +42,45 @@ impl DaprPublisher {
         })
     }
 
-    fn get_topic(&self, event_type: &EventType) -> &str {
-        match event_type {
-            EventType::Swap => &self.trading_topic,
-            EventType::Mint | EventType::Burn | EventType::Transfer => &self.liquidity_topic,
+    fn get_topic(&self, event: &Event) -> &str {
+        match event {
+            Event::Swap(_) => &self.trading_topic,
+            Event::Mint(_) | Event::Burn(_) | Event::Transfer(_) => &self.liquidity_topic,
         }
     }
 
-    pub async fn publish(&self, event: &dyn Event) {
-        let event_id = event.event_id();
-        let event_type = event.event_type();
-        let pair = event.pair_address();
+    pub async fn publish(&self, event: &Event) {
+        let meta = event.meta();
 
         match self.create_cloud_event(event).await {
             Ok((cloud_event_json, topic)) => {
                 let url = self.build_publish_url(&topic);
 
-                if let Err(e) = self.do_publish(&url, &cloud_event_json, pair).await {
+                if let Err(e) = self
+                    .do_publish(&url, &cloud_event_json, &meta.pair_address)
+                    .await
+                {
                     warn!(
-                        event_id = %event_id,
-                        event_type = ?event_type,
-                        pair = %pair,
+                        event_id = %meta.event_id,
+                        event_type = meta.cloudevent_type,
+                        pair = %meta.pair_address,
                         error = %e,
                         "Publish failed"
                     );
                 } else {
                     info!(
-                        event_id = %event_id,
-                        event_type = ?event_type,
-                        pair = %pair,
+                        event_id = %meta.event_id,
+                        event_type = meta.cloudevent_type,
+                        pair = %meta.pair_address,
                         "Event published"
                     );
                 }
             }
             Err(e) => {
                 error!(
-                    event_id = %event_id,
-                    event_type = ?event_type,
-                    pair = %pair,
+                    event_id = %meta.event_id,
+                    event_type = meta.cloudevent_type,
+                    pair = %meta.pair_address,
                     error = %e,
                     "Failed to prepare payload"
                 );
@@ -87,9 +88,9 @@ impl DaprPublisher {
         }
     }
 
-    async fn create_cloud_event(&self, event: &dyn Event) -> Result<(String, String)> {
-        let event_type = event.event_type();
-        let topic = self.get_topic(&event_type).to_string();
+    async fn create_cloud_event(&self, event: &Event) -> Result<(String, String)> {
+        let meta = event.meta();
+        let topic = self.get_topic(event).to_string();
 
         let avro_payload = self
             .encoder
@@ -98,12 +99,12 @@ impl DaprPublisher {
 
         let cloud_event = json!({
             "specversion": "1.0",
-            "id": event.event_id(),
+            "id": meta.event_id,
             "source": self.source,
-            "type": event_type.cloud_event_type(),
+            "type": meta.cloudevent_type,
             "datacontenttype": "application/avro-binary",
-            "subject": event.pair_address(),
-            "time": chrono::DateTime::from_timestamp(event.event_timestamp(), 0)
+            "subject": meta.pair_address,
+            "time": chrono::DateTime::from_timestamp(meta.event_timestamp, 0)
                 .unwrap_or_default()
                 .to_rfc3339(),
             "data_base64": BASE64.encode(&avro_payload),
@@ -146,7 +147,6 @@ impl DaprPublisher {
 mod tests {
     use super::*;
     use crate::config::{AppConfig, Chain, DaprConfig, Pool, TopicsConfig};
-    use crate::events::EventType;
 
     fn test_config() -> Config {
         Config {
@@ -175,14 +175,6 @@ mod tests {
                 retry: Default::default(),
             }],
         }
-    }
-
-    #[test]
-    fn test_event_type_topic_routing() {
-        assert_eq!(EventType::Swap.topic(), "trading");
-        assert_eq!(EventType::Mint.topic(), "liquidity");
-        assert_eq!(EventType::Burn.topic(), "liquidity");
-        assert_eq!(EventType::Transfer.topic(), "liquidity");
     }
 
     #[test]

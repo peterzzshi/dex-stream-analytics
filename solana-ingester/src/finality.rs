@@ -41,7 +41,12 @@ impl FinalityBuffer {
     /// Returns immediately confirmed events (if buffer is below finalized slot)
     /// and any evicted events (if buffer size limit exceeded)
     pub fn add(&mut self, event: Event, finalized_slot: u64) -> AddResult {
-        let slot = event.slot() as u64;
+        let slot = match &event {
+            Event::Swap(e) => e.block_number,
+            Event::Mint(e) => e.block_number,
+            Event::Burn(e) => e.block_number,
+            Event::Transfer(e) => e.block_number,
+        } as u64;
 
         let event_id = self.get_event_id(&event);
 
@@ -217,9 +222,10 @@ impl FinalityBuffer {
 
     fn get_event_id(&self, event: &Event) -> String {
         match event {
-            Event::Swap(e) => e.base.event_id.clone(),
-            Event::Mint(e) => e.base.event_id.clone(),
-            Event::Burn(e) => e.base.event_id.clone(),
+            Event::Swap(e) => e.event_id.clone(),
+            Event::Mint(e) => e.event_id.clone(),
+            Event::Burn(e) => e.event_id.clone(),
+            Event::Transfer(e) => e.event_id.clone(),
         }
     }
 }
@@ -236,26 +242,22 @@ impl Default for AddResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{BaseEvent, Event, SwapEvent};
+    use crate::events::{Event, SwapEvent};
 
     fn mock_swap_event(slot: i64) -> Event {
         Event::Swap(SwapEvent {
-            base: BaseEvent {
-                event_type: "Swap".to_string(),
-                event_id: format!("test:{}", slot),
-                block_number: slot,
-                block_timestamp: 1000000,
-                transaction_hash: "test_tx".to_string(),
-                log_index: 0,
-                chain: "solana:test".to_string(),
-                chain_name: "Solana".to_string(),
-                pair_address: "test_pair".to_string(),
-                token0: "token0".to_string(),
-                token1: "token1".to_string(),
-                token0_symbol: Some("TK0".to_string()),
-                token1_symbol: Some("TK1".to_string()),
-                event_timestamp: 1000000,
-            },
+            event_id: format!("test:{}", slot),
+            block_number: slot,
+            block_timestamp: 1000000,
+            transaction_hash: "test_tx".to_string(),
+            log_index: 0,
+            chain: "solana:test".to_string(),
+            chain_name: "Solana".to_string(),
+            pair_address: "test_pair".to_string(),
+            token0: "token0".to_string(),
+            token1: "token1".to_string(),
+            token0_symbol: Some("TK0".to_string()),
+            token1_symbol: Some("TK1".to_string()),
             sender: "sender".to_string(),
             recipient: "recipient".to_string(),
             amount0_in: "1000".to_string(),
@@ -266,6 +268,7 @@ mod tests {
             volume_usd: Some(1000.0),
             gas_used: 5000,
             gas_price: "1".to_string(),
+            event_timestamp: 1000000,
         })
     }
 

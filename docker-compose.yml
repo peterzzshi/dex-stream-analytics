@@ -58,8 +58,8 @@ services:
   # Requires ETH_RPC_URL in .env
   evm-ingester:
     build:
-      context: ./evm-ingester
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: evm-ingester/Dockerfile
     container_name: evm-ingester
     environment:
       # Secrets
@@ -117,8 +117,8 @@ services:
   # Requires SOLANA_RPC_URL in .env
   solana-ingester:
     build:
-      context: ./solana-ingester
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: solana-ingester/Dockerfile
     container_name: solana-ingester
     environment:
       # Secrets
@@ -178,8 +178,8 @@ services:
   # the StreamProcessor job on startup (no manual `flink run` needed).
   flink-jobmanager:
     build:
-      context: ./aggregator
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: aggregator/Dockerfile
     image: dex-analytics-aggregator:latest
     container_name: flink-jobmanager
     command: standalone-job --job-classname com.web3analytics.StreamProcessor

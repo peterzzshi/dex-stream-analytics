@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "common",
+]
+exclude = [
+    "evm-ingester",
+    "solana-ingester",
+]
+resolver = "2"

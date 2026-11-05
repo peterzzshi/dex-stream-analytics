@@ -2,15 +2,15 @@
 name = "solana-ingester"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85.0"
+rust-version = "1.98.1"
 
 [dependencies]
 dex-ingester-common = { path = "../common" }
 # Solana RPC
-solana-client = "2.0"
-solana-sdk = "2.0"
-solana-transaction-status = "2.0"
-solana-account-decoder = "2.0"
+solana-client = "4.4.0"
+solana-sdk = "5.0.0"
+solana-transaction-status = "4.4.0"
+solana-account-decoder = "4.4.0"
 
 # Pyth oracle (modern receiver SDK)
 pyth-solana-receiver-sdk = "2.0"
@@ -32,7 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 
 # Random number generation (for retry jitter)
-rand = "0.8"
+rand = "0.10.3"
 
 # Base58 (Solana addresses)
 bs58 = "0.5"
@@ -40,12 +40,9 @@ bs58 = "0.5"
 # Time
 chrono = "0.4"
 
-# Base64 encoding
-base64 = "0.23.1"
-
 # HTTP server for health checks
 warp = { version = "0.4.3", features = ["server"] }
 anchor-lang = "1.2.1"
 
 # SPL Token Metadata
-mpl-token-metadata = "4.1"
+mpl-token-metadata = "5.1.1"

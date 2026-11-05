@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use dex_ingester_common::{Secret, SharedConfig};
+use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use std::env;
+use std::str::FromStr;
 
-use crate::file_config::FileConfig;
+use crate::file_config::{parse_feed_id, FileConfig, FEED_ID_BYTES};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -40,10 +42,16 @@ pub struct PoolConfig {
     pub token1: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PythFeed {
+    pub account: Pubkey,
+    pub feed_id: [u8; FEED_ID_BYTES],
+}
+
 #[derive(Debug, Clone)]
 pub struct PythConfig {
     pub max_age_seconds: i64,
-    pub price_feeds: HashMap<String, String>,
+    pub price_feeds: HashMap<String, PythFeed>,
     pub stablecoins: Vec<String>,
 }
 
@@ -109,13 +117,33 @@ impl Config {
             })
             .collect();
 
+        // validate() guarantees pyth_account and pyth_feed_id are present together.
+        let price_feeds = file
+            .tokens
+            .iter()
+            .filter(|t| t.pyth_account.is_some())
+            .map(|t| {
+                let account = t.pyth_account.as_deref().expect("filtered on is_some");
+                let feed_id = t
+                    .pyth_feed_id
+                    .as_deref()
+                    .with_context(|| format!("Token {} has no pyth_feed_id", t.symbol))?;
+                Ok((
+                    t.mint.clone(),
+                    PythFeed {
+                        account: Pubkey::from_str(account).with_context(|| {
+                            format!("Invalid Pyth account for {}: {account}", t.symbol)
+                        })?,
+                        feed_id: parse_feed_id(feed_id)
+                            .with_context(|| format!("Invalid Pyth feed id for {}", t.symbol))?,
+                    },
+                ))
+            })
+            .collect::<Result<HashMap<String, PythFeed>>>()?;
+
         let pyth = PythConfig {
             max_age_seconds: file.pyth.max_age_seconds,
-            price_feeds: file
-                .tokens
-                .iter()
-                .filter_map(|t| Some((t.mint.clone(), t.pyth_account.clone()?)))
-                .collect(),
+            price_feeds,
             stablecoins: file
                 .tokens
                 .iter()
@@ -183,9 +211,14 @@ mod tests {
         assert_eq!(config.tokens.known_symbols[SOL], "SOL");
         assert_eq!(config.tokens.known_symbols[USDC], "USDC");
         assert_eq!(config.pyth.stablecoins, [USDC]);
+        let sol_feed = config.pyth.price_feeds.get(SOL).expect("SOL feed");
         assert_eq!(
-            config.pyth.price_feeds.get(SOL).map(String::as_str),
-            Some("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE")
+            sol_feed.account.to_string(),
+            "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE"
+        );
+        assert_eq!(
+            crate::file_config::feed_id_hex(&sol_feed.feed_id),
+            "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
         );
         assert!(!config.pyth.price_feeds.contains_key(USDC));
     }

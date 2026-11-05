@@ -94,7 +94,7 @@ Represents a token trade on the pair.
 | sender / recipient                              | string        | Initiator vs output receiver (differ for router swaps) |
 | amount0In / amount1In / amount0Out / amount1Out | string        | Wei amounts                                            |
 | price                                           | double        | Execution price (token1 / token0)                      |
-| volumeUSD                                       | double?       | USD volume via Chainlink oracle                        |
+| volumeUSD                                       | double?       | USD volume via the chain's oracle                      |
 | gasUsed / gasPrice                              | long / string | Transaction-level gas metrics                          |
 | eventTimestamp                                  | long          | Ingester capture time                                  |
 

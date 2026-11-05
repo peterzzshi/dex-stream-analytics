@@ -204,7 +204,10 @@ reprocessing depend on the oracle's later state.
 Subscribes to Raydium AMM v4 transactions over WebSocket (`logsSubscribe`). Solana has no event
 logs, so a swap is decoded from the instruction and its fill amounts come from diffing the
 transaction's pre/post token balances. USD prices come from Pyth; token symbols from the SPL
-token metadata program. Finality is a commitment level, not a confirmation count: the ingester
+token metadata program. A price account's address alone proves nothing — any Pyth receiver
+account deserializes — so the oracle also checks that the feed id inside the account is the one
+configured for that token, and only accepts fully Wormhole-verified updates. Finality is a
+commitment level, not a confirmation count: the ingester
 polls the finalized slot over RPC and publishes buffered events once their slot is finalized. It
 publishes the same Avro events, CloudEvent envelope and topics as `evm-ingester`, plus a Dapr DLQ
 topic (`TOPIC_DLQ`). Chain, programs, tokens and pools come from `solana.toml`; secrets and

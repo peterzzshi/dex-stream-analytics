@@ -806,16 +806,15 @@ async fn process_instruction(
     let finalized_slot = rpc_client.get_finalized_slot().await.unwrap_or(0);
 
     // Advance buffer to release finalized events
-    let released = match finality_buffer.advance_finalized(finalized_slot) {
-        Ok(events) => events,
-        Err(e) => {
+    let released = finality_buffer
+        .advance_finalized(finalized_slot)
+        .unwrap_or_else(|e| {
             error!(
                 "advance_finalized failed (misconfigured buffer mode): {}",
                 e
             );
             vec![]
-        }
-    };
+        });
     for released_event in released {
         if let Err(e) = publisher.publish(&released_event).await {
             exit_sidecar_unreachable(e);

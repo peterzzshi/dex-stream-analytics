@@ -39,9 +39,13 @@ Two sources; `src/config.rs` is the source of truth for both.
 `FINALITY_POLL_INTERVAL_SECS`, `APP_PORT`.
 
 **Config file** (`CONFIG_FILE`, `solana.toml` at the repo root): chain identity, program addresses, Pyth max age, a
-`[[tokens]]` table (mint, symbol, Pyth account, stablecoin flag) and `[[pools]]`. Pool names are derived from token
-symbols. Unknown keys, malformed addresses, duplicate mints or pools, and pools referencing undeclared tokens fail at
-startup.
+`[[tokens]]` table (mint, symbol, Pyth account, Pyth feed id, stablecoin flag) and `[[pools]]`. Pool names are derived
+from token symbols. Unknown keys, malformed addresses, duplicate mints or pools, and pools referencing undeclared
+tokens fail at startup.
+
+A token's `pyth_account` is a Pyth receiver `PriceUpdateV2` account and `pyth_feed_id` is the 64-hex id that account
+must hold; the oracle reads the id out of the account and rejects the price on mismatch. Receiver accounts are
+per-poster, so an address can go stale — the feed id is the stable identity.
 
 **Validation at startup:**
 
@@ -49,7 +53,9 @@ startup.
 - Invalid Solana addresses (base58, 32-44 chars) → fail, field name in error
 - Duplicate mints (case-sensitive) → fail
 - Pool references undeclared token → fail
-- Stablecoin with pyth_account → fail (pick one)
+- Stablecoin with pyth_account or pyth_feed_id → fail (pick one)
+- pyth_account without pyth_feed_id, or the reverse → fail
+- pyth_feed_id that is not 64 hex characters → fail
 - No pools configured → fail
 
 RPC retry, publish retry, and the reconnect delay are constants in code.

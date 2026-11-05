@@ -2,7 +2,6 @@ mod balances;
 mod blockchain;
 mod config;
 mod decoder;
-mod events;
 mod file_config;
 mod oracle;
 mod rpc_retry;
@@ -10,7 +9,8 @@ mod symbols;
 
 use anyhow::{Context, Result};
 use dex_ingester_common::{
-    FinalityBuffer, FinalityMode, Publisher, PublisherConfig, RetryConfig, SidecarUnreachable,
+    BurnEvent, Event, FinalityBuffer, FinalityMode, MintEvent, Publisher, PublisherConfig,
+    RetryConfig, SidecarUnreachable, SwapEvent,
 };
 use solana_client::rpc_response::RpcLogsResponse;
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
@@ -23,7 +23,6 @@ use tracing::{debug, error, info, warn};
 use crate::blockchain::RpcClient;
 use crate::config::{Config, PoolConfig};
 use crate::decoder::decode_instruction;
-use crate::events::Event;
 use crate::oracle::PythOracle;
 use crate::rpc_retry::RetryableRpcClient;
 use crate::symbols::SymbolCache;
@@ -708,7 +707,7 @@ async fn process_instruction(
                 balances::volume_usd(amount1_in, decimals1, token1_price)
             };
 
-            Event::Swap(crate::events::SwapEvent {
+            Event::Swap(SwapEvent {
                 event_id: format!("{}:{}", signature, idx),
                 block_number: slot as i64,
                 block_timestamp: block_time,
@@ -743,7 +742,7 @@ async fn process_instruction(
             )
             .context("Failed to compute liquidity amounts")?;
 
-            Event::Mint(crate::events::MintEvent {
+            Event::Mint(MintEvent {
                 event_id: format!("{}:{}", signature, idx),
                 block_number: slot as i64,
                 block_timestamp: block_time,
@@ -771,7 +770,7 @@ async fn process_instruction(
             )
             .context("Failed to compute liquidity amounts")?;
 
-            Event::Burn(crate::events::BurnEvent {
+            Event::Burn(BurnEvent {
                 event_id: format!("{}:{}", signature, idx),
                 block_number: slot as i64,
                 block_timestamp: block_time,

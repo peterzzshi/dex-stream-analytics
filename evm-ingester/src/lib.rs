@@ -1,6 +1,5 @@
 pub mod config;
 pub mod decoder;
-pub mod events;
 pub mod file_config;
 pub mod listener;
 pub mod oracle;

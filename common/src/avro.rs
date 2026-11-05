@@ -1,71 +1,78 @@
-use crate::{Event, BURN_SCHEMA, MINT_SCHEMA, SWAP_SCHEMA, TRANSFER_SCHEMA};
+use crate::{
+    BurnEvent, Event, MintEvent, SwapEvent, TransferEvent, BURN_SCHEMA, MINT_SCHEMA, SWAP_SCHEMA,
+    TRANSFER_SCHEMA,
+};
 use anyhow::{Context, Result};
 use apache_avro::{to_value, Schema, Writer};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
 enum EventType {
-    Swap,
-    Mint,
-    Burn,
-    Transfer,
+    Swap = 0,
+    Mint = 1,
+    Burn = 2,
+    Transfer = 3,
 }
 
-impl EventType {
-    fn name(self) -> &'static str {
-        match self {
-            EventType::Swap => "SwapEvent",
-            EventType::Mint => "MintEvent",
-            EventType::Burn => "BurnEvent",
-            EventType::Transfer => "TransferEvent",
-        }
-    }
+/// Binds an event struct to the one schema it may be encoded under, so `encode_event`
+/// cannot be handed a struct that disagrees with its `EventType`.
+trait AvroEvent: serde::Serialize {
+    const EVENT_TYPE: EventType;
+}
+
+impl AvroEvent for SwapEvent {
+    const EVENT_TYPE: EventType = EventType::Swap;
+}
+
+impl AvroEvent for MintEvent {
+    const EVENT_TYPE: EventType = EventType::Mint;
+}
+
+impl AvroEvent for BurnEvent {
+    const EVENT_TYPE: EventType = EventType::Burn;
+}
+
+impl AvroEvent for TransferEvent {
+    const EVENT_TYPE: EventType = EventType::Transfer;
 }
 
 pub struct AvroEncoder {
-    swap_schema: Schema,
-    mint_schema: Schema,
-    burn_schema: Schema,
-    transfer_schema: Schema,
+    // Indexed by `EventType as usize`; the order must match the discriminants above.
+    schemas: [Schema; 4],
 }
 
 impl AvroEncoder {
     pub fn new() -> Result<Self> {
-        Ok(Self {
-            swap_schema: Schema::parse_str(SWAP_SCHEMA).context("parse SwapEvent schema")?,
-            mint_schema: Schema::parse_str(MINT_SCHEMA).context("parse MintEvent schema")?,
-            burn_schema: Schema::parse_str(BURN_SCHEMA).context("parse BurnEvent schema")?,
-            transfer_schema: Schema::parse_str(TRANSFER_SCHEMA)
-                .context("parse TransferEvent schema")?,
-        })
+        let schemas = [
+            Schema::parse_str(SWAP_SCHEMA).context("parse SwapEvent schema")?,
+            Schema::parse_str(MINT_SCHEMA).context("parse MintEvent schema")?,
+            Schema::parse_str(BURN_SCHEMA).context("parse BurnEvent schema")?,
+            Schema::parse_str(TRANSFER_SCHEMA).context("parse TransferEvent schema")?,
+        ];
+        Ok(Self { schemas })
     }
 
     pub fn encode(&self, event: &Event) -> Result<Vec<u8>> {
         match event {
-            Event::Swap(e) => self.encode_event(e, EventType::Swap),
-            Event::Mint(e) => self.encode_event(e, EventType::Mint),
-            Event::Burn(e) => self.encode_event(e, EventType::Burn),
-            Event::Transfer(e) => self.encode_event(e, EventType::Transfer),
+            Event::Swap(e) => self.encode_event(e),
+            Event::Mint(e) => self.encode_event(e),
+            Event::Burn(e) => self.encode_event(e),
+            Event::Transfer(e) => self.encode_event(e),
         }
     }
 
     fn schema(&self, event_type: EventType) -> &Schema {
-        match event_type {
-            EventType::Swap => &self.swap_schema,
-            EventType::Mint => &self.mint_schema,
-            EventType::Burn => &self.burn_schema,
-            EventType::Transfer => &self.transfer_schema,
-        }
+        &self.schemas[event_type as usize]
     }
 
-    fn encode_event<T: serde::Serialize>(
-        &self,
-        event: &T,
-        event_type: EventType,
-    ) -> Result<Vec<u8>> {
-        let name = event_type.name();
+    fn encode_event<T: AvroEvent>(&self, event: &T) -> Result<Vec<u8>> {
+        let schema = self.schema(T::EVENT_TYPE);
+        // The record name comes from the parsed schema rather than a hand-written literal
+        // that could drift from the .avsc file.
+        let name = schema.name().map_or("event", |name| name.name());
         let value =
             to_value(event).with_context(|| format!("failed to convert {name} to Avro value"))?;
-        let mut writer = Writer::new(self.schema(event_type), Vec::new())
+        let mut writer = Writer::new(schema, Vec::new())
             .with_context(|| format!("failed to create {name} Avro writer"))?;
         writer
             .append_value_ref(&value)
@@ -80,6 +87,26 @@ impl AvroEncoder {
 mod tests {
     use super::*;
     use apache_avro::Reader;
+
+    #[test]
+    fn each_event_type_resolves_to_its_own_schema() {
+        // Guards the positional array: reordering `EventType` or `schemas` without the other
+        // would silently encode every event under the wrong schema.
+        let encoder = AvroEncoder::new().expect("encoder");
+        let name = |event_type| {
+            encoder
+                .schema(event_type)
+                .name()
+                .expect("record schema")
+                .name()
+                .to_owned()
+        };
+
+        assert_eq!(name(EventType::Swap), "SwapEvent");
+        assert_eq!(name(EventType::Mint), "MintEvent");
+        assert_eq!(name(EventType::Burn), "BurnEvent");
+        assert_eq!(name(EventType::Transfer), "TransferEvent");
+    }
 
     #[test]
     fn swap_event_encodes_to_a_readable_record() {

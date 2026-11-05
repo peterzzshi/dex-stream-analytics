@@ -9,7 +9,9 @@ dex-ingester-common = { path = "../common" }
 # Solana RPC
 solana-client = "4.4.0"
 solana-sdk = "5.0.0"
-solana-transaction-status = "4.4.0"
+solana-transaction-status = { version = "4.4.0", features = ["agave-unstable-api"] }
+solana-transaction-status-client-types = { version = "4.4.0", features = ["agave-unstable-api"] }
+solana-commitment-config = "3.1.1"
 solana-account-decoder = "4.4.0"
 
 # Pyth oracle (modern receiver SDK)

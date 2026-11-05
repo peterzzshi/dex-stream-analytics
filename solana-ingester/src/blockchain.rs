@@ -6,7 +6,8 @@ use solana_client::{
     rpc_config::{RpcTransactionConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter},
     rpc_response::RpcLogsResponse,
 };
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
+use solana_commitment_config::CommitmentConfig;
+use solana_sdk::{pubkey::Pubkey, signature::Signature};
 use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -145,6 +146,7 @@ impl RpcClient {
             encoding: Some(UiTransactionEncoding::JsonParsed),
             commitment: Some(self.commitment),
             max_supported_transaction_version: Some(1),
+            min_context_slot: None,
         };
 
         let tx = self

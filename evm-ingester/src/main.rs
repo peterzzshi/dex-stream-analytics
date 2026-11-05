@@ -13,7 +13,6 @@ use tracing_subscriber::FmtSubscriber;
 
 mod config;
 mod decoder;
-mod events;
 mod file_config;
 mod listener;
 mod oracle;

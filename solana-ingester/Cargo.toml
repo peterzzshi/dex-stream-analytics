@@ -15,28 +15,21 @@ solana-account-decoder = "2.0"
 # Pyth oracle (modern receiver SDK)
 pyth-solana-receiver-sdk = "2.0"
 
-# Avro serialization
-apache-avro = "0.16"
-
-# HTTP client (Dapr publish)
-reqwest = { version = "0.12", features = ["json"] }
-
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
 futures-util = "0.3"
 
 # Config / serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "=0.8.23"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
-anyhow = "1.0"
-thiserror = "2.0.21"
+anyhow = "1"
 
 # Random number generation (for retry jitter)
 rand = "0.8"

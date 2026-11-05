@@ -9,37 +9,51 @@ publishing to shared Kafka topics with EVM events.
 ## Run
 
 ```bash
-docker compose --profile live up -d solana-ingester
+docker compose up -d solana-ingester solana-ingester-dapr
 ```
 
 Set `SOLANA_RPC_URL` in `.env`. It embeds an API key, so it is never written to a file in the repo or image.
 
-## Configuration
-
-Environment variables only; `src/config.rs` is the source of truth. Groups:
-
-- **Dapr and topics:** `DAPR_HOST`, `DAPR_HTTP_PORT`, `PUBSUB_NAME`, `TOPIC_TRADING`, `TOPIC_LIQUIDITY`, `TOPIC_DLQ`
-- **Chain:** `CHAIN_ID` (CAIP-2), `CHAIN_NAME`, `CHAIN_VENUE`, `SOLANA_RPC_URL`, `SOLANA_COMMITMENT`
-- **Pools:** `POOL_{n}_NAME`, `_ADDRESS`, `_TOKEN0`, `_TOKEN1`, `_VAULT0_INDEX`, `_VAULT1_INDEX`,
-  `_USER_AUTHORITY_INDEX` (a single pool can use the unindexed `POOL_*` names)
-- **Programs and oracle:** `RAYDIUM_AMM_V4_PROGRAM`, `TOKEN_METADATA_PROGRAM`, `PYTH_PRICE_FEEDS`,
-  `PYTH_STABLECOINS`, `PYTH_MAX_AGE_SECONDS`, `KNOWN_TOKEN_SYMBOLS`
-- **Finality and retry:** `FINALITY_BUFFER_SIZE`, `FINALITY_POLL_INTERVAL_SECS`, `PUBLISH_*`, `RPC_*`,
-  `RECONNECT_DELAY_*`, `APP_PORT`
-
-All are required except the four `RPC_*` retry settings, which have defaults.
-
 ## Design Notes
 
 - **Instruction decoding**: Raydium uses 8-byte discriminators. After matching, data is deserialized via borsh.
+  Instructions arrive as `PartiallyDecoded` from routers; swaps reach the pool as inner CPI, not top-level.
+- **Vault resolution**: Vaults resolved per instruction by matching AMM authority against token accounts in
+  `pre/postTokenBalances` (instruction forms place vaults at different positions; fixed indices cannot work).
 - **Balance diffs**: Actual amounts come from `meta.preTokenBalances` vs `meta.postTokenBalances` for vault accounts,
   not instruction data (handles slippage, fees).
-- **Finality gate**: Events buffer until their slot reaches the configured commitment (`finalized` = 13s latency, zero
-  reorg risk).
+- **Finality gate**: Events buffer until their slot reaches the configured commitment. Subscription uses `confirmed`;
+  fetch uses `finalized` (unreconciled). `finalized` = 13s latency, zero reorg risk.
 - **Enrichment at ingest**: Pyth pricing and SPL token metadata resolved here, so Flink reprocessing reproduces the same
   values.
-- **Failure visibility**: Publishes retry with backoff, then fall back to the DLQ topic (`TOPIC_DLQ`). Decode failures
-  are logged. No metrics.
+- **Failure visibility**: Publishes retry with backoff, then fall back to the DLQ topic (`TOPIC_DLQ`). If the Dapr
+  sidecar itself is unreachable, the process logs and exits rather than degrading silently. Decode failures are
+  logged. No metrics.
+
+## Configuration
+
+Two sources; `src/config.rs` is the source of truth for both.
+
+**Environment variables** (all required): `CONFIG_FILE`, `DAPR_HOST`, `DAPR_HTTP_PORT`, `PUBSUB_NAME`, `TOPIC_TRADING`,
+`TOPIC_LIQUIDITY`, `TOPIC_DLQ`, `SOLANA_RPC_URL`, `SOLANA_COMMITMENT`, `FINALITY_BUFFER_SIZE`,
+`FINALITY_POLL_INTERVAL_SECS`, `APP_PORT`.
+
+**Config file** (`CONFIG_FILE`, `solana.toml` at the repo root): chain identity, program addresses, Pyth max age, a
+`[[tokens]]` table (mint, symbol, Pyth account, stablecoin flag) and `[[pools]]`. Pool names are derived from token
+symbols. Unknown keys, malformed addresses, duplicate mints or pools, and pools referencing undeclared tokens fail at
+startup.
+
+**Validation at startup:**
+
+- Unknown TOML keys → fail
+- Invalid Solana addresses (base58, 32-44 chars) → fail, field name in error
+- Duplicate mints (case-sensitive) → fail
+- Pool references undeclared token → fail
+- Stablecoin with pyth_account → fail (pick one)
+- No pools configured → fail
+
+RPC retry, publish retry, and the reconnect delay are constants in code.
+`SOLANA_RPC_URL` is a secret and is redacted from `Debug` output.
 
 ## Test
 

@@ -6,7 +6,7 @@ no decisions. Decisions live in `ARCHITECTURE.md`.
 ## Chain
 
 The blockchain whose logs are being ingested. Carried as `chain`, a **CAIP-2**
-namespaced identifier (`eip155:137` for Polygon, `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp...`
+namespaced identifier (`eip155:1` for Ethereum mainnet, `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp...`
 for Solana mainnet-beta) with `chainName` as a display-only label. EIP-155's bare
 numeric chain ID is EVM-only and cannot name a Solana cluster, so CAIP-2 is the
 canonical form even while only one EVM chain is monitored. A chain is a source of
@@ -21,8 +21,8 @@ a pair address alone does not identify a pool, because the same address string c
 collide across chains with different address formats (EVM `0x...` vs. Solana
 base58), and the same token pair legitimately has different addresses per chain.
 
-_Monitored pools today: WMATIC/USDC on Polygon and RAY/USDC on Solana. Planned chain family:
-Cosmos (see [ARCHITECTURE.md](ARCHITECTURE.md#future-work))._
+_The pool set is configuration, not the design claim: `evm.toml` and `solana.toml` declare which
+pools are monitored, and the pipeline is identical for one pool or many._
 
 ## Event
 

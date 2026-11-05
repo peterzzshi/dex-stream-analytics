@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use dex_ingester_common::{Event, FinalityBuffer, FinalityMode};
+use dex_ingester_common::{
+    Event, FinalityBuffer, FinalityMode, Publisher, PublisherConfig, SidecarUnreachable,
+};
 use ethers::prelude::*;
 use ethers::providers::Ws;
 use std::sync::Arc;
@@ -9,26 +11,26 @@ use tokio::task::JoinSet;
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
-mod avro;
 mod config;
 mod decoder;
-mod dlq;
 mod events;
+mod file_config;
 mod listener;
 mod oracle;
-mod publisher;
 mod rpc_retry;
 
 use config::Config;
-use dlq::FileSink;
 use listener::Listener;
 use oracle::ChainlinkOracle;
-use publisher::DaprPublisher;
 use rpc_retry::RetryableProvider;
 
 const EVENT_CHANNEL_BUFFER: usize = 1000;
-const DLQ_CHANNEL_BUFFER: usize = 100;
 const SHUTDOWN_GRACE_PERIOD_SECS: u64 = 5;
+
+fn exit_sidecar_unreachable(error: SidecarUnreachable) -> ! {
+    error!("Fatal: {}", error);
+    std::process::exit(1)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -55,33 +57,9 @@ async fn run() -> Result<()> {
     info!("Configuration loaded successfully");
     info!("Monitoring {} chains", config.chains.len());
 
-    let mut dlq_sink =
-        FileSink::new(Some("./dlq".to_string())).context("failed to create DLQ sink")?;
-    dlq_sink.start_flusher();
-
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
-    let (dlq_tx, mut dlq_rx) = mpsc::channel::<Event>(DLQ_CHANNEL_BUFFER);
 
     let mut tasks = JoinSet::new();
-
-    let dlq_sink_clone = Arc::new(tokio::sync::Mutex::new(dlq_sink));
-    let dlq_sink_handle = Arc::clone(&dlq_sink_clone);
-    let mut shutdown_rx_dlq = shutdown_tx.subscribe();
-    tasks.spawn(async move {
-        loop {
-            tokio::select! {
-                Some(event) = dlq_rx.recv() => {
-                    if let Err(e) = dlq_sink_handle.lock().await.write(&event) {
-                        error!("Failed to write to DLQ: {}", e);
-                    }
-                }
-                _ = shutdown_rx_dlq.recv() => {
-                    info!("DLQ consumer shutting down");
-                    break;
-                }
-            }
-        }
-    });
 
     for chain_config in config.chains.iter() {
         info!(
@@ -91,13 +69,10 @@ async fn run() -> Result<()> {
             "Initializing chain"
         );
 
-        let provider = match Provider::<Ws>::connect(&chain_config.rpc).await {
+        let provider = match Provider::<Ws>::connect(chain_config.rpc.expose()).await {
             Ok(provider) => Arc::new(provider),
             Err(e) => {
-                error!(
-                    "Failed to connect to WebSocket RPC {}: {}",
-                    chain_config.rpc, e
-                );
+                error!(chain = %chain_config.chain, "Failed to connect to WebSocket RPC: {}", e);
                 continue;
             }
         };
@@ -107,11 +82,17 @@ async fn run() -> Result<()> {
             chain_config.retry.clone(),
         ));
 
-        let oracle = Arc::new(ChainlinkOracle::new(Arc::clone(&provider)));
+        let oracle = Arc::new(ChainlinkOracle::new(
+            Arc::clone(&provider),
+            chain_config.oracle.clone(),
+        ));
 
         let publisher = Arc::new(
-            DaprPublisher::new(&config, &chain_config.chain)
-                .context("failed to create Dapr publisher")?,
+            Publisher::new(PublisherConfig::new(
+                &config.shared,
+                format!("evm-ingester/{}", chain_config.chain),
+            ))
+            .context("failed to create publisher")?,
         );
 
         for pool_config in chain_config.pools.iter() {
@@ -132,7 +113,14 @@ async fn run() -> Result<()> {
                 pool_config.clone(),
                 Arc::clone(&oracle),
                 Arc::clone(&rpc),
-            );
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to initialise listener for pool {}",
+                    pool_config.name
+                )
+            })?;
 
             let (event_tx, mut event_rx) = mpsc::channel::<Event>(EVENT_CHANNEL_BUFFER);
 
@@ -155,7 +143,6 @@ async fn run() -> Result<()> {
 
             let buffer_clone = Arc::clone(&buffer);
             let publisher_clone = Arc::clone(&publisher);
-            let dlq_tx_clone = dlq_tx.clone();
             let pool_name = pool_config.name.clone();
             let mut shutdown_rx_proc = shutdown_tx.subscribe();
 
@@ -166,13 +153,19 @@ async fn run() -> Result<()> {
                             let result = buffer_clone.add(event, None);
 
                             for evicted in result.evicted {
-                                if let Err(e) = dlq_tx_clone.send(evicted).await {
-                                    error!(pool = %pool_name, "Failed to route evicted event to DLQ: {}", e);
+                                warn!(pool = %pool_name, "Finality buffer overflow, dead-lettering event");
+                                if let Err(e) = publisher_clone
+                                    .dead_letter(&evicted, "Finality buffer overflow")
+                                    .await
+                                {
+                                    exit_sidecar_unreachable(e);
                                 }
                             }
 
                             for confirmed in result.confirmed {
-                                publisher_clone.publish(&confirmed).await;
+                                if let Err(e) = publisher_clone.publish(&confirmed).await {
+                                    exit_sidecar_unreachable(e);
+                                }
                             }
                         }
                         _ = shutdown_rx_proc.recv() => {
@@ -180,7 +173,9 @@ async fn run() -> Result<()> {
                             let pending = buffer_clone.flush();
                             info!(pool = %pool_name, pending = pending.len(), "Flushing pending events");
                             for event in pending {
-                                publisher_clone.publish(&event).await;
+                                if let Err(e) = publisher_clone.publish(&event).await {
+                                    exit_sidecar_unreachable(e);
+                                }
                             }
                             break;
                         }
@@ -207,10 +202,6 @@ async fn run() -> Result<()> {
     .unwrap_or_else(|_| {
         warn!("Shutdown timeout exceeded, forcing exit");
     });
-
-    if let Ok(sink) = Arc::try_unwrap(dlq_sink_clone) {
-        sink.into_inner().close().await?;
-    }
 
     Ok(())
 }

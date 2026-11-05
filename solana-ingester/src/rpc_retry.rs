@@ -6,8 +6,9 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
+use dex_ingester_common::RetryConfig;
+
 use crate::blockchain::RpcClient;
-use crate::config::RetryConfig;
 
 pub struct RetryableRpcClient {
     inner: Arc<RpcClient>,
@@ -75,7 +76,7 @@ where
                 }
 
                 warn!(
-                    "{} failed (attempt {}/{}): {}. Retrying in {}ms",
+                    "{} failed (attempt {}/{}): {:#}. Retrying in {}ms",
                     operation_name,
                     attempt + 1,
                     config.rpc_max_retries,
@@ -143,6 +144,11 @@ fn is_retriable_error(error: &anyhow::Error) -> bool {
         return false;
     }
 
+    // Non-retriable: the node rejects this transaction's version, so no retry can help
+    if error_str.contains("-32015") || error_str.contains("not supported by the requesting node") {
+        return false;
+    }
+
     // Default to retriable for unknown errors
     true
 }
@@ -178,5 +184,15 @@ mod tests {
 
         // Unknown errors default to retriable
         assert!(is_retriable_error(&anyhow::anyhow!("Some unknown error")));
+    }
+
+    #[test]
+    fn unsupported_transaction_version_is_not_retriable() {
+        assert!(!is_retriable_error(&anyhow::anyhow!(
+            "RPC error -32015: Transaction version (0) is not supported by the requesting node"
+        )));
+        assert!(!is_retriable_error(&anyhow::anyhow!(
+            "Transaction version (0) is not supported by the requesting node"
+        )));
     }
 }

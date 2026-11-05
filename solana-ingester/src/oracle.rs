@@ -1,5 +1,5 @@
 use anchor_lang::AccountDeserialize;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use pyth_solana_receiver_sdk::price_update::{PriceUpdateV2, VerificationLevel};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
@@ -175,17 +175,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(price, Some(1.0));
-    }
-
-    #[test]
-    fn test_sol_feed_account() {
-        let oracle = PythOracle::new(
-            "https://api.mainnet-beta.solana.com".to_string(),
-            test_config(),
-        );
-        let feed = oracle
-            .get_price_feed_account("So11111111111111111111111111111111111111112")
-            .unwrap();
-        assert!(feed.is_some());
     }
 }

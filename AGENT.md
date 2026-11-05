@@ -17,8 +17,8 @@ Independent toolchains, no root build/test. Run lint before finishing.
 ## Architecture
 
 `evm-ingester/` and `solana-ingester/` (Rust) → `aggregator/` (Flink/Java) → `analytics-service/` (Kotlin/Ktor),
-connected by Kafka with Dapr pub/sub. Contracts are the Avro schemas and Kafka topic names. See `ARCHITECTURE.md`
-for the diagram, `DATA_MODEL.md` for schemas, `EXTRACTION-PLAN.md` for the planned shared ingester crate.
+connected by Kafka with Dapr pub/sub. Contracts are the Avro schemas (root `schemas/`) and Kafka topic names. See
+`ARCHITECTURE.md` for the diagram and design decisions, `DATA_MODEL.md` for schemas.
 
 Invariants:
 
@@ -32,9 +32,13 @@ Invariants:
 - Pure functions in core; side effects (RPC, Kafka, Redis) at edges
 - Domain vocabulary lives in `CONTEXT.md`; check it before introducing new terms
 - Component-specific conventions: `<component>/AGENT.md`
-- Config is environment variables only. No config files, since an API key leaked through one. Required config has no
-  fallback defaults and fails at startup.
+- Secrets (RPC URLs with API keys) are environment variables only, never in files. Non-secret reference data (chain,
+  pools, tokens, oracle feeds) lives in `solana.toml` / `evm.toml`, parsed with `deny_unknown_fields` and validated at
+  load. Required config has no fallback defaults and fails at startup.
 - Testing and git rules: `CLAUDE.md`. Mock only what the behavior needs.
+- Docker Compose has no `profiles:` key. Both ingesters start under `docker compose up -d` with
+  `restart: unless-stopped`
+  and crash-loop by design when RPC URLs are missing (fail-fast). Do not add profiles.
 
 ### Rust ingesters (`evm-ingester`, `solana-ingester`)
 

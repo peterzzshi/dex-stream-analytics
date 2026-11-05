@@ -1,3 +1,10 @@
+# Pub/sub and topic names shared by both ingesters and kafka-init
+x-ingester-env: &ingester-env
+  PUBSUB_NAME: kafka-pubsub
+  TOPIC_TRADING: dex-trading-events
+  TOPIC_LIQUIDITY: dex-liquidity-events
+  TOPIC_DLQ: dex-dlq-events
+
 services:
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -36,6 +43,8 @@ services:
   kafka-init:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka-init
+    environment:
+      <<: *ingester-env
     depends_on:
       kafka:
         condition: service_healthy
@@ -43,8 +52,9 @@ services:
       - /bin/bash
       - -c
       - >
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-trading-events --partitions 6 --replication-factor 1 --config retention.ms=604800000 &&
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-liquidity-events --partitions 6 --replication-factor 1 --config retention.ms=2592000000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic $$TOPIC_TRADING --partitions 6 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic $$TOPIC_LIQUIDITY --partitions 6 --replication-factor 1 --config retention.ms=2592000000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic $$TOPIC_DLQ --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-trading-analytics --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-liquidity-analytics --partitions 3 --replication-factor 1 --config retention.ms=7776000000 &&
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-pattern-analytics --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
@@ -53,7 +63,6 @@ services:
     networks:
       - dex-analytics-network
 
-  # DAPR placement service for actor runtime
   # EVM ingester: Rust service listening to EVM blockchain events
   # Requires ETH_RPC_URL in .env
   evm-ingester:
@@ -62,24 +71,11 @@ services:
       dockerfile: evm-ingester/Dockerfile
     container_name: evm-ingester
     environment:
-      # Secrets
-      - ETH_RPC_URL=${ETH_RPC_URL}
-      # Infrastructure
-      - DAPR_HOST=evm-ingester-dapr
-      - DAPR_HTTP_PORT=3500
-      - PUBSUB_NAME=kafka-pubsub
-      - APP_PORT=3000
-      # Topics
-      - TOPIC_TRADING=dex-trading-events
-      - TOPIC_LIQUIDITY=dex-liquidity-events
-      # Chain config
-      - CHAIN_ID=${EVM_CHAIN_ID}
-      - CHAIN_NAME=${EVM_CHAIN_NAME}
-      - CHAIN_VENUE=${EVM_CHAIN_VENUE}
-      - CHAIN_CONFIRMATIONS=${EVM_CHAIN_CONFIRMATIONS}
-      # Pool config
-      - POOL_ADDRESS=${EVM_POOL_ADDRESS}
-      - POOL_NAME=${EVM_POOL_NAME}
+      <<: *ingester-env
+      ETH_RPC_URL: ${ETH_RPC_URL}
+      CONFIG_FILE: /app/evm.toml
+      DAPR_HOST: evm-ingester-dapr
+      DAPR_HTTP_PORT: "3500"
     ports:
       - "3000:3000"
     depends_on:
@@ -96,9 +92,6 @@ services:
     command: [
       "./daprd",
       "-app-id", "evm-ingester",
-      "-app-port", "3000",
-      "-app-protocol", "http",
-      "-app-channel-address", "evm-ingester",
       "-dapr-http-port", "3500",
       "-dapr-grpc-port", "50001",
       "-components-path", "/components",
@@ -121,26 +114,15 @@ services:
       dockerfile: solana-ingester/Dockerfile
     container_name: solana-ingester
     environment:
-      # Secrets
-      - SOLANA_RPC_URL=${SOLANA_RPC_URL}
-      # Infrastructure
-      - DAPR_HOST=solana-ingester-dapr
-      - DAPR_HTTP_PORT=3501
-      - PUBSUB_NAME=kafka-pubsub
-      - APP_PORT=3001
-      # Topics
-      - TOPIC_TRADING=dex-trading-events
-      - TOPIC_LIQUIDITY=dex-liquidity-events
-      # Chain config
-      - CHAIN_ID=solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp
-      - CHAIN_NAME=Solana
-      - CHAIN_VENUE=raydium-amm-v4
-      - SOLANA_COMMITMENT=${SOLANA_COMMITMENT}
-      # Pool config
-      - POOL_NAME=${SOLANA_POOL_NAME}
-      - POOL_ADDRESS=${SOLANA_POOL_ADDRESS}
-      - POOL_TOKEN0=${SOLANA_POOL_TOKEN0}
-      - POOL_TOKEN1=${SOLANA_POOL_TOKEN1}
+      <<: *ingester-env
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL}
+      SOLANA_COMMITMENT: finalized
+      CONFIG_FILE: /app/solana.toml
+      DAPR_HOST: solana-ingester-dapr
+      DAPR_HTTP_PORT: "3501"
+      APP_PORT: "3001"
+      FINALITY_BUFFER_SIZE: "100"
+      FINALITY_POLL_INTERVAL_SECS: "1"
     ports:
       - "3001:3001"
     depends_on:

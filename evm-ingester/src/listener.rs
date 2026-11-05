@@ -16,23 +16,43 @@ pub struct Listener<O: PriceOracle, P: Middleware> {
     pool: Pool,
     oracle: Arc<O>,
     rpc: Arc<RetryableProvider<P>>,
+    token0_address: Address,
+    token1_address: Address,
+    token_decimals_cache: std::sync::Mutex<std::collections::HashMap<Address, u8>>,
+    block_timestamps: std::sync::Mutex<std::collections::HashMap<U64, i64>>,
 }
 
+// Logs for one block arrive together and confirmation depth keeps them close in time,
+// so a small window captures nearly all reuse without growing unbounded.
+const BLOCK_TIMESTAMP_CACHE_SIZE: usize = 64;
+
 impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
-    pub fn new(
+    pub async fn new(
         chain: String,
         chain_name: String,
         pool: Pool,
         oracle: Arc<O>,
         rpc: Arc<RetryableProvider<P>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let pair_address = Address::from_str(&pool.pair_address)?;
+        let mut listener = Self {
             chain,
             chain_name,
             pool,
             oracle,
             rpc,
-        }
+            token0_address: Address::zero(),
+            token1_address: Address::zero(),
+            token_decimals_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            block_timestamps: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+
+        // The pair never changes, so its tokens are resolved once rather than per log.
+        let (token0_address, token1_address) = listener.fetch_token_addresses(pair_address).await?;
+        listener.token0_address = token0_address;
+        listener.token1_address = token1_address;
+
+        Ok(listener)
     }
 
     pub async fn process_log(&self, log: Log) -> Result<Event> {
@@ -62,8 +82,12 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         let block_timestamp = self.fetch_block_timestamp(block_number).await?;
         let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
 
-        let token0_decimals = 18u8;
-        let token1_decimals = 18u8;
+        let (token0_address, token1_address) = (self.token0_address, self.token1_address);
+
+        let (token0_decimals, token1_decimals) = tokio::try_join!(
+            self.fetch_token_decimals(token0_address),
+            self.fetch_token_decimals(token1_address)
+        )?;
 
         let price = calculate_swap_price(
             &swap_data.amount0_in,
@@ -73,9 +97,6 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             token0_decimals,
             token1_decimals,
         );
-
-        let pair_address = Address::from_str(&self.pool.pair_address)?;
-        let (token0_address, token1_address) = self.fetch_token_addresses(pair_address).await?;
 
         let volume_usd = self
             .calculate_volume_usd(
@@ -130,6 +151,8 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         let block_timestamp = self.fetch_block_timestamp(block_number).await?;
         let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
 
+        let (token0_address, token1_address) = (self.token0_address, self.token1_address);
+
         Ok(Event::Mint(MintEvent {
             event_id,
             block_number: block_number.as_u64() as i64,
@@ -143,8 +166,8 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             chain: self.chain.clone(),
             chain_name: self.chain_name.clone(),
             pair_address: self.pool.pair_address.clone(),
-            token0: format!("{:?}", Address::zero()),
-            token1: format!("{:?}", Address::zero()),
+            token0: format!("{:?}", token0_address),
+            token1: format!("{:?}", token1_address),
             token0_symbol: None,
             token1_symbol: None,
             sender: format!("{:?}", mint_data.sender),
@@ -161,6 +184,8 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         let block_timestamp = self.fetch_block_timestamp(block_number).await?;
         let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
 
+        let (token0_address, token1_address) = (self.token0_address, self.token1_address);
+
         Ok(Event::Burn(BurnEvent {
             event_id,
             block_number: block_number.as_u64() as i64,
@@ -174,8 +199,8 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             chain: self.chain.clone(),
             chain_name: self.chain_name.clone(),
             pair_address: self.pool.pair_address.clone(),
-            token0: format!("{:?}", Address::zero()),
-            token1: format!("{:?}", Address::zero()),
+            token0: format!("{:?}", token0_address),
+            token1: format!("{:?}", token1_address),
             token0_symbol: None,
             token1_symbol: None,
             sender: format!("{:?}", burn_data.sender),
@@ -193,6 +218,8 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         let block_timestamp = self.fetch_block_timestamp(block_number).await?;
         let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
 
+        let (token0_address, token1_address) = (self.token0_address, self.token1_address);
+
         Ok(Event::Transfer(TransferEvent {
             event_id,
             block_number: block_number.as_u64() as i64,
@@ -206,8 +233,8 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             chain: self.chain.clone(),
             chain_name: self.chain_name.clone(),
             pair_address: self.pool.pair_address.clone(),
-            token0: format!("{:?}", Address::zero()),
-            token1: format!("{:?}", Address::zero()),
+            token0: format!("{:?}", token0_address),
+            token1: format!("{:?}", token1_address),
             token0_symbol: None,
             token1_symbol: None,
             from: format!("{:?}", transfer_data.from),
@@ -250,19 +277,11 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             },
         );
 
-        let token0_result = self
-            .rpc
-            .inner()
-            .call(&call_token0, None)
-            .await
-            .context("failed to call token0()")?;
-
-        let token1_result = self
-            .rpc
-            .inner()
-            .call(&call_token1, None)
-            .await
-            .context("failed to call token1()")?;
+        let (token0_result, token1_result) = tokio::try_join!(
+            self.rpc.inner().call(&call_token0, None),
+            self.rpc.inner().call(&call_token1, None)
+        )
+        .context("failed to call token0/token1")?;
 
         if token0_result.len() < 32 || token1_result.len() < 32 {
             anyhow::bail!("invalid response length from token0/token1 calls");
@@ -272,6 +291,54 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         let token1_address = Address::from_slice(&token1_result[12..32]);
 
         Ok((token0_address, token1_address))
+    }
+
+    async fn fetch_token_decimals(&self, token_address: Address) -> Result<u8> {
+        // Check cache first
+        {
+            let cache = self.token_decimals_cache.lock().unwrap();
+            if let Some(&decimals) = cache.get(&token_address) {
+                return Ok(decimals);
+            }
+        }
+
+        // Call decimals() on the token contract
+        let decimals_selector = &ethers::utils::keccak256(b"decimals()")[..4];
+        let call = ethers::types::transaction::eip2718::TypedTransaction::Legacy(
+            ethers::types::TransactionRequest {
+                to: Some(ethers::types::NameOrAddress::Address(token_address)),
+                data: Some(ethers::types::Bytes::from(decimals_selector.to_vec())),
+                ..Default::default()
+            },
+        );
+
+        let result = self
+            .rpc
+            .inner()
+            .call(&call, None)
+            .await
+            .context("failed to call decimals()")?;
+
+        if result.is_empty() {
+            anyhow::bail!("decimals() returned empty response");
+        }
+
+        // decimals() returns uint8, which is padded to 32 bytes
+        let decimals = if result.len() == 32 {
+            result[31]
+        } else if result.len() == 1 {
+            result[0]
+        } else {
+            anyhow::bail!("unexpected decimals() response length: {}", result.len());
+        };
+
+        // Cache the result
+        {
+            let mut cache = self.token_decimals_cache.lock().unwrap();
+            cache.insert(token_address, decimals);
+        }
+
+        Ok(decimals)
     }
 
     async fn fetch_gas_used(&self, tx_hash: H256) -> Result<u64> {
@@ -288,16 +355,33 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
     }
 
     async fn fetch_block_timestamp(&self, block_number: U64) -> Result<i64> {
+        {
+            let cache = self.block_timestamps.lock().unwrap();
+            if let Some(&timestamp) = cache.get(&block_number) {
+                return Ok(timestamp);
+            }
+        }
+
         let block = self
             .rpc
             .get_block(block_number)
             .await
             .context("failed to fetch block")?;
 
-        match block {
-            Some(b) => Ok(b.timestamp.as_u64() as i64),
+        let timestamp = match block {
+            Some(b) => b.timestamp.as_u64() as i64,
             None => anyhow::bail!("block not found"),
+        };
+
+        {
+            let mut cache = self.block_timestamps.lock().unwrap();
+            if cache.len() >= BLOCK_TIMESTAMP_CACHE_SIZE {
+                cache.clear();
+            }
+            cache.insert(block_number, timestamp);
         }
+
+        Ok(timestamp)
     }
 
     async fn calculate_volume_usd(

@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-use crate::config::RetryConfig;
+use dex_ingester_common::RetryConfig;
 
 pub struct RetryableProvider<P> {
     inner: Arc<P>,
@@ -20,7 +20,6 @@ where
         Self { inner, config }
     }
 
-    #[allow(dead_code)]
     pub async fn get_block<T: Into<BlockId> + Send + Sync>(
         &self,
         block_id: T,
@@ -35,25 +34,6 @@ where
             },
             &self.config,
             "get_block",
-        )
-        .await
-    }
-
-    #[allow(dead_code)]
-    pub async fn get_transaction<T: Send + Sync + Into<TxHash>>(
-        &self,
-        tx_hash: T,
-    ) -> Result<Option<Transaction>> {
-        let tx_hash = tx_hash.into();
-        retry_with_backoff(
-            || async {
-                self.inner
-                    .get_transaction(tx_hash)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            },
-            &self.config,
-            "get_transaction",
         )
         .await
     }

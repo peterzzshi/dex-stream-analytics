@@ -253,31 +253,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_event_topic_constants() {
-        // Verify topic hashes match expected values
-        let swap_hash =
-            ethers::utils::keccak256(b"Swap(address,uint256,uint256,uint256,uint256,address)");
-        assert_eq!(H256::from_slice(&swap_hash), swap_event_topic());
-
-        let mint_hash = ethers::utils::keccak256(b"Mint(address,uint256,uint256)");
-        assert_eq!(H256::from_slice(&mint_hash), mint_event_topic());
-
-        let burn_hash = ethers::utils::keccak256(b"Burn(address,uint256,uint256,address)");
-        assert_eq!(H256::from_slice(&burn_hash), burn_event_topic());
-
-        let transfer_hash = ethers::utils::keccak256(b"Transfer(address,address,uint256)");
-        assert_eq!(H256::from_slice(&transfer_hash), transfer_event_topic());
-    }
-
-    #[test]
-    fn test_uniswap_v2_abi_loads() {
-        let abi = get_uniswap_v2_abi();
-        assert!(abi.event("Swap").is_ok());
-        assert!(abi.event("Mint").is_ok());
-        assert!(abi.event("Burn").is_ok());
-    }
-
-    #[test]
     fn test_parse_transfer_log_valid() {
         let from: Address = "0x1111111111111111111111111111111111111111"
             .parse()

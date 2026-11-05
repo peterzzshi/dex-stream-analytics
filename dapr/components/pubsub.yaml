@@ -41,4 +41,5 @@ spec:
       value: "2.8.0"
 scopes:
   - evm-ingester
+  - solana-ingester
   - analytics-service

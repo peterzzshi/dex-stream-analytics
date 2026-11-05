@@ -79,12 +79,15 @@ impl FinalityBuffer {
         }
     }
 
-    pub fn advance_finalized(&self, finalized: u64) -> Vec<Event> {
+    pub fn advance_finalized(&self, finalized: u64) -> Result<Vec<Event>, String> {
         if let FinalityMode::External = self.mode {
             let mut inner = self.inner.lock().unwrap();
-            self.advance_finalized_position(&mut inner, finalized)
+            Ok(self.advance_finalized_position(&mut inner, finalized))
         } else {
-            panic!("advance_finalized only valid for External mode");
+            Err(format!(
+                "advance_finalized only valid for External mode, but buffer is in {:?} mode",
+                self.mode
+            ))
         }
     }
 
@@ -462,11 +465,11 @@ mod tests {
 
         assert_eq!(buffer.pending(), 3);
 
-        let confirmed = buffer.advance_finalized(100);
+        let confirmed = buffer.advance_finalized(100).unwrap();
         assert_eq!(confirmed.len(), 1);
         assert_eq!(buffer.pending(), 2);
 
-        let confirmed = buffer.advance_finalized(102);
+        let confirmed = buffer.advance_finalized(102).unwrap();
         assert_eq!(confirmed.len(), 2);
         assert_eq!(buffer.pending(), 0);
     }

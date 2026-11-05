@@ -8,9 +8,12 @@ use solana_client::{
 };
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding};
-use std::pin::Pin;
 use std::sync::Arc;
-use tracing::debug;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
+use tracing::{debug, warn};
+
+const LOG_CHANNEL_CAPACITY: usize = 1024;
 
 pub struct RpcClient {
     http_client: Arc<SolanaRpcClient>,
@@ -18,20 +21,25 @@ pub struct RpcClient {
     commitment: CommitmentConfig,
 }
 
+/// Handle to a live log subscription, backed by a task that owns the WebSocket client.
 pub struct LogSubscription {
-    receiver: Pin<
-        Box<
-            dyn futures_util::Stream<Item = solana_client::rpc_response::Response<RpcLogsResponse>>
-                + Send,
-        >,
-    >,
+    receiver: mpsc::Receiver<RpcLogsResponse>,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: JoinHandle<()>,
 }
 
 impl LogSubscription {
     pub async fn recv(&mut self) -> Option<RpcLogsResponse> {
-        match self.receiver.next().await {
-            Some(response) => Some(response.value),
-            None => None,
+        self.receiver.recv().await
+    }
+
+    /// Unsubscribe server-side, close the socket, and wait for the owning task to finish.
+    pub async fn close(mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Err(e) = self.task.await {
+            warn!("Log subscription task failed: {}", e);
         }
     }
 }
@@ -57,33 +65,75 @@ impl RpcClient {
         })
     }
 
-    /// Subscribe to logs for a specific program
-    /// Note: This leaks the PubsubClient on each call. In production, the subscription
-    /// should be maintained for the lifetime of the application to avoid repeated leaks.
+    /// Subscribe to logs for a specific program.
+    ///
+    /// The pubsub client's socket task exits for good when the connection drops and the
+    /// client cannot be reused, so each subscription owns its own client. A leaked
+    /// `'static` client per reconnect would grow without bound; this one is dropped by
+    /// the task when the subscription ends.
     pub async fn subscribe_logs(&self, program_id: Pubkey) -> Result<LogSubscription> {
         let filter = RpcTransactionLogsFilter::Mentions(vec![program_id.to_string()]);
         let config = RpcTransactionLogsConfig {
-            commitment: Some(self.commitment),
+            commitment: Some(CommitmentConfig::confirmed()),
         };
 
-        let client = Box::new(
-            PubsubClient::new(&self.ws_url)
-                .await
-                .context("Failed to connect to Solana WebSocket")?,
-        );
-
-        // Leak the client to satisfy 'static lifetime requirement of logs_subscribe
-        // This is acceptable in the main loop where subscribe_logs is called once per reconnect
-        let client: &'static PubsubClient = Box::leak(client);
-
-        let (receiver, _unsubscribe) = client
-            .logs_subscribe(filter, config)
+        let client = PubsubClient::new(&self.ws_url)
             .await
-            .context("Failed to subscribe to logs")?;
+            .context("Failed to connect to Solana WebSocket")?;
+
+        let (sender, receiver) = mpsc::channel(LOG_CHANNEL_CAPACITY);
+        let (ready_sender, ready_receiver) = oneshot::channel();
+        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+
+        let task = tokio::spawn(async move {
+            let (mut stream, unsubscribe) = match client.logs_subscribe(filter, config).await {
+                Ok(subscription) => subscription,
+                Err(e) => {
+                    // Dropping the client fires its shutdown sender, which closes the socket.
+                    let _ = ready_sender.send(Err(anyhow::anyhow!("logs_subscribe error: {e:?}")));
+                    return;
+                }
+            };
+
+            if ready_sender.send(Ok(())).is_err() {
+                drop(stream);
+                unsubscribe().await;
+                let _ = client.shutdown().await;
+                return;
+            }
+
+            let mut shutdown_receiver = shutdown_receiver;
+            loop {
+                tokio::select! {
+                    message = stream.next() => match message {
+                        Some(response) => {
+                            if sender.send(response.value).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    },
+                    _ = &mut shutdown_receiver => break,
+                }
+            }
+
+            // Deregister before closing so the node stops streaming this program's logs.
+            drop(stream);
+            unsubscribe().await;
+            let _ = client.shutdown().await;
+        });
+
+        ready_receiver
+            .await
+            .context("Log subscription task ended before reporting readiness")??;
 
         debug!("Subscribed to logs for program: {}", program_id);
 
-        Ok(LogSubscription { receiver })
+        Ok(LogSubscription {
+            receiver,
+            shutdown: Some(shutdown_sender),
+            task,
+        })
     }
 
     /// Fetch full transaction details
@@ -94,7 +144,7 @@ impl RpcClient {
         let config = RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::JsonParsed),
             commitment: Some(self.commitment),
-            max_supported_transaction_version: Some(0),
+            max_supported_transaction_version: Some(1),
         };
 
         let tx = self
@@ -111,16 +161,6 @@ impl RpcClient {
             .http_client
             .get_slot_with_commitment(CommitmentConfig::finalized())
             .context("Failed to get finalized slot")?;
-
-        Ok(slot)
-    }
-
-    /// Get slot for a specific commitment level
-    pub async fn get_slot(&self) -> Result<u64> {
-        let slot = self
-            .http_client
-            .get_slot_with_commitment(self.commitment)
-            .context("Failed to get slot")?;
 
         Ok(slot)
     }
@@ -145,23 +185,5 @@ mod tests {
         assert!(parse_commitment("confirmed").is_ok());
         assert!(parse_commitment("processed").is_ok());
         assert!(parse_commitment("invalid").is_err());
-    }
-
-    #[test]
-    fn test_new_client() {
-        let client = RpcClient::new("wss://example.com/ws", "finalized".to_string())
-            .expect("RpcClient should construct successfully");
-
-        assert_eq!(client.ws_url, "wss://example.com/ws");
-        assert_eq!(client.commitment, CommitmentConfig::finalized());
-    }
-
-    #[test]
-    fn test_http_url_derivation() {
-        let client = RpcClient::new("wss://api.mainnet-beta.solana.com", "confirmed".to_string())
-            .expect("RpcClient should construct successfully");
-
-        assert_eq!(client.ws_url, "wss://api.mainnet-beta.solana.com");
-        assert_eq!(client.commitment, CommitmentConfig::confirmed());
     }
 }

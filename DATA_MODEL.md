@@ -1,8 +1,9 @@
 # Data Model
 
 Schema definitions, field semantics, and data flow for the DEX analytics pipeline. The four event
-schemas currently exist as copies in `evm-ingester/schemas/`, `solana-ingester/src/avro/` and
-`aggregator/src/main/resources/avro/`; `EXTRACTION-PLAN.md` consolidates them into a root `schemas/`.
+schemas live in `schemas/` at the repo root and are embedded by `common/src/lib.rs` with
+`include_str!`. The aggregator still codegens from its own copy in
+`aggregator/src/main/resources/avro/`.
 
 ## Data Flow
 
@@ -35,15 +36,32 @@ graph LR
 
 ## Blockchain Source
 
-**Contract:** Uniswap V2 Pair (`IUniswapV2Pair`)
-**Target Pair:** WMATIC/USDC on Polygon (`0x6e7a5FAFcec6BB1e78bAE2A1F0B612012BF14827`)
+Two chain families emit the same four event schemas. Which pools are monitored is config, not code:
+`evm.toml` declares Uniswap V2 pairs, `solana.toml` declares Raydium AMM v4 pools, and one ingester
+instance per family serves every pool declared for it.
 
-Additional chains/pairs are on the roadmap; see [ARCHITECTURE.md](ARCHITECTURE.md#future-work).
-
-Monitored Solidity events:
+**EVM** — Uniswap V2 Pair (`IUniswapV2Pair`), log-based. Monitored Solidity events:
 - `Swap(address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to)`
 - `Mint(address indexed sender, uint amount0, uint amount1)`
-- `Burn(address indexed sender, uint amount0, uint amount1, address indexed to)`.
+- `Burn(address indexed sender, uint amount0, uint amount1, address indexed to)`
+
+**Solana** — Raydium AMM v4, instruction-based. There are no event logs: a swap is an instruction decoded
+by its 8-byte discriminator, and its fill amounts come from diffing the transaction's
+`preTokenBalances` against `postTokenBalances` for the pool's vault accounts. Vaults are resolved per
+instruction by AMM authority plus mint, not by fixed position — see
+[solana-ingester/README.md](solana-ingester/README.md).
+
+### Event Granularity
+
+Every event is a **pool-level fill** — the vault delta for one pool — not a user intent. This matters
+most on Solana, where a swap is reached as an inner CPI from a router: one routed trade across three
+pools produces three events. Three consequences downstream:
+
+- Summing `volumeUSD` across pools double-counts routed flow.
+- `sender` is the fee payer, which for routed flow is the router, so `sender`-based trader metrics
+  describe routers rather than traders. (The same caveat applies to EVM router swaps, where `sender`
+  and `recipient` differ.)
+- Per-pool price and depth remain well defined, and are what the analytics are built on.
 
 ## Schema Conventions
 
@@ -51,16 +69,13 @@ Monitored Solidity events:
 - **Financial precision**: token amounts stored as `string` (Wei) to avoid floating-point loss.
 - **Timestamps**: block timestamps in seconds; window and processing timestamps in milliseconds.
 - **Identifiers**: `eventId` = `txHash:logIndex` (unique within a chain, and stable across
-  reprocessing); addresses as `0x`-prefixed hex (EVM-only today — Solana uses base58 pubkeys,
-  see [ARCHITECTURE.md](ARCHITECTURE.md#future-work)). An event's full identity is
-  `(blockNumber, txHash, logIndex)`.
+  reprocessing). Address encoding follows the chain family: `0x`-prefixed hex on EVM, base58
+  pubkeys on Solana. An event's full identity is `(blockNumber, txHash, logIndex)`.
 - **Optionality**: only truly optional fields use Avro `["null", "type"]` unions.
-- **Chain field**: events carry no `chain`/`chainName` yet — the schema change lands with the
-  multi-chain rollout, not with the second ingester. When it does, both fields join every input
-  schema and the pool key becomes `(chain, pairAddress)`, with `chain` a CAIP-2 string (`eip155:137`, `solana:5eykt...`,
-  `cosmos:osmosis-1`) — not an EIP-155 numeric chain ID, since
-  the latter can name neither a Solana cluster nor a Cosmos chain. The set of supported chain
-  families is EVM, Solana, and Cosmos (see [ARCHITECTURE.md](ARCHITECTURE.md#future-work)).
+- **Chain field**: every event carries `chain` (CAIP-2 string, e.g. `eip155:1`,
+  `solana:5eykt...`) and `chainName` (display label). The pool key downstream is
+  `(chain, pairAddress)`. `chain` is not an EIP-155 numeric chain ID, since the latter can name
+  neither a Solana cluster nor any non-EVM chain.
 
 ## Input Event Schemas
 
@@ -190,22 +205,32 @@ Session window (3 s gap) detecting MEV patterns across all event types.
 
 Not persisted — computed by the analytics service from stored data.
 
-| Field | Type | Notes |
-|---|---|---|
-| pairAddress | string | Pool identifier | | overallScore | double | Weighted composite (0–1) |
-| tradingScore | double | 35 % weight — volume, activity, trader diversity |
-| liquidityScore | double | 35 % weight — LP event activity |
-| safetyScore | double | 30 % weight — inverse of MEV alert count |
-| trend | string | Latest market trend direction |
-| recentAlertCount | int | MEV alerts in last 24 h |
-| volumeUSD24h / uniqueTraders24h | double / int | 24-hour metrics |
-| evaluatedAt | long | Computation timestamp |
+| Field                           | Type         | Notes                                            |
+|---------------------------------|--------------|--------------------------------------------------|
+| pairAddress                     | string       | Pool identifier                                  |
+| overallScore                    | double       | Weighted composite (0–1)                         |
+| tradingScore                    | double       | 35 % weight — volume, activity, trader diversity |
+| liquidityScore                  | double       | 35 % weight — LP event activity                  |
+| safetyScore                     | double       | 30 % weight — inverse of MEV alert count         |
+| trend                           | string       | Latest market trend direction                    |
+| recentAlertCount                | int          | MEV alerts in last 24 h                          |
+| volumeUSD24h / uniqueTraders24h | double / int | 24-hour metrics                                  |
+| evaluatedAt                     | long         | Computation timestamp                            |
 
 ## Data Quality
 
-- **Reorgs**: 64-block finality gate in the ingester; 60 s watermark in Flink absorbs late arrivals.
-- **RPC lag**: Paid endpoints recommended; `lastProcessedBlock` should be monitored against chain head.
-- **Event ordering**: Guaranteed within a transaction (logIndex); across transactions, event-time windows + watermarks handle out-of-order delivery.
+- **Reorgs**: depth-based finality gate in the EVM ingester (`confirmations` in `evm.toml`, 12 for
+  mainnet), external finalized-slot polling on Solana; 60 s watermark in Flink absorbs late arrivals.
+- **RPC lag**: `lastProcessedBlock` should be monitored against chain head. Subscription limits are
+  provider-specific — free tiers commonly throttle WebSocket subscriptions beyond a small number
+  of concurrent filters (Alchemy rejects Solana `logsSubscribe` outright on the free tier), so
+  pool count in config is bounded by the RPC plan, not by the pipeline.
+- **Event ordering**: Guaranteed within a transaction (logIndex). Across transactions, event-time
+  windows plus 60 s bounded-out-of-orderness watermarks absorb the reordering that asynchronous
+  finality produces. There is no `allowedLateness` or `sideOutputLateData` on any pipeline, so an
+  event arriving more than 60 s behind the watermark is dropped rather than captured — see
+  `GAPS.md` 11. Cross-topic ordering is also lossy on Solana: `log_index` is the instruction index *within* a
+  transaction, so it is not recoverable across transactions in a slot (`GAPS.md` 10).
 - **Validation**: The ingester checks that a decoded log has the expected topic and field count
   and skips logs it cannot classify; Avro encoding then enforces the schema on write. The
   aggregator checks the CloudEvent `type` before decoding; a mismatch, malformed CloudEvent, or

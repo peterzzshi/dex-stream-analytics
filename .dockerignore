@@ -1,7 +1,7 @@
-target/
+**/target/
 .git/
 .github/
+.env
 *.md
-aggregator/target/
 analytics-service/build/
 analytics-service/.gradle/

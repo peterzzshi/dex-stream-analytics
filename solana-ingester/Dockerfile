@@ -1,14 +1,10 @@
+# Build context is the repo root (compose: context: .)
 FROM rust:latest AS builder
-
-WORKDIR /app
-
-# Copy manifests
-COPY Cargo.toml Cargo.lock ./
-
-# Copy source
-COPY src ./src
-
-# Build release binary
+WORKDIR /build
+COPY common ./common
+COPY schemas ./schemas
+COPY solana-ingester ./solana-ingester
+WORKDIR /build/solana-ingester
 RUN cargo build --release
 
 # Runtime stage
@@ -20,8 +16,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy binary
-COPY --from=builder /app/target/release/solana-ingester /app/solana-ingester
+COPY --from=builder /build/solana-ingester/target/release/solana-ingester /app/solana-ingester
+COPY solana.toml /app/solana.toml
 
 ENV RUST_LOG=info
 

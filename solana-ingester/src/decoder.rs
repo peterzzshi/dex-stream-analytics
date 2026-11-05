@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 // Raydium AMM v4 instruction discriminators
 const SWAP_BASE_IN: u8 = 9;
@@ -8,42 +8,15 @@ const SWAP_BASE_OUT_V2: u8 = 17;
 const DEPOSIT: u8 = 3;
 const WITHDRAW: u8 = 4;
 
-#[derive(Debug, Clone)]
-pub enum SwapDirection {
-    BaseIn,  // Swap with exact input amount
-    BaseOut, // Swap with exact output amount
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodedInstruction {
-    Swap {
-        direction: SwapDirection,
-        version: InstructionVersion,
-        amount_in: u64,
-        minimum_amount_out: u64,
-    },
-    Deposit {
-        max_coin: u64,
-        max_pc: u64,
-        base_side: u64,
-    },
-    Withdraw {
-        amount: u64,
-    },
+    Swap,
+    Deposit,
+    Withdraw,
 }
 
-impl DecodedInstruction {
-    pub fn event_type(&self) -> String {
-        match self {
-            DecodedInstruction::Swap { .. } => "SwapEvent".to_string(),
-            DecodedInstruction::Deposit { .. } => "MintEvent".to_string(),
-            DecodedInstruction::Withdraw { .. } => "BurnEvent".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum InstructionVersion {
+#[derive(Debug, Clone, Copy)]
+enum InstructionVersion {
     V1,
     V2,
 }
@@ -57,30 +30,10 @@ pub fn decode_instruction(data: &[u8], account_count: usize) -> Result<DecodedIn
     let discriminator = data[0];
 
     match discriminator {
-        SWAP_BASE_IN => decode_swap(
-            data,
-            account_count,
-            SwapDirection::BaseIn,
-            InstructionVersion::V1,
-        ),
-        SWAP_BASE_OUT => decode_swap(
-            data,
-            account_count,
-            SwapDirection::BaseOut,
-            InstructionVersion::V1,
-        ),
-        SWAP_BASE_IN_V2 => decode_swap(
-            data,
-            account_count,
-            SwapDirection::BaseIn,
-            InstructionVersion::V2,
-        ),
-        SWAP_BASE_OUT_V2 => decode_swap(
-            data,
-            account_count,
-            SwapDirection::BaseOut,
-            InstructionVersion::V2,
-        ),
+        SWAP_BASE_IN | SWAP_BASE_OUT => decode_swap(data, account_count, InstructionVersion::V1),
+        SWAP_BASE_IN_V2 | SWAP_BASE_OUT_V2 => {
+            decode_swap(data, account_count, InstructionVersion::V2)
+        }
         DEPOSIT => decode_deposit(data, account_count),
         WITHDRAW => decode_withdraw(data, account_count),
         _ => bail!("Unknown instruction discriminator: {}", discriminator),
@@ -90,10 +43,8 @@ pub fn decode_instruction(data: &[u8], account_count: usize) -> Result<DecodedIn
 fn decode_swap(
     data: &[u8],
     account_count: usize,
-    direction: SwapDirection,
     version: InstructionVersion,
 ) -> Result<DecodedInstruction> {
-    // Validate account count
     let expected_accounts = match version {
         InstructionVersion::V1 => 16..=17, // V1 has 16-17 accounts (legacy market)
         InstructionVersion::V2 => 8..=8,   // V2 has exactly 8 accounts
@@ -101,28 +52,19 @@ fn decode_swap(
 
     if !expected_accounts.contains(&account_count) {
         bail!(
-            "Invalid account count for swap {:?} {:?}: expected {:?}, got {}",
+            "Invalid account count for swap {:?}: expected {:?}, got {}",
             version,
-            direction,
             expected_accounts,
             account_count
         );
     }
 
-    // Parse instruction data: [discriminator: 1 byte][amount_in: 8 bytes][minimum_amount_out: 8 bytes]
+    // [discriminator: 1 byte][amount_in: 8 bytes][minimum_amount_out: 8 bytes]
     if data.len() < 17 {
         bail!("Swap instruction data too short: {} bytes", data.len());
     }
 
-    let amount_in = u64::from_le_bytes(data[1..9].try_into()?);
-    let minimum_amount_out = u64::from_le_bytes(data[9..17].try_into()?);
-
-    Ok(DecodedInstruction::Swap {
-        direction,
-        version,
-        amount_in,
-        minimum_amount_out,
-    })
+    Ok(DecodedInstruction::Swap)
 }
 
 fn decode_deposit(data: &[u8], account_count: usize) -> Result<DecodedInstruction> {
@@ -134,20 +76,12 @@ fn decode_deposit(data: &[u8], account_count: usize) -> Result<DecodedInstructio
         );
     }
 
-    // Parse instruction data: [discriminator: 1 byte][max_coin: 8 bytes][max_pc: 8 bytes][base_side: 8 bytes]
+    // [discriminator: 1 byte][max_coin: 8 bytes][max_pc: 8 bytes][base_side: 8 bytes]
     if data.len() < 25 {
         bail!("Deposit instruction data too short: {} bytes", data.len());
     }
 
-    let max_coin = u64::from_le_bytes(data[1..9].try_into()?);
-    let max_pc = u64::from_le_bytes(data[9..17].try_into()?);
-    let base_side = u64::from_le_bytes(data[17..25].try_into()?);
-
-    Ok(DecodedInstruction::Deposit {
-        max_coin,
-        max_pc,
-        base_side,
-    })
+    Ok(DecodedInstruction::Deposit)
 }
 
 fn decode_withdraw(data: &[u8], account_count: usize) -> Result<DecodedInstruction> {
@@ -159,91 +93,56 @@ fn decode_withdraw(data: &[u8], account_count: usize) -> Result<DecodedInstructi
         );
     }
 
-    // Parse instruction data: [discriminator: 1 byte][amount: 8 bytes]
+    // [discriminator: 1 byte][amount: 8 bytes]
     if data.len() < 9 {
         bail!("Withdraw instruction data too short: {} bytes", data.len());
     }
 
-    let amount = u64::from_le_bytes(data[1..9].try_into()?);
-
-    Ok(DecodedInstruction::Withdraw { amount })
+    Ok(DecodedInstruction::Withdraw)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_decode_swap_v2() {
-        // Mock swap V2 instruction: discriminator=16, amount_in=1000000, min_out=990000
-        let mut data = vec![SWAP_BASE_IN_V2];
-        data.extend_from_slice(&1000000u64.to_le_bytes());
-        data.extend_from_slice(&990000u64.to_le_bytes());
-
-        let result = decode_instruction(&data, 8).unwrap();
-
-        match result {
-            DecodedInstruction::Swap {
-                direction,
-                version,
-                amount_in,
-                minimum_amount_out,
-            } => {
-                assert!(matches!(direction, SwapDirection::BaseIn));
-                assert!(matches!(version, InstructionVersion::V2));
-                assert_eq!(amount_in, 1000000);
-                assert_eq!(minimum_amount_out, 990000);
-            }
-            _ => panic!("Expected Swap instruction"),
-        }
+    fn instruction(discriminator: u8, data_len: usize) -> Vec<u8> {
+        let mut data = vec![0u8; data_len];
+        data[0] = discriminator;
+        data
     }
 
     #[test]
-    fn test_decode_deposit() {
-        // Mock deposit instruction
-        let mut data = vec![DEPOSIT];
-        data.extend_from_slice(&5000000u64.to_le_bytes());
-        data.extend_from_slice(&5000000u64.to_le_bytes());
-        data.extend_from_slice(&0u64.to_le_bytes());
-
-        let result = decode_instruction(&data, 11).unwrap();
-
-        match result {
-            DecodedInstruction::Deposit {
-                max_coin,
-                max_pc,
-                base_side,
-            } => {
-                assert_eq!(max_coin, 5000000);
-                assert_eq!(max_pc, 5000000);
-                assert_eq!(base_side, 0);
-            }
-            _ => panic!("Expected Deposit instruction"),
-        }
+    fn discriminators_map_to_instruction_kinds() {
+        assert_eq!(
+            decode_instruction(&instruction(SWAP_BASE_IN, 17), 16).unwrap(),
+            DecodedInstruction::Swap
+        );
+        assert_eq!(
+            decode_instruction(&instruction(SWAP_BASE_OUT_V2, 17), 8).unwrap(),
+            DecodedInstruction::Swap
+        );
+        assert_eq!(
+            decode_instruction(&instruction(DEPOSIT, 25), 11).unwrap(),
+            DecodedInstruction::Deposit
+        );
+        assert_eq!(
+            decode_instruction(&instruction(WITHDRAW, 9), 11).unwrap(),
+            DecodedInstruction::Withdraw
+        );
     }
 
     #[test]
-    fn test_invalid_account_count() {
-        let data = vec![
-            SWAP_BASE_IN_V2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
-        let result = decode_instruction(&data, 5); // V2 needs 8 accounts
-        assert!(result.is_err());
+    fn swap_account_count_is_validated_per_version() {
+        assert!(decode_instruction(&instruction(SWAP_BASE_IN_V2, 17), 5).is_err());
+        assert!(decode_instruction(&instruction(SWAP_BASE_IN, 17), 8).is_err());
+    }
+
+    #[test]
+    fn truncated_or_unknown_instructions_are_rejected() {
+        assert!(decode_instruction(&instruction(SWAP_BASE_IN, 10), 16).is_err());
+        assert!(decode_instruction(&instruction(DEPOSIT, 10), 11).is_err());
+        assert!(decode_instruction(&instruction(WITHDRAW, 4), 11).is_err());
+        assert!(decode_instruction(&instruction(99, 25), 11).is_err());
+        assert!(decode_instruction(&[], 11).is_err());
     }
 }

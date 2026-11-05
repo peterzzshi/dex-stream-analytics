@@ -1,15 +1,27 @@
 # DEX Stream Analytics
 
-Real-time analytics for DeFi liquidity pools — detect MEV attacks, score pool health, and monitor market trends with sub-3-minute latency.
+Real-time analytics for DeFi liquidity pools — measure MEV extraction, score pool health, and track market trends from
+finalized on-chain events.
 
 ## Problem
 
-Traders lose 2-5% to sandwich attacks with no real-time warning. LPs can't identify toxic pools before committing capital. Existing tools (Dune, DEXTools) have 5-15 min lag because they aggregate after the fact; this pipeline computes the same metrics within seconds of the block, so the warning arrives while it still matters.
+Traders lose 2-5% to sandwich attacks, and LPs can't identify toxic pools before committing
+capital. Existing tools (Dune, DEXTools) aggregate after the fact with 5-15 min lag. This
+pipeline computes per-pool metrics from finalized chain events with bounded, event-time
+semantics, so the numbers are reproducible rather than sampled from a moving head.
+
+**On latency, honestly**: this is a post-trade pipeline, not a pre-trade warning system. An
+EVM event is published only after 12 confirmations (~2.4 min) and then has to clear a 60 s
+watermark and a window boundary, so EVM analytics land several minutes after the block.
+Solana finalizes in ~13 s and is correspondingly faster. Anything that warns a trader *before*
+their transaction executes would need the mempool, not the chain.
 
 ## Solution
 
 Apache Flink pipeline processing live DEX events from both EVM and Solana chains:
-- **MEV detection**: Sandwich attacks and JIT liquidity within 3 seconds
+
+- **MEV detection**: Sandwich and JIT-liquidity patterns, computed on finalized events after the
+  chain's own finality gate rather than intra-block
 - **Pool health scoring**: Composite metric (trading + liquidity + safety)
 - **Market analytics**: TWAP, OHLC, volume from on-chain events
 - **Multi-chain support**: EVM (Uniswap V2) and Solana (Raydium AMM v4) ingesters publishing to shared Kafka topics
@@ -17,9 +29,8 @@ Apache Flink pipeline processing live DEX events from both EVM and Solana chains
 The pipeline, topics, and aggregations are chain-neutral; adding a chain means adding an ingester instance,
 not changing the aggregator or analytics service.
 
-**Chain families**: EVM (log-based) and Solana (account-diff-based) are implemented. Cosmos SDK (ABCI
-event-attribute-based, Osmosis first) is the planned third family, see
-[ARCHITECTURE.md](ARCHITECTURE.md#future-work).
+**Chain families**: EVM (log-based) and Solana (account-diff-based), both implemented and both
+emitting identical Avro schemas to the shared topics.
 
 ## Tech Stack
 
@@ -31,9 +42,9 @@ event-attribute-based, Osmosis first) is the planned third family, see
 | `analytics-service/` | Kotlin / Ktor     | REST API + pool health scoring         |
 | `dapr/`              | YAML              | Pub/sub component configs              |
 
-Avro event schemas are currently copied per component (`evm-ingester/schemas/`, `solana-ingester/src/avro/`,
-`aggregator/src/main/resources/avro/`). [EXTRACTION-PLAN.md](EXTRACTION-PLAN.md) consolidates them into a single
-root `schemas/` directory.
+Avro event schemas have a single source of truth in the repo-root `schemas/` directory, embedded
+by the shared `common/` crate. The aggregator still codegens from its own copy in
+`aggregator/src/main/resources/avro/`.
 
 ## Documentation
 
@@ -43,13 +54,17 @@ root `schemas/` directory.
 
 ## Quick Start
 
-No API key needed — the default stack runs Kafka, Flink, and the analytics API:
+No API key needed to see the pipeline work — Kafka, Flink, and the analytics API run on test
+events alone:
 
 ```bash
 docker compose up -d --build
 ./scripts/verify_services.sh              # verify all services are healthy
-python3 scripts/produce_test_events.py    # feed test events (requires fastavro, kafka-python)
 ```
+
+`evm-ingester` and `solana-ingester` also start with this command, but without `ETH_RPC_URL` /
+`SOLANA_RPC_URL` set they fail config validation and crash-loop (restart: unless-stopped) by
+design — this doesn't affect the rest of the stack. Set the RPC URLs below to run them for real.
 
 ### Access the Application
 
@@ -66,30 +81,36 @@ Once running, open:
 
 ### Optional: Live Chain Data
 
-For live blockchain events instead of test data, configure RPC endpoints in `.env` and use profiles:
+For live blockchain events instead of test data, configure RPC endpoints in `.env` and restart
+the ingesters so they pick up the new values:
 
-**EVM chains** (Uniswap V2 on Polygon):
 ```bash
-cp .env.example .env                          # add ETH_RPC_URL
-docker compose --profile live up -d --build   # starts evm-ingester + dapr sidecar
+cp .env.example .env   # add ETH_RPC_URL and/or SOLANA_RPC_URL
+```
+
+**EVM chains** (Uniswap V2 pools on Ethereum mainnet, listed under `[[pools]]` in `evm.toml` —
+adding a pool is a config edit and a restart):
+
+```bash
+docker compose up -d --build evm-ingester evm-ingester-dapr
 docker compose logs -f evm-ingester           # monitor blockchain listener
 ```
 
 **Solana** (Raydium AMM v4 SOL/USDC):
 
 ```bash
-# Add SOLANA_RPC_URL to .env
-docker compose --profile solana up -d --build # starts solana-ingester + dapr sidecar
+docker compose up -d --build solana-ingester solana-ingester-dapr
 docker compose logs -f solana-ingester        # monitor blockchain listener
 ```
 
 **Both chains**:
 
 ```bash
-docker compose --profile live --profile solana up -d --build
+docker compose up -d --build evm-ingester evm-ingester-dapr solana-ingester solana-ingester-dapr
 ```
 
-Ingesters are not required for local development — the pipeline works with test events by default.
+Ingesters aren't required for local development — the pipeline works with test events by default,
+and without RPC URLs set they just crash-loop quietly alongside the rest of the stack.
 
 ## Build Individual Components
 
@@ -111,8 +132,5 @@ to shared Kafka topics; aggregator and analytics-service process EVM and Solana 
 1. **Natural-language query layer** — a read-only compiler that turns a prose question into a
    typed query plan over the analytics API. The model selects a query; the engine returns every
    number.
-2. **Cosmos SDK chain family** — `cosmos-ingester` for Osmosis and Injective (Tendermint RPC, ABCI
-   event attributes, `cosmos:osmosis-1` CAIP-2 identity). Planned after the EVM port to Rust and
-   the shared-crate extraction.
-3. **Additional EVM L2s** — config entries in `evm-ingester`, no new code
-4. **Enhanced MEV detection** — Cross-chain arbitrage patterns, multi-pool sandwich detection
+2. **Additional EVM L2s** — config entries in `evm-ingester`, no new code
+3. **Enhanced MEV detection** — Cross-chain arbitrage patterns, multi-pool sandwich detection

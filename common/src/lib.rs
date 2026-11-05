@@ -1,8 +1,18 @@
+mod avro;
+mod config;
+mod envelope;
 mod finality;
+mod publisher;
 
 use serde::Serialize;
 
+pub use avro::AvroEncoder;
+pub use config::{DaprConfig, RetryConfig, Secret, SharedConfig, TopicsConfig};
+pub use envelope::{
+    dlq_envelope, event_envelope, EnvelopeError, AVRO_CONTENT_TYPE, DLQ_EVENT_TYPE,
+};
 pub use finality::{AddResult, FinalityBuffer, FinalityMode};
+pub use publisher::{Outcome, Publisher, PublisherConfig, SidecarUnreachable};
 
 pub const SWAP_SCHEMA: &str = include_str!("../../schemas/SwapEvent.avsc");
 pub const MINT_SCHEMA: &str = include_str!("../../schemas/MintEvent.avsc");

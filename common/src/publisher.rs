@@ -2,6 +2,7 @@ use crate::{dlq_envelope, event_envelope, AvroEncoder, Event, EventMeta, SharedC
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use cloudevents::Event as CloudEvent;
+use rand::RngExt;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
@@ -9,10 +10,9 @@ use std::future::Future;
 use std::time::Duration;
 use tracing::{debug, error, warn};
 
-const MAX_RETRIES: u32 = 3;
-const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUDEVENTS_JSON: &str = "application/cloudevents+json";
+const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct PublisherConfig {
@@ -23,6 +23,8 @@ pub struct PublisherConfig {
     pub liquidity_topic: String,
     pub dlq_topic: String,
     pub source: String,
+    pub max_retries: u32,
+    pub initial_backoff_ms: u64,
 }
 
 impl PublisherConfig {
@@ -35,6 +37,8 @@ impl PublisherConfig {
             liquidity_topic: shared.topics.liquidity.clone(),
             dlq_topic: shared.topics.dlq.clone(),
             source,
+            max_retries: 3,
+            initial_backoff_ms: 100,
         }
     }
 
@@ -100,9 +104,11 @@ impl Publisher {
     pub async fn publish(&self, event: &Event) -> Result<Outcome, SidecarUnreachable> {
         let meta = event.meta();
 
-        let result = retry_with_backoff(MAX_RETRIES, INITIAL_BACKOFF, || {
-            self.try_publish(event, &meta)
-        })
+        let result = retry_with_backoff(
+            self.config.max_retries,
+            Duration::from_millis(self.config.initial_backoff_ms),
+            || self.try_publish(event, &meta),
+        )
         .await;
 
         match result {
@@ -113,7 +119,11 @@ impl Publisher {
             Err(PublishError::SidecarUnreachable(msg)) => Err(SidecarUnreachable(msg)),
             Err(e) => {
                 error!(event_id = %meta.event_id, error = %e, "Publish failed, sending to DLQ");
-                self.dead_letter(event, &e.to_string()).await
+                let outcome = self.dead_letter(event, &e.to_string()).await?;
+                if outcome == Outcome::Lost {
+                    error!(event_id = %meta.event_id, "Event lost after DLQ failure");
+                }
+                Ok(outcome)
             }
         }
     }
@@ -233,15 +243,18 @@ where
         match operation().await {
             Ok(value) => return Ok(value),
             Err(PublishError::Transient(msg)) if attempt < max_retries => {
+                let jitter = rand::rng().random_range(0.75..=1.25);
+                let delay = backoff.mul_f64(jitter).min(MAX_BACKOFF);
                 warn!(
                     attempt = attempt + 1,
                     max_retries,
                     error = %msg,
+                    delay_ms = delay.as_millis(),
                     "Transient publish failure, retrying"
                 );
-                tokio::time::sleep(backoff).await;
+                tokio::time::sleep(delay).await;
                 attempt += 1;
-                backoff *= 2;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
             }
             Err(e) => return Err(e),
         }
@@ -263,6 +276,8 @@ mod tests {
             liquidity_topic: "liquidity".to_string(),
             dlq_topic: "dlq".to_string(),
             source: "test-ingester".to_string(),
+            max_retries: 3,
+            initial_backoff_ms: 100,
         }
     }
 

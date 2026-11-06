@@ -10,6 +10,10 @@ pub fn swap_event_topic() -> H256 {
     ))
 }
 
+pub fn sync_event_topic() -> H256 {
+    H256::from_slice(&ethers::utils::keccak256(b"Sync(uint112,uint112)"))
+}
+
 pub fn mint_event_topic() -> H256 {
     H256::from_slice(&ethers::utils::keccak256(b"Mint(address,uint256,uint256)"))
 }

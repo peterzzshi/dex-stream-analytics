@@ -76,11 +76,35 @@ fn find_vault(
             }
             Ok(index)
         }
-        [] => bail!(
-            "No {label} vault for mint {} owned by pool authority {} is named by this instruction",
-            mint,
-            authority
-        ),
+        [] => {
+            let matching_mint: Vec<_> = pre_balances
+                .iter()
+                .filter(|b| b.mint == mint)
+                .map(|b| (b.account_index, balance_owner(b).unwrap_or("unknown")))
+                .collect();
+            let matching_authority: Vec<_> = pre_balances
+                .iter()
+                .filter(|b| balance_owner(b) == Some(authority))
+                .map(|b| (b.account_index, &b.mint))
+                .collect();
+            let in_instruction: Vec<_> = pre_balances
+                .iter()
+                .filter(|b| instruction_accounts.contains(&(b.account_index as usize)))
+                .map(|b| b.account_index)
+                .collect();
+
+            bail!(
+                "No {label} vault for mint {} owned by pool authority {} is named by this instruction. \
+                Debug: accounts matching mint: {:?}, accounts matching authority: {:?}, \
+                accounts in instruction: {:?}, instruction_accounts param: {:?}",
+                mint,
+                authority,
+                matching_mint,
+                matching_authority,
+                in_instruction,
+                instruction_accounts
+            )
+        }
         many => bail!(
             "Ambiguous {label} vault for mint {}: account indices {:?}",
             mint,
@@ -133,7 +157,20 @@ fn compute_single_balance_diff(
             // Diff = post - pre (positive if tokens added to vault, negative if removed)
             Ok(post_amount - pre_amount)
         }
-        _ => bail!("Missing balance data for account index {}", account_index),
+        (None, _) => {
+            bail!(
+                "Missing pre-balance data for account index {}. Available pre-balance indices: {:?}",
+                account_index,
+                pre_balances.iter().map(|b| b.account_index).collect::<Vec<_>>()
+            )
+        }
+        (_, None) => {
+            bail!(
+                "Missing post-balance data for account index {}. Available post-balance indices: {:?}",
+                account_index,
+                post_balances.iter().map(|b| b.account_index).collect::<Vec<_>>()
+            )
+        }
     }
 }
 

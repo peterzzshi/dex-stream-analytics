@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tracing::{debug, warn};
 
 use crate::Event;
@@ -18,7 +18,7 @@ pub struct FinalityBuffer {
     mode: FinalityMode,
     max_pending_blocks: usize,
     max_pending_events: usize,
-    inner: Arc<Mutex<BufferInner>>,
+    inner: Mutex<BufferInner>,
 }
 
 struct BufferInner {
@@ -40,12 +40,12 @@ impl FinalityBuffer {
             mode,
             max_pending_blocks: DEFAULT_MAX_PENDING_BLOCKS,
             max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
-            inner: Arc::new(Mutex::new(BufferInner {
+            inner: Mutex::new(BufferInner {
                 pending: HashMap::new(),
                 seen_events: HashMap::new(),
                 highest_block: 0,
                 last_finalized_block: 0,
-            })),
+            }),
         }
     }
 
@@ -63,6 +63,8 @@ impl FinalityBuffer {
     pub fn add(&self, event: Event, external_finalized: Option<u64>) -> AddResult {
         match self.mode {
             FinalityMode::Depth(confirmations) => {
+                // Depth(0) bypasses buffering and deduplication entirely, returning events
+                // immediately. Duplicates may pass through since no state is tracked.
                 if confirmations == 0 {
                     return AddResult {
                         confirmed: vec![event],
@@ -115,7 +117,7 @@ impl FinalityBuffer {
             inner.highest_block = block_num;
         }
 
-        let evicted = self.evict_if_over_limit(&mut inner);
+        let evicted = self.enforce_limits(&mut inner);
         let confirmed = self.release_confirmed(&mut inner, confirmations);
 
         if inner.highest_block >= confirmations {
@@ -161,16 +163,12 @@ impl FinalityBuffer {
             .or_insert_with(Vec::new)
             .push(event);
 
-        let total_events: usize = inner.pending.values().map(|v| v.len()).sum();
-        if total_events > self.max_pending_events {
-            warn!(
-                "Buffer size limit exceeded: {} events (limit: {}), evicting oldest",
-                total_events, self.max_pending_events
-            );
-            return self.evict_oldest(&mut inner);
-        }
+        let evicted = self.enforce_limits(&mut inner);
 
-        AddResult::default()
+        AddResult {
+            confirmed: vec![],
+            evicted,
+        }
     }
 
     fn advance_finalized_position(&self, inner: &mut BufferInner, finalized: u64) -> Vec<Event> {
@@ -185,16 +183,7 @@ impl FinalityBuffer {
             return vec![];
         }
 
-        if finalized > DEDUP_RETENTION_BLOCKS {
-            let cleanup_threshold = finalized - DEDUP_RETENTION_BLOCKS;
-            inner
-                .seen_events
-                .retain(|_, &mut event_block| event_block > cleanup_threshold);
-            debug!(
-                "Cleaned up dedup cache, {} entries remain",
-                inner.seen_events.len()
-            );
-        }
+        self.retain_dedup_window(inner, finalized);
 
         let slots_to_release: Vec<u64> = inner
             .pending
@@ -221,16 +210,25 @@ impl FinalityBuffer {
         }
         inner.last_finalized_block = finalized_block;
 
-        if finalized_block > DEDUP_RETENTION_BLOCKS {
-            let cleanup_threshold = finalized_block - DEDUP_RETENTION_BLOCKS;
-            inner
-                .seen_events
-                .retain(|_, &mut event_block| event_block > cleanup_threshold);
-            debug!(
-                "Cleaned up dedup cache, {} entries remain",
-                inner.seen_events.len()
-            );
+        self.retain_dedup_window(inner, finalized_block);
+    }
+
+    /// Drops dedup entries older than the retention window behind `finalized_block`.
+    ///
+    /// Callers differ in how they treat `last_finalized_block`; only the retention window
+    /// itself is shared.
+    fn retain_dedup_window(&self, inner: &mut BufferInner, finalized_block: u64) {
+        if finalized_block <= DEDUP_RETENTION_BLOCKS {
+            return;
         }
+        let cleanup_threshold = finalized_block - DEDUP_RETENTION_BLOCKS;
+        inner
+            .seen_events
+            .retain(|_, &mut event_block| event_block > cleanup_threshold);
+        debug!(
+            "Cleaned up dedup cache, {} entries remain",
+            inner.seen_events.len()
+        );
     }
 
     pub fn flush(&self) -> Vec<Event> {
@@ -255,7 +253,7 @@ impl FinalityBuffer {
         inner.pending.values().map(|v| v.len()).sum()
     }
 
-    fn evict_if_over_limit(&self, inner: &mut BufferInner) -> Vec<Event> {
+    fn enforce_limits(&self, inner: &mut BufferInner) -> Vec<Event> {
         let total_events: usize = inner.pending.values().map(|v| v.len()).sum();
         let total_blocks = inner.pending.len();
 
@@ -263,16 +261,17 @@ impl FinalityBuffer {
             return vec![];
         }
 
+        // Every evicted block moves its events from `pending` to `evicted`, so
+        // `evicted.len() + pending total` is just `total_events` on every iteration.
+        let over_event_limit = total_events > self.max_pending_events;
+
         let mut blocks: Vec<u64> = inner.pending.keys().copied().collect();
         blocks.sort_unstable();
 
         let mut evicted = Vec::new();
 
         for block_num in blocks {
-            if inner.pending.len() <= self.max_pending_blocks
-                && evicted.len() + inner.pending.values().map(|v| v.len()).sum::<usize>()
-                    <= self.max_pending_events
-            {
+            if !over_event_limit && inner.pending.len() <= self.max_pending_blocks {
                 break;
             }
 
@@ -287,27 +286,6 @@ impl FinalityBuffer {
         }
 
         evicted
-    }
-
-    fn evict_oldest(&self, inner: &mut BufferInner) -> AddResult {
-        let oldest_block = inner.pending.keys().min().copied();
-
-        match oldest_block {
-            Some(block) => {
-                let evicted = inner.pending.remove(&block).unwrap_or_default();
-                warn!(
-                    "Evicted {} events from block {} (oldest)",
-                    evicted.len(),
-                    block
-                );
-
-                AddResult {
-                    confirmed: vec![],
-                    evicted,
-                }
-            }
-            None => AddResult::default(),
-        }
     }
 
     fn release_confirmed(&self, inner: &mut BufferInner, confirmations: u64) -> Vec<Event> {
@@ -501,5 +479,109 @@ mod tests {
         let flushed = buffer.flush();
         assert_eq!(flushed.len(), 3);
         assert_eq!(buffer.pending(), 0);
+    }
+
+    #[test]
+    fn test_external_enforces_event_limit_on_burst() {
+        let buffer = FinalityBuffer::new(FinalityMode::External).with_event_limit(5);
+
+        // Add 10 events across 10 blocks, all unfinalized
+        for i in 100..110 {
+            buffer.add(mock_event(i), Some(95));
+        }
+
+        // Buffer should have evicted to stay under the 5-event limit
+        let pending = buffer.pending();
+        assert!(
+            pending <= 5,
+            "Expected pending <= 5 after burst, got {}",
+            pending
+        );
+    }
+
+    #[test]
+    fn test_external_enforces_block_limit_on_burst() {
+        let buffer = FinalityBuffer::new(FinalityMode::External).with_limits(3, 100_000);
+
+        // Add 10 events across 10 blocks, all unfinalized
+        for i in 100..110 {
+            buffer.add(mock_event(i), Some(95));
+        }
+
+        // Buffer should have evicted to stay under the 3-block limit
+        let inner = buffer.inner.lock().unwrap();
+        let pending_blocks = inner.pending.len();
+        assert!(
+            pending_blocks <= 3,
+            "Expected pending blocks <= 3 after burst, got {}",
+            pending_blocks
+        );
+    }
+
+    #[test]
+    fn test_external_enforces_both_limits() {
+        let buffer = FinalityBuffer::new(FinalityMode::External).with_limits(2, 3);
+
+        // Add 5 events across 5 blocks
+        for i in 100..105 {
+            buffer.add(mock_event(i), Some(95));
+        }
+
+        let inner = buffer.inner.lock().unwrap();
+        let pending_blocks = inner.pending.len();
+        let pending_events: usize = inner.pending.values().map(|v| v.len()).sum();
+
+        assert!(
+            pending_blocks <= 2,
+            "Expected pending blocks <= 2, got {}",
+            pending_blocks
+        );
+        assert!(
+            pending_events <= 3,
+            "Expected pending events <= 3, got {}",
+            pending_events
+        );
+    }
+
+    #[test]
+    fn test_depth_enforces_event_limit_on_burst() {
+        let buffer = FinalityBuffer::new(FinalityMode::Depth(10)).with_event_limit(5);
+
+        // Add 10 events across 10 blocks
+        for i in 100..110 {
+            buffer.add(mock_event(i), None);
+        }
+
+        let pending = buffer.pending();
+        assert!(
+            pending <= 5,
+            "Expected pending <= 5 after burst in depth mode, got {}",
+            pending
+        );
+    }
+
+    #[test]
+    fn test_depth_enforces_both_limits() {
+        let buffer = FinalityBuffer::new(FinalityMode::Depth(10)).with_limits(2, 3);
+
+        // Add 5 events across 5 blocks
+        for i in 100..105 {
+            buffer.add(mock_event(i), None);
+        }
+
+        let inner = buffer.inner.lock().unwrap();
+        let pending_blocks = inner.pending.len();
+        let pending_events: usize = inner.pending.values().map(|v| v.len()).sum();
+
+        assert!(
+            pending_blocks <= 2,
+            "Expected pending blocks <= 2 in depth mode, got {}",
+            pending_blocks
+        );
+        assert!(
+            pending_events <= 3,
+            "Expected pending events <= 3 in depth mode, got {}",
+            pending_events
+        );
     }
 }

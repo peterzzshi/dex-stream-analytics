@@ -77,13 +77,15 @@ impl PythOracle {
 
     async fn fetch_pyth_price(&self, feed: PythFeed) -> Result<f64> {
         let price_feed = feed.account;
-        // Create RPC client
-        let rpc_client = RpcClient::new(self.rpc_url.clone());
 
-        // Fetch the price feed account data
-        let account_data = rpc_client
-            .get_account_data(&price_feed)
-            .context("Failed to fetch Pyth price feed account")?;
+        // Fetch account data (blocking call, run in tokio blocking thread)
+        let rpc_url = self.rpc_url.clone();
+        let account_data = tokio::task::spawn_blocking(move || {
+            let rpc_client = RpcClient::new(rpc_url);
+            rpc_client.get_account_data(&price_feed)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Task join error: {}", e))??;
 
         // Deserialize the price feed using pyth-solana-receiver-sdk.
         // PriceUpdateV2::price_message is a flat PriceFeedMessage (no separate

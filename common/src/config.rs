@@ -89,7 +89,7 @@ fn required<F>(get_env: &F, key: &str) -> Result<String>
 where
     F: Fn(&str) -> Result<String, VarError>,
 {
-    get_env(key).with_context(|| format!("{key} not set"))
+    get_env(key).with_context(|| format!("{key} environment variable not set"))
 }
 
 fn required_parsed<T, F>(get_env: &F, key: &str) -> Result<T>

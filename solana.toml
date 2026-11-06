@@ -52,3 +52,23 @@ symbol = "mSOL"
 address = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2"
 token0 = "So11111111111111111111111111111111111111112"
 token1 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+[[pools]]
+address = "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA"
+token0 = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R"  # RAY
+token1 = "So11111111111111111111111111111111111111112"  # SOL
+
+[[pools]]
+address = "7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX"
+token0 = "So11111111111111111111111111111111111111112"  # SOL
+token1 = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"  # USDT
+
+[[pools]]
+address = "HCk6LA93xPVsF8g4v6gjkiCd88tLXwZq4eJwiYNHR8da"
+token0 = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"  # BONK
+token1 = "So11111111111111111111111111111111111111112"  # SOL
+
+[[pools]]
+address = "D8wAxwpH2aKaEGBKfeGdnQbCc2s54NrRvTDXCK98VAeT"
+token0 = "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL"  # JTO
+token1 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # USDC

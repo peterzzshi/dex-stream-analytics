@@ -33,8 +33,21 @@ fn exit_sidecar_unreachable(error: SidecarUnreachable) -> ! {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let log_level = match std::env::var("RUST_LOG")
+        .unwrap_or_else(|_| "info".to_string())
+        .to_lowercase()
+        .as_str()
+    {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "info" => Level::INFO,
+        "warn" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::INFO,
+    };
+
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(log_level)
         .with_target(false)
         .finish();
     tracing::subscriber::set_global_default(subscriber)
@@ -250,7 +263,7 @@ async fn subscribe_to_logs(
                                 }
                             }
                             Err(e) => {
-                                warn!(pool = %pool_address, "Failed to process log: {}", e);
+                                // Ignorable events (Sync, Transfer, unknown) are logged as trace/debug in listener
                             }
                         }
                     }

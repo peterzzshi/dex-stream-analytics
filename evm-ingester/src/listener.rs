@@ -55,6 +55,8 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
         Ok(listener)
     }
 
+    /// Process a log and return an event if it's a supported type.
+    /// Logs and skips events we want to ignore (Sync, Transfer, unknown topics).
     pub async fn process_log(&self, log: Log) -> Result<Event> {
         if log.topics.is_empty() {
             anyhow::bail!("log has no topics");
@@ -62,16 +64,35 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
 
         let topic = log.topics[0];
 
-        if topic == decoder::swap_event_topic() {
-            self.parse_swap_event(log).await
-        } else if topic == decoder::mint_event_topic() {
-            self.parse_mint_event(log).await
-        } else if topic == decoder::burn_event_topic() {
-            self.parse_burn_event(log).await
-        } else if topic == decoder::transfer_event_topic() {
-            self.parse_transfer_event(log).await
-        } else {
-            anyhow::bail!("unknown event topic: {:?}", topic);
+        tracing::debug!(
+            pool = %self.pool.pair_address,
+            "Processing log: topics={:?}, data_len={}, block={:?}, tx={:?}",
+            log.topics,
+            log.data.len(),
+            log.block_number,
+            log.transaction_hash
+        );
+
+        match topic {
+            t if t == decoder::swap_event_topic() => self.parse_swap_event(log).await,
+            t if t == decoder::mint_event_topic() => self.parse_mint_event(log).await,
+            t if t == decoder::burn_event_topic() => self.parse_burn_event(log).await,
+            t if t == decoder::sync_event_topic() => {
+                tracing::trace!(pool = %self.pool.pair_address, "Ignoring Sync event");
+                anyhow::bail!("sync event (ignored)")
+            }
+            t if t == decoder::transfer_event_topic() => {
+                tracing::trace!(pool = %self.pool.pair_address, "Ignoring Transfer event");
+                anyhow::bail!("transfer event (ignored)")
+            }
+            _ => {
+                tracing::debug!(
+                    pool = %self.pool.pair_address,
+                    topic = ?topic,
+                    "Skipping unknown event type"
+                );
+                anyhow::bail!("unknown event type")
+            }
         }
     }
 
@@ -207,39 +228,6 @@ impl<O: PriceOracle, P: Middleware + 'static> Listener<O, P> {
             recipient: format!("{:?}", burn_data.recipient),
             amount0: burn_data.amount0.to_string(),
             amount1: burn_data.amount1.to_string(),
-            event_timestamp,
-        }))
-    }
-
-    async fn parse_transfer_event(&self, log: Log) -> Result<Event> {
-        let transfer_data = decoder::parse_transfer_log(&log)?;
-
-        let block_number = log.block_number.context("log missing block number")?;
-        let block_timestamp = self.fetch_block_timestamp(block_number).await?;
-        let (event_id, log_index, event_timestamp) = self.extract_log_fields(&log)?;
-
-        let (token0_address, token1_address) = (self.token0_address, self.token1_address);
-
-        Ok(Event::Transfer(TransferEvent {
-            event_id,
-            block_number: block_number.as_u64() as i64,
-            block_timestamp,
-            transaction_hash: format!(
-                "{:?}",
-                log.transaction_hash
-                    .context("log missing transaction hash")?
-            ),
-            log_index,
-            chain: self.chain.clone(),
-            chain_name: self.chain_name.clone(),
-            pair_address: self.pool.pair_address.clone(),
-            token0: format!("{:?}", token0_address),
-            token1: format!("{:?}", token1_address),
-            token0_symbol: None,
-            token1_symbol: None,
-            from: format!("{:?}", transfer_data.from),
-            to: format!("{:?}", transfer_data.to),
-            value: transfer_data.value.to_string(),
             event_timestamp,
         }))
     }

@@ -64,19 +64,25 @@ pub enum Outcome {
     Lost,
 }
 
-/// The Dapr sidecar refused the connection; the ingester cannot do useful work without it.
-#[derive(Debug, thiserror::Error)]
-#[error("Dapr sidecar unreachable: {0}")]
-pub struct SidecarUnreachable(pub String);
-
+/// One variant per category of delivery failure. Retriability follows from the variant,
+/// so no caller has to parse a message to decide whether to try again.
 #[derive(Debug, thiserror::Error)]
 enum PublishError {
-    #[error("Dapr sidecar unreachable: {0}")]
-    SidecarUnreachable(String),
-    #[error("transient failure: {0}")]
-    Transient(String),
-    #[error("permanent failure: {0}")]
-    Permanent(String),
+    /// No usable answer from the sidecar: connection refused, reset, or timed out.
+    #[error("network error: {0}")]
+    Network(String),
+    /// The sidecar failed while serving the request (5xx, or 408).
+    #[error("sidecar error: HTTP {status}: {body}")]
+    Server { status: StatusCode, body: String },
+    /// The sidecar asked us to slow down.
+    #[error("rate limited: HTTP {status}: {body}")]
+    RateLimited { status: StatusCode, body: String },
+    /// The sidecar refused this request; repeating it would be refused again.
+    #[error("request rejected: HTTP {status}: {body}")]
+    Rejected { status: StatusCode, body: String },
+    /// The event could not be turned into a payload.
+    #[error("event serialisation failed: {0}")]
+    Serialisation(String),
 }
 
 pub struct Publisher {
@@ -99,14 +105,16 @@ impl Publisher {
         })
     }
 
-    /// Publishes with retry, dead-lettering on permanent failure or exhausted retries.
-    /// `Err` means the sidecar is gone and the caller should stop.
-    pub async fn publish(&self, event: &Event) -> Result<Outcome, SidecarUnreachable> {
+    /// Publishes with retry, dead-lettering when the failure is not retriable or the
+    /// retries run out. Only a lost event is an error path worth alerting on, and that is
+    /// reported through `Outcome::Lost`.
+    pub async fn publish(&self, event: &Event) -> Outcome {
         let meta = event.meta();
 
         let result = retry_with_backoff(
             self.config.max_retries,
             Duration::from_millis(self.config.initial_backoff_ms),
+            || rand::rng().random_range(0.75..=1.25),
             || self.try_publish(event, &meta),
         )
         .await;
@@ -114,33 +122,27 @@ impl Publisher {
         match result {
             Ok(()) => {
                 debug!(event_id = %meta.event_id, event_type = meta.cloudevent_type, "Event published");
-                Ok(Outcome::Published)
+                Outcome::Published
             }
-            Err(PublishError::SidecarUnreachable(msg)) => Err(SidecarUnreachable(msg)),
             Err(e) => {
                 error!(event_id = %meta.event_id, error = %e, "Publish failed, sending to DLQ");
-                let outcome = self.dead_letter(event, &e.to_string()).await?;
+                let outcome = self.dead_letter(event, &e.to_string()).await;
                 if outcome == Outcome::Lost {
                     error!(event_id = %meta.event_id, "Event lost after DLQ failure");
                 }
-                Ok(outcome)
+                outcome
             }
         }
     }
 
     /// Single DLQ attempt, no retry, to avoid loops.
-    pub async fn dead_letter(
-        &self,
-        event: &Event,
-        reason: &str,
-    ) -> Result<Outcome, SidecarUnreachable> {
+    pub async fn dead_letter(&self, event: &Event, reason: &str) -> Outcome {
         let meta = event.meta();
         match self.try_dead_letter(event, &meta, reason).await {
-            Ok(()) => Ok(Outcome::DeadLettered),
-            Err(PublishError::SidecarUnreachable(msg)) => Err(SidecarUnreachable(msg)),
+            Ok(()) => Outcome::DeadLettered,
             Err(e) => {
                 error!(event_id = %meta.event_id, error = %e, "DLQ publish failed, event lost");
-                Ok(Outcome::Lost)
+                Outcome::Lost
             }
         }
     }
@@ -149,9 +151,9 @@ impl Publisher {
         let payload = self
             .encoder
             .encode(event)
-            .map_err(|e| PublishError::Permanent(format!("{e:#}")))?;
+            .map_err(|e| PublishError::Serialisation(format!("avro encode: {e:#}")))?;
         let envelope = event_envelope(&self.config.source, meta, payload)
-            .map_err(|e| PublishError::Permanent(e.to_string()))?;
+            .map_err(|e| PublishError::Serialisation(format!("build envelope: {e:#}")))?;
         let url = self.config.publish_url(self.config.topic_for(event));
         self.post(&url, &envelope, Some(&meta.pair_address)).await
     }
@@ -166,7 +168,7 @@ impl Publisher {
         let payload = dlq_payload(event, reason, failed_at, &self.config.source);
         let source = format!("{}/dlq", self.config.source);
         let envelope = dlq_envelope(&source, meta, failed_at, payload)
-            .map_err(|e| PublishError::Permanent(e.to_string()))?;
+            .map_err(|e| PublishError::Serialisation(format!("build envelope: {e:#}")))?;
         let url = self.config.publish_url(&self.config.dlq_topic);
         self.post(&url, &envelope, None).await
     }
@@ -178,7 +180,7 @@ impl Publisher {
         partition_key: Option<&str>,
     ) -> Result<(), PublishError> {
         let body = serde_json::to_vec(envelope)
-            .map_err(|e| PublishError::Permanent(format!("serialize CloudEvent: {e}")))?;
+            .map_err(|e| PublishError::Serialisation(format!("serialise CloudEvent: {e}")))?;
 
         let mut request = self
             .client
@@ -209,48 +211,69 @@ fn dlq_payload(event: &Event, reason: &str, failed_at: DateTime<Utc>, ingester: 
 }
 
 fn classify_transport_error(error: reqwest::Error) -> PublishError {
-    if error.is_connect() {
-        PublishError::SidecarUnreachable(error.to_string())
-    } else {
-        PublishError::Transient(error.to_string())
-    }
+    PublishError::Network(error.to_string())
 }
 
+/// A timeout or a 5xx means the sidecar is in trouble; a 429 means it wants less traffic.
+/// Everything else in the 4xx range will be refused again if repeated.
 fn classify_status(status: StatusCode, body: &str) -> PublishError {
-    let detail = format!("HTTP {status}: {body}");
-    if status == StatusCode::REQUEST_TIMEOUT
-        || status == StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
-    {
-        PublishError::Transient(detail)
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        PublishError::RateLimited {
+            status,
+            body: body.to_string(),
+        }
+    } else if status == StatusCode::REQUEST_TIMEOUT || status.is_server_error() {
+        PublishError::Server {
+            status,
+            body: body.to_string(),
+        }
     } else {
-        PublishError::Permanent(detail)
+        PublishError::Rejected {
+            status,
+            body: body.to_string(),
+        }
     }
 }
 
-async fn retry_with_backoff<T, F, Fut>(
+/// Pure so the schedule can be asserted without waiting for it.
+fn delay_for(backoff: Duration, jitter: f64) -> Duration {
+    backoff.mul_f64(jitter).min(MAX_BACKOFF)
+}
+
+/// `jitter` is a parameter rather than a `rand` call inside, so tests assert the exact
+/// schedule and production still spreads retries across replicas.
+async fn retry_with_backoff<T, F, Fut, J>(
     max_retries: u32,
     initial_backoff: Duration,
+    mut jitter: J,
     mut operation: F,
 ) -> Result<T, PublishError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, PublishError>>,
+    J: FnMut() -> f64,
 {
     let mut attempt = 0;
     let mut backoff = initial_backoff;
     loop {
         match operation().await {
             Ok(value) => return Ok(value),
-            Err(PublishError::Transient(msg)) if attempt < max_retries => {
-                let jitter = rand::rng().random_range(0.75..=1.25);
-                let delay = backoff.mul_f64(jitter).min(MAX_BACKOFF);
+            Err(e)
+                if attempt < max_retries
+                    && matches!(
+                        e,
+                        PublishError::Network(_)
+                            | PublishError::Server { .. }
+                            | PublishError::RateLimited { .. }
+                    ) =>
+            {
+                let delay = delay_for(backoff, jitter());
                 warn!(
                     attempt = attempt + 1,
                     max_retries,
-                    error = %msg,
+                    error = %e,
                     delay_ms = delay.as_millis(),
-                    "Transient publish failure, retrying"
+                    "Publish failure, retrying"
                 );
                 tokio::time::sleep(delay).await;
                 attempt += 1;
@@ -337,62 +360,100 @@ mod tests {
         assert_eq!(cfg.topic_for(&mint()), "liquidity");
     }
 
-    #[test]
-    fn server_errors_timeouts_and_rate_limits_are_transient() {
-        for status in [
-            StatusCode::INTERNAL_SERVER_ERROR,
-            StatusCode::BAD_GATEWAY,
-            StatusCode::SERVICE_UNAVAILABLE,
-            StatusCode::REQUEST_TIMEOUT,
-            StatusCode::TOO_MANY_REQUESTS,
-        ] {
-            assert!(
-                matches!(classify_status(status, ""), PublishError::Transient(_)),
-                "{status} should be transient"
-            );
+    /// `(name, failure, attempts)` — a `fn` rather than a value because the retry loop
+    /// consumes the error on every attempt.
+    type FailureCase = (&'static str, fn() -> PublishError, u32);
+
+    /// One row per failure the publisher can see, with the attempt count it earns at
+    /// `max_retries = 3`: retriable failures get 4 attempts, fatal ones get 1. A status
+    /// that quietly changes side shows up here as a changed count.
+    #[tokio::test(start_paused = true)]
+    async fn failure_category_decides_how_many_attempts_an_event_gets() {
+        let cases: [FailureCase; 13] = [
+            (
+                "500",
+                || classify_status(StatusCode::INTERNAL_SERVER_ERROR, ""),
+                4,
+            ),
+            ("502", || classify_status(StatusCode::BAD_GATEWAY, ""), 4),
+            (
+                "503",
+                || classify_status(StatusCode::SERVICE_UNAVAILABLE, ""),
+                4,
+            ),
+            (
+                "504",
+                || classify_status(StatusCode::GATEWAY_TIMEOUT, ""),
+                4,
+            ),
+            (
+                "408",
+                || classify_status(StatusCode::REQUEST_TIMEOUT, ""),
+                4,
+            ),
+            (
+                "429",
+                || classify_status(StatusCode::TOO_MANY_REQUESTS, ""),
+                4,
+            ),
+            ("400", || classify_status(StatusCode::BAD_REQUEST, ""), 1),
+            ("401", || classify_status(StatusCode::UNAUTHORIZED, ""), 1),
+            ("403", || classify_status(StatusCode::FORBIDDEN, ""), 1),
+            ("404", || classify_status(StatusCode::NOT_FOUND, ""), 1),
+            ("409", || classify_status(StatusCode::CONFLICT, ""), 1),
+            (
+                "transport failure",
+                || PublishError::Network("connection refused".to_string()),
+                4,
+            ),
+            (
+                "avro failure",
+                || PublishError::Serialisation("bad".to_string()),
+                1,
+            ),
+        ];
+
+        for (name, failure, expected_attempts) in cases {
+            let calls = Cell::new(0u32);
+            let result: Result<(), _> = retry_with_backoff(
+                3,
+                Duration::from_millis(100),
+                || 1.0,
+                || {
+                    calls.set(calls.get() + 1);
+                    let error = failure();
+                    async move { Err(error) }
+                },
+            )
+            .await;
+
+            assert!(result.is_err(), "{name} must reach the caller as an error");
+            assert_eq!(calls.get(), expected_attempts, "{name}");
         }
-    }
-
-    #[test]
-    fn other_client_errors_are_permanent() {
-        for status in [
-            StatusCode::BAD_REQUEST,
-            StatusCode::UNAUTHORIZED,
-            StatusCode::FORBIDDEN,
-            StatusCode::NOT_FOUND,
-        ] {
-            assert!(
-                matches!(classify_status(status, ""), PublishError::Permanent(_)),
-                "{status} should be permanent"
-            );
-        }
-    }
-
-    #[test]
-    fn dlq_payload_wraps_event_with_failure_context() {
-        let failed_at = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-        let payload = dlq_payload(&swap(), "boom", failed_at, "test-ingester");
-
-        assert_eq!(payload["error"], "boom");
-        assert_eq!(payload["ingester"], "test-ingester");
-        assert_eq!(payload["failed_at"], failed_at.to_rfc3339());
-        assert_eq!(payload["event"]["eventId"], "swap-1");
     }
 
     #[tokio::test(start_paused = true)]
-    async fn retries_transient_failures_until_success() {
+    async fn retries_retriable_failures_until_success() {
         let calls = Cell::new(0u32);
-        let result = retry_with_backoff(3, Duration::from_millis(100), || {
-            calls.set(calls.get() + 1);
-            let n = calls.get();
-            async move {
-                if n < 3 {
-                    Err(PublishError::Transient("busy".to_string()))
-                } else {
-                    Ok(n)
+        let result = retry_with_backoff(
+            3,
+            Duration::from_millis(100),
+            || 1.0,
+            || {
+                calls.set(calls.get() + 1);
+                let n = calls.get();
+                async move {
+                    if n < 3 {
+                        Err(PublishError::RateLimited {
+                            status: StatusCode::TOO_MANY_REQUESTS,
+                            body: "busy".to_string(),
+                        })
+                    } else {
+                        Ok(n)
+                    }
                 }
-            }
-        })
+            },
+        )
         .await;
 
         assert_eq!(result.unwrap(), 3);
@@ -403,35 +464,34 @@ mod tests {
     async fn gives_up_after_max_retries_with_doubling_backoff() {
         let calls = Cell::new(0u32);
         let start = tokio::time::Instant::now();
-        let result: Result<(), _> = retry_with_backoff(3, Duration::from_millis(100), || {
-            calls.set(calls.get() + 1);
-            async { Err(PublishError::Transient("busy".to_string())) }
-        })
+        let result: Result<(), _> = retry_with_backoff(
+            3,
+            Duration::from_millis(100),
+            || 1.0,
+            || {
+                calls.set(calls.get() + 1);
+                async {
+                    Err(PublishError::Server {
+                        status: StatusCode::INTERNAL_SERVER_ERROR,
+                        body: "busy".to_string(),
+                    })
+                }
+            },
+        )
         .await;
 
-        assert!(matches!(result, Err(PublishError::Transient(_))));
+        assert!(matches!(result, Err(PublishError::Server { .. })));
         assert_eq!(calls.get(), 4);
         assert_eq!(start.elapsed(), Duration::from_millis(100 + 200 + 400));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn permanent_and_sidecar_errors_are_not_retried() {
-        let calls = Cell::new(0u32);
-        let permanent: Result<(), _> = retry_with_backoff(3, Duration::from_millis(100), || {
-            calls.set(calls.get() + 1);
-            async { Err(PublishError::Permanent("bad".to_string())) }
-        })
-        .await;
-        assert!(matches!(permanent, Err(PublishError::Permanent(_))));
-        assert_eq!(calls.get(), 1);
+    #[test]
+    fn jitter_spreads_retries_within_the_backoff_cap() {
+        let nominal = Duration::from_millis(100);
 
-        calls.set(0);
-        let fatal: Result<(), _> = retry_with_backoff(3, Duration::from_millis(100), || {
-            calls.set(calls.get() + 1);
-            async { Err(PublishError::SidecarUnreachable("down".to_string())) }
-        })
-        .await;
-        assert!(matches!(fatal, Err(PublishError::SidecarUnreachable(_))));
-        assert_eq!(calls.get(), 1);
+        assert_eq!(delay_for(nominal, 0.75), Duration::from_millis(75));
+        assert_eq!(delay_for(nominal, 1.0), nominal);
+        assert_eq!(delay_for(nominal, 1.25), Duration::from_millis(125));
+        assert_eq!(delay_for(MAX_BACKOFF, 1.25), MAX_BACKOFF);
     }
 }

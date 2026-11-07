@@ -107,11 +107,7 @@ impl FinalityBuffer {
         }
         inner.seen_events.insert(meta.event_id, block_num);
 
-        inner
-            .pending
-            .entry(block_num)
-            .or_insert_with(Vec::new)
-            .push(event);
+        inner.pending.entry(block_num).or_default().push(event);
 
         if block_num > inner.highest_block {
             inner.highest_block = block_num;
@@ -157,11 +153,7 @@ impl FinalityBuffer {
             };
         }
 
-        inner
-            .pending
-            .entry(block_num)
-            .or_insert_with(Vec::new)
-            .push(event);
+        inner.pending.entry(block_num).or_default().push(event);
 
         let evicted = self.enforce_limits(&mut inner);
 
@@ -353,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_zero_confirmations_passes_through() {
+    fn depth_zero_confirmations_passes_through() {
         let buffer = FinalityBuffer::new(FinalityMode::Depth(0));
         let result = buffer.add(mock_event(100), None);
         assert_eq!(result.confirmed.len(), 1);
@@ -362,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_buffer_holds_until_confirmed() {
+    fn depth_buffer_holds_until_confirmed() {
         let buffer = FinalityBuffer::new(FinalityMode::Depth(3));
 
         let result = buffer.add(mock_event(100), None);
@@ -379,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_multiple_blocks_released() {
+    fn depth_multiple_blocks_released() {
         let buffer = FinalityBuffer::new(FinalityMode::Depth(2));
 
         let r1 = buffer.add(mock_event(100), None);
@@ -397,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_eviction_on_block_limit() {
+    fn depth_eviction_on_block_limit() {
         let buffer = FinalityBuffer::new(FinalityMode::Depth(10)).with_limits(2, 100_000);
 
         buffer.add(mock_event(100), None);
@@ -409,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_duplicate_filtering() {
+    fn depth_duplicate_filtering() {
         let buffer = FinalityBuffer::new(FinalityMode::Depth(10));
 
         let result1 = buffer.add(mock_event(100), None);
@@ -422,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn test_external_immediate_confirmation() {
+    fn external_immediate_confirmation() {
         let buffer = FinalityBuffer::new(FinalityMode::External);
 
         let event = mock_event(100);
@@ -434,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn test_external_buffering_and_release() {
+    fn external_buffering_and_release() {
         let buffer = FinalityBuffer::new(FinalityMode::External);
 
         buffer.add(mock_event(100), Some(95));
@@ -453,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn test_external_duplicate_filtering() {
+    fn external_duplicate_filtering() {
         let buffer = FinalityBuffer::new(FinalityMode::External);
 
         let event1 = mock_event(100);
@@ -469,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_returns_all_events() {
+    fn flush_returns_all_events() {
         let buffer = FinalityBuffer::new(FinalityMode::Depth(10));
 
         buffer.add(mock_event(100), None);
@@ -482,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn test_external_enforces_event_limit_on_burst() {
+    fn external_enforces_event_limit_on_burst() {
         let buffer = FinalityBuffer::new(FinalityMode::External).with_event_limit(5);
 
         // Add 10 events across 10 blocks, all unfinalized
@@ -500,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn test_external_enforces_block_limit_on_burst() {
+    fn external_enforces_block_limit_on_burst() {
         let buffer = FinalityBuffer::new(FinalityMode::External).with_limits(3, 100_000);
 
         // Add 10 events across 10 blocks, all unfinalized
@@ -519,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_external_enforces_both_limits() {
+    fn external_enforces_both_limits() {
         let buffer = FinalityBuffer::new(FinalityMode::External).with_limits(2, 3);
 
         // Add 5 events across 5 blocks
@@ -544,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_enforces_event_limit_on_burst() {
+    fn depth_enforces_event_limit_on_burst() {
         let buffer = FinalityBuffer::new(FinalityMode::Depth(10)).with_event_limit(5);
 
         // Add 10 events across 10 blocks
@@ -561,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_enforces_both_limits() {
+    fn depth_enforces_both_limits() {
         let buffer = FinalityBuffer::new(FinalityMode::Depth(10)).with_limits(2, 3);
 
         // Add 5 events across 5 blocks

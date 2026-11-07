@@ -87,6 +87,7 @@ impl RpcClient {
         let (shutdown_sender, shutdown_receiver) = oneshot::channel();
 
         let task = tokio::spawn(async move {
+            let mut shutdown_receiver = shutdown_receiver;
             let (mut stream, unsubscribe) = match client.logs_subscribe(filter, config).await {
                 Ok(subscription) => subscription,
                 Err(e) => {
@@ -103,7 +104,6 @@ impl RpcClient {
                 return;
             }
 
-            let mut shutdown_receiver = shutdown_receiver;
             loop {
                 tokio::select! {
                     message = stream.next() => match message {
@@ -179,10 +179,8 @@ fn parse_commitment(commitment: &str) -> Result<CommitmentConfig> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn test_parse_commitment() {
+    fn parse_commitment() {
         assert!(parse_commitment("finalized").is_ok());
         assert!(parse_commitment("confirmed").is_ok());
         assert!(parse_commitment("processed").is_ok());

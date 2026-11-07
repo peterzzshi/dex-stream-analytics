@@ -67,7 +67,7 @@ impl AvroEncoder {
 
     fn encode_event<T: AvroEvent>(&self, event: &T) -> Result<Vec<u8>> {
         let schema = self.schema(T::EVENT_TYPE);
-        // The record name comes from the parsed schema rather than a hand-written literal
+        // The record name comes from the parsed schema rather than a handwritten literal
         // that could drift from the .avsc file.
         let name = schema.name().map_or("event", |name| name.name());
         let value =
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn swap_event_encodes_to_a_readable_record() {
         let encoder = AvroEncoder::new().expect("encoder");
-        let event = Event::Swap(crate::SwapEvent {
+        let event = Event::Swap(SwapEvent {
             event_id: "tx:0".into(),
             block_number: 100,
             block_timestamp: 1_700_000_000,

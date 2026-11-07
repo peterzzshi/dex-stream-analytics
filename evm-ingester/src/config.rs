@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn missing_rpc_url_is_named_in_the_error() {
-        let mut vars = env_vars();
+        let vars = env_vars();
         vars.retain(|(k, _)| *k != "ETH_RPC_URL");
 
         let err = Config::load(lookup(&vars), VALID).unwrap_err();

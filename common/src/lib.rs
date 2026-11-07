@@ -1,18 +1,22 @@
 mod avro;
 mod config;
 mod envelope;
+mod event_processor;
 mod finality;
 mod publisher;
+mod retry;
+mod stats;
 
 use serde::Serialize;
 
 pub use avro::AvroEncoder;
 pub use config::{DaprConfig, RetryConfig, Secret, SharedConfig, TopicsConfig};
-pub use envelope::{
-    dlq_envelope, event_envelope, EnvelopeError, AVRO_CONTENT_TYPE, DLQ_EVENT_TYPE,
-};
+pub use envelope::{dlq_envelope, event_envelope, AVRO_CONTENT_TYPE, DLQ_EVENT_TYPE};
+pub use event_processor::{EventProcessor, ProcessOutcome};
 pub use finality::{AddResult, FinalityBuffer, FinalityMode};
-pub use publisher::{Outcome, Publisher, PublisherConfig, SidecarUnreachable};
+pub use publisher::{Outcome, Publisher, PublisherConfig};
+pub use retry::{retry_with_classifier, Retriability};
+pub use stats::PoolStats;
 
 pub const SWAP_SCHEMA: &str = include_str!("../../schemas/SwapEvent.avsc");
 pub const MINT_SCHEMA: &str = include_str!("../../schemas/MintEvent.avsc");
@@ -131,6 +135,15 @@ pub enum Event {
 }
 
 impl Event {
+    pub fn event_type(&self) -> &'static str {
+        match self {
+            Event::Swap(_) => "swap",
+            Event::Mint(_) => "mint",
+            Event::Burn(_) => "burn",
+            Event::Transfer(_) => "transfer",
+        }
+    }
+
     pub fn meta(&self) -> EventMeta {
         match self {
             Event::Swap(e) => EventMeta {
@@ -192,9 +205,8 @@ mod tests {
         keys
     }
 
-    #[test]
-    fn swap_struct_matches_schema_fields() {
-        let swap = SwapEvent {
+    fn swap_event() -> SwapEvent {
+        SwapEvent {
             event_id: String::new(),
             block_number: 0,
             block_timestamp: 0,
@@ -218,13 +230,11 @@ mod tests {
             gas_used: 0,
             gas_price: String::new(),
             event_timestamp: 0,
-        };
-        assert_eq!(schema_field_names(SWAP_SCHEMA), struct_field_names(&swap));
+        }
     }
 
-    #[test]
-    fn mint_struct_matches_schema_fields() {
-        let mint = MintEvent {
+    fn mint_event() -> MintEvent {
+        MintEvent {
             event_id: String::new(),
             block_number: 0,
             block_timestamp: 0,
@@ -241,13 +251,11 @@ mod tests {
             amount0: String::new(),
             amount1: String::new(),
             event_timestamp: 0,
-        };
-        assert_eq!(schema_field_names(MINT_SCHEMA), struct_field_names(&mint));
+        }
     }
 
-    #[test]
-    fn burn_struct_matches_schema_fields() {
-        let burn = BurnEvent {
+    fn burn_event() -> BurnEvent {
+        BurnEvent {
             event_id: String::new(),
             block_number: 0,
             block_timestamp: 0,
@@ -265,13 +273,11 @@ mod tests {
             amount0: String::new(),
             amount1: String::new(),
             event_timestamp: 0,
-        };
-        assert_eq!(schema_field_names(BURN_SCHEMA), struct_field_names(&burn));
+        }
     }
 
-    #[test]
-    fn transfer_struct_matches_schema_fields() {
-        let transfer = TransferEvent {
+    fn transfer_event() -> TransferEvent {
+        TransferEvent {
             event_id: String::new(),
             block_number: 0,
             block_timestamp: 0,
@@ -288,10 +294,53 @@ mod tests {
             to: String::new(),
             value: String::new(),
             event_timestamp: 0,
-        };
-        assert_eq!(
-            schema_field_names(TRANSFER_SCHEMA),
-            struct_field_names(&transfer)
-        );
+        }
+    }
+
+    fn all_events() -> [Event; 4] {
+        [
+            Event::Swap(swap_event()),
+            Event::Mint(mint_event()),
+            Event::Burn(burn_event()),
+            Event::Transfer(transfer_event()),
+        ]
+    }
+
+    /// The `.avsc` files and these structs are two hand-maintained sources for the same
+    /// record, so silent drift between them would corrupt every published event.
+    #[test]
+    fn every_event_struct_matches_its_schema_fields() {
+        let cases = [
+            ("swap", SWAP_SCHEMA, struct_field_names(&swap_event())),
+            ("mint", MINT_SCHEMA, struct_field_names(&mint_event())),
+            ("burn", BURN_SCHEMA, struct_field_names(&burn_event())),
+            (
+                "transfer",
+                TRANSFER_SCHEMA,
+                struct_field_names(&transfer_event()),
+            ),
+        ];
+
+        for (name, schema, fields) in cases {
+            assert_eq!(
+                schema_field_names(schema),
+                fields,
+                "{name} struct drifted from its schema"
+            );
+        }
+    }
+
+    /// `event_type` is the canonical name; the CloudEvent type and the serde `eventType`
+    /// tag are both derived from it, so neither can drift from it or from each other.
+    #[test]
+    fn event_type_agrees_with_cloudevent_type_and_serde_tag() {
+        for event in all_events() {
+            let json = serde_json::to_value(&event).expect("event must serialize");
+            assert_eq!(json["eventType"], event.event_type());
+            assert_eq!(
+                event.meta().cloudevent_type,
+                format!("com.dex.events.{}", event.event_type())
+            );
+        }
     }
 }

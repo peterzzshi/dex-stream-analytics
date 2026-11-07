@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_valid_eth_address() {
+    fn is_valid_eth_address() {
         assert!(is_valid_eth_address(
             "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
         ));

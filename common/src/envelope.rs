@@ -1,27 +1,19 @@
 use crate::EventMeta;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use cloudevents::event::EventBuilderError;
 use cloudevents::{Event as CloudEvent, EventBuilder, EventBuilderV10};
 
 pub const AVRO_CONTENT_TYPE: &str = "application/avro-binary";
 pub const DLQ_EVENT_TYPE: &str = "com.dex.events.dlq";
 
-#[derive(Debug, thiserror::Error)]
-pub enum EnvelopeError {
-    #[error("event_timestamp {0} is not a valid unix timestamp")]
-    InvalidTimestamp(i64),
-    #[error("invalid CloudEvent: {0}")]
-    Build(#[from] EventBuilderError),
-}
-
 /// Avro payload carried as `data_base64`, `time` taken from the event timestamp (seconds).
-pub fn event_envelope(
-    source: &str,
-    meta: &EventMeta,
-    avro_payload: Vec<u8>,
-) -> Result<CloudEvent, EnvelopeError> {
-    let time = DateTime::from_timestamp(meta.event_timestamp, 0)
-        .ok_or(EnvelopeError::InvalidTimestamp(meta.event_timestamp))?;
+pub fn event_envelope(source: &str, meta: &EventMeta, avro_payload: Vec<u8>) -> Result<CloudEvent> {
+    let time = DateTime::from_timestamp(meta.event_timestamp, 0).ok_or_else(|| {
+        anyhow!(
+            "event_timestamp {} is not a valid unix timestamp",
+            meta.event_timestamp
+        )
+    })?;
 
     Ok(EventBuilderV10::new()
         .id(meta.event_id.clone())
@@ -39,7 +31,7 @@ pub fn dlq_envelope(
     meta: &EventMeta,
     failed_at: DateTime<Utc>,
     payload: serde_json::Value,
-) -> Result<CloudEvent, EnvelopeError> {
+) -> Result<CloudEvent> {
     Ok(EventBuilderV10::new()
         .id(format!("{}-dlq", meta.event_id))
         .source(source)
@@ -88,8 +80,11 @@ mod tests {
     fn event_envelope_rejects_out_of_range_timestamp() {
         let mut m = meta();
         m.event_timestamp = i64::MAX;
-        let err = event_envelope("s", &m, vec![0]).unwrap_err();
-        assert!(matches!(err, EnvelopeError::InvalidTimestamp(i64::MAX)));
+        let error = event_envelope("s", &m, vec![0]).unwrap_err();
+        assert!(
+            error.to_string().contains("not a valid unix timestamp"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

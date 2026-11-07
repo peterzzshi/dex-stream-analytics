@@ -257,7 +257,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_transfer_log_valid() {
+    fn parse_transfer_log_valid() {
         let from: Address = "0x1111111111111111111111111111111111111111"
             .parse()
             .unwrap();
@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_transfer_log_missing_topics() {
+    fn parse_transfer_log_missing_topics() {
         let log = Log {
             address: Address::zero(),
             topics: vec![transfer_event_topic()], // Missing from and to
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_transfer_log_zero_addresses() {
+    fn parse_transfer_log_zero_addresses() {
         let mut data = vec![0u8; 32];
         U256::from(1000u64).to_big_endian(&mut data);
 
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_transfer_log_invalid_data_length() {
+    fn parse_transfer_log_invalid_data_length() {
         let from: Address = "0x1111111111111111111111111111111111111111"
             .parse()
             .unwrap();

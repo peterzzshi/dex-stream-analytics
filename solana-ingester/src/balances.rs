@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_balance_diff() {
+    fn swap_balance_diff() {
         // Swap: user sends 1M token0 (vault0 increases), receives 990k token1 (vault1 decreases)
         let pre = vec![
             mock_token_balance(5, "10000000"), // vault0 pre
@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deposit_balance_diff() {
+    fn deposit_balance_diff() {
         // Deposit: both vaults increase
         let pre = vec![
             mock_token_balance(5, "10000000"),

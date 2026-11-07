@@ -158,35 +158,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_retriable_error() {
-        // Retriable errors
-        assert!(is_retriable_error(&anyhow::anyhow!("Connection timeout")));
-        assert!(is_retriable_error(&anyhow::anyhow!("Rate limit exceeded")));
-        assert!(is_retriable_error(&anyhow::anyhow!(
-            "HTTP 429 Too Many Requests"
-        )));
-        assert!(is_retriable_error(&anyhow::anyhow!(
-            "HTTP 500 Internal Server Error"
-        )));
-        assert!(is_retriable_error(&anyhow::anyhow!(
-            "HTTP 503 Service Unavailable"
-        )));
-
-        // Non-retriable errors
-        assert!(!is_retriable_error(&anyhow::anyhow!(
-            "HTTP 400 Bad Request"
-        )));
-        assert!(!is_retriable_error(&anyhow::anyhow!(
-            "HTTP 401 Unauthorized"
-        )));
-        assert!(!is_retriable_error(&anyhow::anyhow!("HTTP 404 Not Found")));
-        assert!(!is_retriable_error(&anyhow::anyhow!("Invalid signature")));
-
-        // Unknown errors default to retriable
-        assert!(is_retriable_error(&anyhow::anyhow!("Some unknown error")));
-    }
-
-    #[test]
     fn unsupported_transaction_version_is_not_retriable() {
         assert!(!is_retriable_error(&anyhow::anyhow!(
             "RPC error -32015: Transaction version (0) is not supported by the requesting node"

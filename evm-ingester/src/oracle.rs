@@ -137,8 +137,10 @@ fn scale_price(answer: i64, decimals: u8) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::scale_price;
+
     #[test]
-    fn scale_price() {
+    fn scales_by_decimals() {
         assert_eq!(scale_price(100000000, 8), 1.0);
         assert_eq!(scale_price(200000000, 8), 2.0);
         assert_eq!(scale_price(150000000, 8), 1.5);

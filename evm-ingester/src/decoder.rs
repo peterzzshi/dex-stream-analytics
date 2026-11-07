@@ -1,377 +1,230 @@
 use anyhow::{bail, Context, Result};
-use ethers::abi::{Abi, RawLog};
+use ethers::abi::{Abi, AbiParser, Function, RawLog};
 use ethers::prelude::*;
 use std::sync::OnceLock;
 
-// Event topic hashes (computed lazily to avoid hardcoding)
-pub fn swap_event_topic() -> H256 {
-    H256::from_slice(&ethers::utils::keccak256(
-        b"Swap(address,uint256,uint256,uint256,uint256,address)",
-    ))
-}
-
-pub fn sync_event_topic() -> H256 {
-    H256::from_slice(&ethers::utils::keccak256(b"Sync(uint112,uint112)"))
-}
-
-pub fn mint_event_topic() -> H256 {
-    H256::from_slice(&ethers::utils::keccak256(b"Mint(address,uint256,uint256)"))
-}
-
-pub fn burn_event_topic() -> H256 {
-    H256::from_slice(&ethers::utils::keccak256(
-        b"Burn(address,uint256,uint256,address)",
-    ))
-}
-
-pub fn transfer_event_topic() -> H256 {
-    H256::from_slice(&ethers::utils::keccak256(
-        b"Transfer(address,address,uint256)",
-    ))
-}
-
-static UNISWAP_V2_ABI: OnceLock<Abi> = OnceLock::new();
-
-/// Get the Uniswap V2 Pair ABI (lazily loaded)
-fn get_uniswap_v2_abi() -> &'static Abi {
-    UNISWAP_V2_ABI.get_or_init(|| {
-        serde_json::from_str(include_str!("../schemas/uniswap_v2_pair.abi.json"))
-            .expect("failed to parse Uniswap V2 ABI")
+/// The pair ABI is the single reference for every topic and selector this module exposes.
+pub fn pair_abi() -> &'static Abi {
+    static ABI: OnceLock<Abi> = OnceLock::new();
+    ABI.get_or_init(|| {
+        serde_json::from_str(include_str!("../../schemas/uniswap_v2_pair.abi.json"))
+            .expect("embedded Uniswap V2 pair ABI is invalid")
     })
 }
 
-/// Decoded Swap event data
-#[derive(Debug, Clone, PartialEq)]
-pub struct SwapEventData {
+/// A view function on the pair itself, resolved by name from the embedded ABI.
+pub fn pair_view_call(name: &str) -> Result<&'static Function> {
+    pair_abi()
+        .function(name)
+        .with_context(|| format!("{name}() missing from pair ABI"))
+}
+
+/// `decimals()` lives on the token contracts, not on the pair.
+pub fn decimals_call() -> &'static Function {
+    static CALL: OnceLock<Function> = OnceLock::new();
+    CALL.get_or_init(|| {
+        AbiParser::default()
+            .parse_function("decimals() returns (uint8)")
+            .expect("decimals() signature is valid")
+    })
+}
+
+/// Field order here *is* the event declaration order: the derive builds the signature from
+/// it, so reordering a field changes the topic hash and fails `signatures_match_pair_abi`.
+#[derive(Debug, Clone, PartialEq, EthEvent)]
+#[ethevent(name = "Swap")]
+pub struct SwapLog {
+    #[ethevent(indexed)]
     pub sender: Address,
-    pub recipient: Address,
     pub amount0_in: U256,
     pub amount1_in: U256,
     pub amount0_out: U256,
     pub amount1_out: U256,
-}
-
-/// Decoded Mint event data
-#[derive(Debug, Clone, PartialEq)]
-pub struct MintEventData {
-    pub sender: Address,
-    pub amount0: U256,
-    pub amount1: U256,
-}
-
-/// Decoded Burn event data
-#[derive(Debug, Clone, PartialEq)]
-pub struct BurnEventData {
-    pub sender: Address,
+    #[ethevent(indexed)]
     pub recipient: Address,
+}
+
+#[derive(Debug, Clone, PartialEq, EthEvent)]
+#[ethevent(name = "Mint")]
+pub struct MintLog {
+    #[ethevent(indexed)]
+    pub sender: Address,
     pub amount0: U256,
     pub amount1: U256,
 }
 
-/// Decoded Transfer event data
+#[derive(Debug, Clone, PartialEq, EthEvent)]
+#[ethevent(name = "Burn")]
+pub struct BurnLog {
+    #[ethevent(indexed)]
+    pub sender: Address,
+    pub amount0: U256,
+    pub amount1: U256,
+    #[ethevent(indexed)]
+    pub recipient: Address,
+}
+
+/// The pool events we turn into domain events. Sync and Transfer are deliberately absent:
+/// they are part of the pool's log stream but carry nothing we publish.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TransferEventData {
-    pub from: Address,
-    pub to: Address,
-    pub value: U256,
+pub enum PoolLog {
+    Swap(SwapLog),
+    Mint(MintLog),
+    Burn(BurnLog),
 }
 
-/// Parse a Swap event log
-pub fn parse_swap_log(log: &Log) -> Result<SwapEventData> {
-    if log.topics.len() < 3 {
-        bail!(
-            "swap log missing indexed topics: expected 3, got {}",
-            log.topics.len()
-        );
+/// `Ok(None)` for a topic we do not model — normal log-stream noise, not a failure.
+pub fn decode(log: &Log) -> Result<Option<PoolLog>> {
+    let Some(topic) = log.topics.first() else {
+        return Ok(None);
+    };
+    let raw = RawLog {
+        topics: log.topics.clone(),
+        data: log.data.to_vec(),
+    };
+
+    if topic == &SwapLog::signature() {
+        let swap: SwapLog = decode_as(&raw)?;
+        if swap.sender.is_zero() || swap.recipient.is_zero() {
+            bail!("swap addresses cannot be zero");
+        }
+        return Ok(Some(PoolLog::Swap(swap)));
+    }
+    if topic == &MintLog::signature() {
+        let mint: MintLog = decode_as(&raw)?;
+        if mint.sender.is_zero() {
+            bail!("mint sender address cannot be zero");
+        }
+        return Ok(Some(PoolLog::Mint(mint)));
+    }
+    if topic == &BurnLog::signature() {
+        let burn: BurnLog = decode_as(&raw)?;
+        if burn.sender.is_zero() || burn.recipient.is_zero() {
+            bail!("burn addresses cannot be zero");
+        }
+        return Ok(Some(PoolLog::Burn(burn)));
     }
 
-    let abi = get_uniswap_v2_abi();
-    let event = abi.event("Swap").context("Swap event not found in ABI")?;
-
-    let decoded = event
-        .parse_log(RawLog {
-            topics: log.topics.clone(),
-            data: log.data.to_vec(),
-        })
-        .context("failed to parse Swap log")?;
-
-    // Extract indexed fields from topics
-    let sender = Address::from(log.topics[1]);
-    let recipient = Address::from(log.topics[2]);
-
-    // Extract non-indexed fields from data
-    let amount0_in = decoded.params[0]
-        .value
-        .clone()
-        .into_uint()
-        .context("amount0In is not uint256")?;
-    let amount1_in = decoded.params[1]
-        .value
-        .clone()
-        .into_uint()
-        .context("amount1In is not uint256")?;
-    let amount0_out = decoded.params[2]
-        .value
-        .clone()
-        .into_uint()
-        .context("amount0Out is not uint256")?;
-    let amount1_out = decoded.params[3]
-        .value
-        .clone()
-        .into_uint()
-        .context("amount1Out is not uint256")?;
-
-    if sender.is_zero() || recipient.is_zero() {
-        bail!("swap addresses cannot be zero");
-    }
-
-    Ok(SwapEventData {
-        sender,
-        recipient,
-        amount0_in,
-        amount1_in,
-        amount0_out,
-        amount1_out,
-    })
+    Ok(None)
 }
 
-/// Parse a Mint event log
-pub fn parse_mint_log(log: &Log) -> Result<MintEventData> {
-    if log.topics.len() < 2 {
-        bail!(
-            "mint log missing indexed topics: expected 2, got {}",
-            log.topics.len()
-        );
-    }
-
-    let abi = get_uniswap_v2_abi();
-    let event = abi.event("Mint").context("Mint event not found in ABI")?;
-
-    let decoded = event
-        .parse_log(RawLog {
-            topics: log.topics.clone(),
-            data: log.data.to_vec(),
-        })
-        .context("failed to parse Mint log")?;
-
-    let sender = Address::from(log.topics[1]);
-
-    let amount0 = decoded.params[0]
-        .value
-        .clone()
-        .into_uint()
-        .context("amount0 is not uint256")?;
-    let amount1 = decoded.params[1]
-        .value
-        .clone()
-        .into_uint()
-        .context("amount1 is not uint256")?;
-
-    if sender.is_zero() {
-        bail!("mint sender address cannot be zero");
-    }
-
-    Ok(MintEventData {
-        sender,
-        amount0,
-        amount1,
-    })
-}
-
-/// Parse a Burn event log
-pub fn parse_burn_log(log: &Log) -> Result<BurnEventData> {
-    if log.topics.len() < 3 {
-        bail!(
-            "burn log missing indexed topics: expected 3, got {}",
-            log.topics.len()
-        );
-    }
-
-    let abi = get_uniswap_v2_abi();
-    let event = abi.event("Burn").context("Burn event not found in ABI")?;
-
-    let decoded = event
-        .parse_log(RawLog {
-            topics: log.topics.clone(),
-            data: log.data.to_vec(),
-        })
-        .context("failed to parse Burn log")?;
-
-    let sender = Address::from(log.topics[1]);
-    let recipient = Address::from(log.topics[2]);
-
-    let amount0 = decoded.params[0]
-        .value
-        .clone()
-        .into_uint()
-        .context("amount0 is not uint256")?;
-    let amount1 = decoded.params[1]
-        .value
-        .clone()
-        .into_uint()
-        .context("amount1 is not uint256")?;
-
-    if sender.is_zero() || recipient.is_zero() {
-        bail!("burn addresses cannot be zero");
-    }
-
-    Ok(BurnEventData {
-        sender,
-        recipient,
-        amount0,
-        amount1,
-    })
-}
-
-/// Parse a Transfer event log
-pub fn parse_transfer_log(log: &Log) -> Result<TransferEventData> {
-    if log.topics.len() < 3 {
-        bail!(
-            "transfer log missing indexed topics: expected 3, got {}",
-            log.topics.len()
-        );
-    }
-
-    let from = Address::from(log.topics[1]);
-    let to = Address::from(log.topics[2]);
-
-    // Transfer event data is just the uint256 value (32 bytes)
-    if log.data.len() != 32 {
-        bail!(
-            "transfer log data length mismatch: expected 32 bytes, got {}",
-            log.data.len()
-        );
-    }
-
-    let value = U256::from_big_endian(&log.data);
-
-    if from.is_zero() || to.is_zero() {
-        bail!("transfer addresses cannot be zero");
-    }
-
-    Ok(TransferEventData { from, to, value })
+/// `decode_log` also verifies `topics[0]` against `E::signature()`, so a topic/struct
+/// mismatch cannot silently decode into the wrong shape.
+fn decode_as<E: EthEvent>(raw: &RawLog) -> Result<E> {
+    E::decode_log(raw).with_context(|| format!("failed to decode {} log", E::abi_signature()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethers::abi::EventExt;
 
-    #[test]
-    fn parse_transfer_log_valid() {
-        let from: Address = "0x1111111111111111111111111111111111111111"
-            .parse()
-            .unwrap();
-        let to: Address = "0x2222222222222222222222222222222222222222"
-            .parse()
-            .unwrap();
-        let value = U256::from(1000u64);
-
-        let mut data = vec![0u8; 32];
-        value.to_big_endian(&mut data);
-
-        let log = Log {
-            address: Address::zero(),
-            topics: vec![transfer_event_topic(), H256::from(from), H256::from(to)],
-            data: Bytes::from(data),
-            block_hash: None,
-            block_number: None,
-            transaction_hash: None,
-            transaction_index: None,
-            log_index: None,
-            transaction_log_index: None,
-            log_type: None,
-            removed: None,
-        };
-
-        let result = parse_transfer_log(&log).unwrap();
-        assert_eq!(result.from, from);
-        assert_eq!(result.to, to);
-        assert_eq!(result.value, value);
+    fn encode_words(words: &[U256]) -> Vec<u8> {
+        let mut data = vec![0u8; 32 * words.len()];
+        for (index, word) in words.iter().enumerate() {
+            word.to_big_endian(&mut data[index * 32..(index + 1) * 32]);
+        }
+        data
     }
 
     #[test]
-    fn parse_transfer_log_missing_topics() {
-        let log = Log {
-            address: Address::zero(),
-            topics: vec![transfer_event_topic()], // Missing from and to
-            data: Bytes::from(vec![0u8; 32]),
-            block_hash: None,
-            block_number: None,
-            transaction_hash: None,
-            transaction_index: None,
-            log_index: None,
-            transaction_log_index: None,
-            log_type: None,
-            removed: None,
-        };
-
-        let result = parse_transfer_log(&log);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("missing indexed topics"));
+    fn signatures_match_pair_abi() {
+        let abi = pair_abi();
+        for (name, derived_signature, derived_abi) in [
+            (
+                "Swap",
+                SwapLog::signature(),
+                SwapLog::abi_signature().into_owned(),
+            ),
+            (
+                "Mint",
+                MintLog::signature(),
+                MintLog::abi_signature().into_owned(),
+            ),
+            (
+                "Burn",
+                BurnLog::signature(),
+                BurnLog::abi_signature().into_owned(),
+            ),
+        ] {
+            let event = abi.event(name).expect("event present in pair ABI");
+            assert_eq!(
+                derived_abi,
+                event.abi_signature(),
+                "{name} signature drifted"
+            );
+            assert_eq!(derived_signature, event.signature(), "{name} topic drifted");
+        }
     }
 
     #[test]
-    fn parse_transfer_log_zero_addresses() {
-        let mut data = vec![0u8; 32];
-        U256::from(1000u64).to_big_endian(&mut data);
+    fn decodes_swap_with_trailing_indexed_recipient() {
+        // Real Uniswap V2 Swap: the recipient is indexed but sits last in the declaration,
+        // so it arrives as topics[2] while the four amounts fill the data payload.
+        let sender: Address = "0x51c72848c68a965f66fa7a88855f9f7784502a7f"
+            .parse()
+            .unwrap();
+        let amount0_in = U256::from(93905317013992882176u128);
+        let amount1_out = U256::from(292629181741008128u128);
 
         let log = Log {
-            address: Address::zero(),
+            topics: vec![SwapLog::signature(), H256::from(sender), H256::from(sender)],
+            data: Bytes::from(encode_words(&[
+                amount0_in,
+                U256::zero(),
+                U256::zero(),
+                amount1_out,
+            ])),
+            ..Default::default()
+        };
+
+        let PoolLog::Swap(swap) = decode(&log).unwrap().expect("swap is a modelled topic") else {
+            panic!("expected a swap");
+        };
+        assert_eq!(
+            swap,
+            SwapLog {
+                sender,
+                amount0_in,
+                amount1_in: U256::zero(),
+                amount0_out: U256::zero(),
+                amount1_out,
+                recipient: sender,
+            }
+        );
+    }
+
+    #[test]
+    fn unmodelled_topic_is_not_an_error() {
+        let log = Log {
+            topics: vec![H256::zero()],
+            data: Bytes::new(),
+            ..Default::default()
+        };
+
+        assert_eq!(decode(&log).unwrap(), None);
+    }
+
+    #[test]
+    fn zero_swap_addresses_are_rejected() {
+        let log = Log {
             topics: vec![
-                transfer_event_topic(),
-                H256::zero(), // from = zero
-                H256::zero(), // to = zero
+                SwapLog::signature(),
+                H256::zero(),
+                H256::from(Address::repeat_byte(0x11)),
             ],
-            data: Bytes::from(data),
-            block_hash: None,
-            block_number: None,
-            transaction_hash: None,
-            transaction_index: None,
-            log_index: None,
-            transaction_log_index: None,
-            log_type: None,
-            removed: None,
+            data: Bytes::from(encode_words(&[
+                U256::one(),
+                U256::zero(),
+                U256::zero(),
+                U256::one(),
+            ])),
+            ..Default::default()
         };
 
-        let result = parse_transfer_log(&log);
-        assert!(result.is_err());
-        assert!(result
+        assert!(decode(&log)
             .unwrap_err()
             .to_string()
-            .contains("addresses cannot be zero"));
-    }
-
-    #[test]
-    fn parse_transfer_log_invalid_data_length() {
-        let from: Address = "0x1111111111111111111111111111111111111111"
-            .parse()
-            .unwrap();
-        let to: Address = "0x2222222222222222222222222222222222222222"
-            .parse()
-            .unwrap();
-
-        let log = Log {
-            address: Address::zero(),
-            topics: vec![transfer_event_topic(), H256::from(from), H256::from(to)],
-            data: Bytes::from(vec![0u8; 16]), // Wrong length
-            block_hash: None,
-            block_number: None,
-            transaction_hash: None,
-            transaction_index: None,
-            log_index: None,
-            transaction_log_index: None,
-            log_type: None,
-            removed: None,
-        };
-
-        let result = parse_transfer_log(&log);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("data length mismatch"));
+            .contains("cannot be zero"));
     }
 }

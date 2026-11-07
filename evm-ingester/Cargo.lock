@@ -1323,6 +1323,7 @@ dependencies = [
  "dex-ingester-common",
  "ethers",
  "futures-util",
+    "hex",
  "rand 0.10.3",
  "serde",
  "serde_json",

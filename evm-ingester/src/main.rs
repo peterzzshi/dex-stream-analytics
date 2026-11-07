@@ -1,56 +1,33 @@
 use anyhow::{Context, Result};
 use dex_ingester_common::{
-    Event, EventProcessor, FinalityBuffer, FinalityMode, PoolStats, Publisher, PublisherConfig,
-    SharedConfig,
+    Event, EventProcessor, FinalityBuffer, FinalityMode, Publisher, PublisherConfig, SharedConfig,
 };
 use ethers::prelude::*;
 use ethers::providers::Ws;
+use evm_ingester::config::{Chain, Config, Pool};
+use evm_ingester::listener::Listener;
+use evm_ingester::oracle::ChainlinkOracle;
+use evm_ingester::rpc_retry::RetryableProvider;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
-use tokio::time::{Duration, MissedTickBehavior};
-use tracing::{error, info, warn, Level};
-use tracing_subscriber::FmtSubscriber;
-
-mod config;
-mod decoder;
-mod file_config;
-mod listener;
-mod oracle;
-mod price;
-mod rpc_retry;
-
-use config::{Chain, Config, Pool};
-use listener::Listener;
-use oracle::ChainlinkOracle;
-use rpc_retry::RetryableProvider;
+use tokio::time::Duration;
+use tracing::{error, info, warn};
 
 const EVENT_CHANNEL_BUFFER: usize = 1000;
-const STATS_INTERVAL_SECS: u64 = 30;
 const SHUTDOWN_GRACE_PERIOD_SECS: u64 = 5;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let log_level = match std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| "info".to_string())
-        .to_lowercase()
-        .as_str()
-    {
-        "trace" => Level::TRACE,
-        "debug" => Level::DEBUG,
-        "info" => Level::INFO,
-        "warn" => Level::WARN,
-        "error" => Level::ERROR,
-        _ => Level::INFO,
-    };
-
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(log_level)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("info,hyper_util=warn,reqwest=warn")
+            }),
+        )
         .with_target(false)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set global subscriber")?;
+        .init();
 
     info!("EVM Ingester starting...");
 
@@ -134,7 +111,6 @@ async fn spawn_chain(
             Arc::clone(&provider),
             chain_config.oracle.clone(),
         )),
-        provider,
         publisher: Arc::new(
             Publisher::new(PublisherConfig::new(
                 shared,
@@ -142,7 +118,16 @@ async fn spawn_chain(
             ))
             .context("failed to create publisher")?,
         ),
+        provider,
     };
+
+    // Publishing into a sidecar that is not listening yet dead-letters the event, and the
+    // per-publish retry budget is shorter than a cold daprd start.
+    runtime
+        .publisher
+        .wait_until_ready()
+        .await
+        .context("Dapr sidecar never became healthy")?;
 
     for pool_config in &chain_config.pools {
         if let Err(e) = spawn_pool(chain_config, &runtime, pool_config, shutdown, tasks).await {
@@ -272,9 +257,8 @@ async fn subscribe_to_logs(
                     }
                     // Sync, Transfer, and unknown topics: normal log stream noise.
                     Ok(None) => {}
-                    Err(e) => {
-                        warn!(pool = %pool_address, "Failed to process log: {:#}", e);
-                    }
+                    // Already logged with full context (topics, data, tx) inside process_log.
+                    Err(_) => {}
                 }
             }
             _ = shutdown_requested(&mut shutdown) => {
@@ -287,19 +271,14 @@ async fn subscribe_to_logs(
     Ok(())
 }
 
+/// Drain and publish. Flow accounting belongs to the analytics service, so the only
+/// per-event signal here is the one the processor emits as each event is published.
 async fn process_events(
     mut events: mpsc::Receiver<Event>,
     processor: Arc<EventProcessor>,
     pool_name: String,
     mut shutdown: broadcast::Receiver<()>,
 ) {
-    let mut stats = PoolStats::default();
-    // One long-lived ticker: a sleep recreated inside `select!` restarts on every event,
-    // so the report would never fire on a busy pool.
-    let mut ticker = tokio::time::interval(Duration::from_secs(STATS_INTERVAL_SECS));
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    ticker.tick().await;
-
     loop {
         tokio::select! {
             maybe_event = events.recv() => {
@@ -308,15 +287,8 @@ async fn process_events(
                     break;
                 };
 
-                stats.received += 1;
-
-                let outcome = processor.process(event, None, &pool_name).await;
-
-                stats.processed += 1;
-                stats.add_published(outcome.published);
-                stats.add_dead_lettered(outcome.dead_lettered);
+                processor.process(event, None, &pool_name).await;
             }
-            _ = ticker.tick() => report_stats(&pool_name, &mut stats),
             _ = shutdown_requested(&mut shutdown) => {
                 info!(pool = %pool_name, "Event processor shutting down");
                 break;
@@ -326,19 +298,6 @@ async fn process_events(
 
     let published = processor.flush(&pool_name).await;
     info!(pool = %pool_name, published, "Flushed pending events");
-}
-
-fn report_stats(pool_name: &str, stats: &mut PoolStats) {
-    let snapshot = stats.take();
-    info!(
-        pool = %pool_name,
-        received = snapshot.received,
-        processed = snapshot.processed,
-        published = snapshot.published,
-        dead_lettered = snapshot.dead_lettered,
-        "Pool statistics (last {}s)",
-        STATS_INTERVAL_SECS
-    );
 }
 
 /// Resolves on shutdown, or when every sender has been dropped. A lagged receiver only

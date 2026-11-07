@@ -59,6 +59,30 @@ pub(crate) fn to_usd(amount: &U256, decimals: u8, usd_price: f64) -> f64 {
     (u256_to_f64(amount) / 10_f64.powi(decimals as i32)) * usd_price
 }
 
+/// Volume in USD for one swap, choosing the most trustworthy quote available.
+///
+/// Preference order is policy, not arithmetic: a stablecoin side is worth exactly $1, then
+/// either priced side, and only then the swap's own ratio — which is denominated in the
+/// other token, so it is the weakest signal.
+pub(crate) fn calculate_volume_usd(
+    volume0: &U256,
+    volume1: &U256,
+    token0_decimals: u8,
+    token1_decimals: u8,
+    token0_price: Option<f64>,
+    token1_price: Option<f64>,
+    swap_price: f64,
+) -> Option<f64> {
+    match (token0_price, token1_price) {
+        (_, Some(price1)) if price1 == 1.0 => Some(to_usd(volume1, token1_decimals, 1.0)),
+        (Some(price0), _) if price0 == 1.0 => Some(to_usd(volume0, token0_decimals, 1.0)),
+        (Some(price0), _) if price0 > 0.0 => Some(to_usd(volume0, token0_decimals, price0)),
+        (_, Some(price1)) if price1 > 0.0 => Some(to_usd(volume1, token1_decimals, price1)),
+        _ if swap_price > 0.0 => Some(to_usd(volume0, token0_decimals, swap_price)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +163,91 @@ mod tests {
         let value = U256::from(7u64) << 64;
 
         assert_eq!(u256_to_f64(&value), 129127208515966861312.0);
+    }
+
+    const ONE_TOKEN_6DP: u64 = 1_000_000;
+    const ONE_TOKEN_18DP: u64 = 1_000_000_000_000_000_000;
+
+    #[test]
+    fn volume_prefers_a_stablecoin_side() {
+        // Token1 is the stablecoin, so its raw amount is the USD volume regardless of token0's quote.
+        let volume = calculate_volume_usd(
+            &U256::from(ONE_TOKEN_18DP),
+            &U256::from(3 * ONE_TOKEN_6DP),
+            18,
+            6,
+            Some(2500.0),
+            Some(1.0),
+            2500.0,
+        );
+
+        assert!(
+            (volume.unwrap() - 3.0).abs() < 0.0001,
+            "volume was {volume:?}"
+        );
+    }
+
+    #[test]
+    fn volume_prefers_token0_stablecoin_over_token1_price() {
+        let volume = calculate_volume_usd(
+            &U256::from(5 * ONE_TOKEN_6DP),
+            &U256::from(ONE_TOKEN_18DP),
+            6,
+            18,
+            Some(1.0),
+            Some(2500.0),
+            0.0004,
+        );
+
+        assert!(
+            (volume.unwrap() - 5.0).abs() < 0.0001,
+            "volume was {volume:?}"
+        );
+    }
+
+    #[test]
+    fn volume_falls_back_to_the_priced_side_then_the_swap_ratio() {
+        let priced_token0 = calculate_volume_usd(
+            &U256::from(2 * ONE_TOKEN_18DP),
+            &U256::from(ONE_TOKEN_18DP),
+            18,
+            18,
+            Some(2000.0),
+            Some(0.5),
+            2000.0,
+        );
+        let ratio_priced = calculate_volume_usd(
+            &U256::from(2 * ONE_TOKEN_18DP),
+            &U256::from(ONE_TOKEN_18DP),
+            18,
+            18,
+            None,
+            None,
+            2000.0,
+        );
+
+        assert!(
+            (priced_token0.unwrap() - 4000.0).abs() < 0.001,
+            "volume was {priced_token0:?}"
+        );
+        assert!(
+            (ratio_priced.unwrap() - 4000.0).abs() < 0.001,
+            "volume was {ratio_priced:?}"
+        );
+    }
+
+    #[test]
+    fn volume_is_none_without_any_usable_price() {
+        let volume = calculate_volume_usd(
+            &U256::from(ONE_TOKEN_18DP),
+            &U256::from(ONE_TOKEN_6DP),
+            18,
+            6,
+            None,
+            Some(0.0),
+            0.0,
+        );
+
+        assert_eq!(volume, None);
     }
 }

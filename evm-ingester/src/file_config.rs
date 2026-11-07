@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn is_valid_eth_address() {
+    fn accepts_only_well_formed_addresses() {
         assert!(is_valid_eth_address(
             "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
         ));

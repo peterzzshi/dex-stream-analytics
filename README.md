@@ -54,63 +54,40 @@ by the shared `common/` crate. The aggregator still codegens from its own copy i
 
 ## Quick Start
 
-No API key needed to see the pipeline work — Kafka, Flink, and the analytics API run on test
-events alone:
+Start all services:
 
 ```bash
 docker compose up -d --build
-./scripts/verify_services.sh              # verify all services are healthy
 ```
 
-`evm-ingester` and `solana-ingester` also start with this command, but without `ETH_RPC_URL` /
-`SOLANA_RPC_URL` set they fail config validation and crash-loop (restart: unless-stopped) by
-design — this doesn't affect the rest of the stack. Set the RPC URLs below to run them for real.
+Without RPC URLs configured, `evm-ingester` and `solana-ingester` will fail validation and restart continuously (this is
+expected). The rest of the pipeline (Kafka, Flink, analytics API) runs independently.
 
-### Access the Application
+### Live Chain Data (Optional)
 
-Once running, open:
+To ingest real blockchain events:
 
-- **Analytics Dashboard**: http://localhost:8080/dashboard
-  Real-time pool health, trading metrics, MEV alerts
+```bash
+cp .env.example .env
+# Edit .env: add ETH_RPC_URL and/or SOLANA_RPC_URL
+docker compose up -d --build
+```
+
+### Access Points
+
+- **Analytics API**: http://localhost:8080/health
 - **Flink Web UI**: http://localhost:8081
-  Job status, task metrics, checkpoints
-- **Health Check**: http://localhost:8080/health
-  Service readiness
 
-**View logs**: `docker compose logs -f flink-jobmanager analytics-service`
+View logs: `docker compose logs -f flink-jobmanager analytics-service`
 
-### Optional: Live Chain Data
+### Cleanup
 
-For live blockchain events instead of test data, configure RPC endpoints in `.env` and restart
-the ingesters so they pick up the new values:
+Remove all containers and images:
 
 ```bash
-cp .env.example .env   # add ETH_RPC_URL and/or SOLANA_RPC_URL
+docker compose down --rmi all
+docker image prune -f
 ```
-
-**EVM chains** (Uniswap V2 pools on Ethereum mainnet, listed under `[[pools]]` in `evm.toml` —
-adding a pool is a config edit and a restart):
-
-```bash
-docker compose up -d --build evm-ingester evm-ingester-dapr
-docker compose logs -f evm-ingester           # monitor blockchain listener
-```
-
-**Solana** (Raydium AMM v4 SOL/USDC):
-
-```bash
-docker compose up -d --build solana-ingester solana-ingester-dapr
-docker compose logs -f solana-ingester        # monitor blockchain listener
-```
-
-**Both chains**:
-
-```bash
-docker compose up -d --build evm-ingester evm-ingester-dapr solana-ingester solana-ingester-dapr
-```
-
-Ingesters aren't required for local development — the pipeline works with test events by default,
-and without RPC URLs set they just crash-loop quietly alongside the rest of the stack.
 
 ## Build Individual Components
 

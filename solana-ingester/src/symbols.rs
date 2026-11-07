@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::debug;
 
 use crate::config::TokensConfig;
 
@@ -49,10 +48,7 @@ impl SymbolCache {
                 cache.insert(token_mint.to_string(), symbol.clone());
                 Some(symbol)
             }
-            Err(e) => {
-                debug!("Failed to fetch symbol for {}: {}", token_mint, e);
-                None
-            }
+            Err(_e) => None,
         }
     }
 
@@ -75,11 +71,6 @@ impl SymbolCache {
             &metadata_program_id,
         );
 
-        debug!(
-            "Fetching metadata for mint {} at PDA {}",
-            token_mint, metadata_pda
-        );
-
         // Fetch account data (blocking call, run in tokio blocking thread)
         let rpc_url = self.rpc_url.clone();
         let account_data = tokio::task::spawn_blocking(move || {
@@ -100,7 +91,6 @@ impl SymbolCache {
             anyhow::bail!("Empty symbol in metadata for {}", token_mint);
         }
 
-        debug!("Fetched symbol '{}' for mint {}", symbol, token_mint);
         Ok(symbol)
     }
 }

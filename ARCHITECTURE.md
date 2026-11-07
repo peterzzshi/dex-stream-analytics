@@ -167,6 +167,17 @@ event is even published, and the 60-second watermark plus the first window bound
 of that. Solana finalizes in about 13 seconds, so the two chains do not converge to the same
 analytics latency.
 
+### Startup Readiness
+
+Publishing into a sidecar that is not listening yet fails, and the failure path ends in the DLQ:
+the per-publish retry budget (three retries, 100 ms initial backoff, ±25 % jitter — roughly
+700 ms) is shorter than a cold `daprd` start. Compose ordering alone does not cover this —
+`service_started` returns when the container is created, not when daprd can serve HTTP.
+
+So `Publisher::wait_until_ready` polls the sidecar's `/v1.0/healthz` every 250 ms for up to 30 s
+before ingestion starts, and the process exits if the sidecar never answers. Neither ingester
+exposes a health port: they are push-only producers, so nothing calls into them.
+
 ## Component Overview
 
 ### evm-ingester (Rust)
@@ -212,6 +223,18 @@ polls the finalized slot over RPC and publishes buffered events once their slot 
 publishes the same Avro events, CloudEvent envelope and topics as `evm-ingester`, plus a Dapr DLQ
 topic (`TOPIC_DLQ`). Chain, programs, tokens and pools come from `solana.toml`; secrets and
 runtime scalars from env. See [solana-ingester/README.md](solana-ingester/README.md).
+
+**Design note — one I/O layer, pure transforms beneath it**: a log line travels
+`TransactionHandler` → `TransactionFetcher` / `SymbolCache` / `PythOracle` → `EventBuilder`, with
+`InstructionProcessor` decoding in between. The handler is the only module that awaits anything:
+it fetches the transaction, resolves symbols once per pool, quotes only the sold side of a swap,
+and hands the results to the builder. `InstructionProcessor` and `EventBuilder` are pure
+functions of their inputs — no RPC, no clock reads inside the event, no hidden oracle call — so
+an event's contents are fully determined by the transaction and the prices passed in. This is
+what makes enrichment-at-ingest auditable: the numbers a replay reproduces are the numbers the
+builder received, not whatever the oracle happened to hold later. Keep new I/O in the handler;
+a failure to resolve one instruction's vaults skips that instruction and logs, rather than
+dropping the whole transaction.
 
 ### stream-aggregator (Flink / Java 21)
 

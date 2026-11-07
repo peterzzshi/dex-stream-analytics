@@ -1,16 +1,20 @@
-# Pub/sub and topic names shared by both ingesters and kafka-init
-x-ingester-env: &ingester-env
-  PUBSUB_NAME: kafka-pubsub
+# Pub/sub and topic names shared by both ingesters
+x-topics: &topics
   TOPIC_TRADING: dex-trading-events
   TOPIC_LIQUIDITY: dex-liquidity-events
   TOPIC_DLQ: dex-dlq-events
+
+x-ingester-env: &ingester-env
+  <<: *topics
+  PUBSUB_NAME: kafka-pubsub
 
 services:
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     ports:
-      - "9092:9092"
+      # Only the host listener is published. The in-container one advertises `kafka:9092`,
+      # which a host client cannot resolve, so publishing 9092 would only ever confuse.
       - "29092:29092"
     environment:
       CLUSTER_ID: "Yi30LVX8TlCMOk1KHapf-A"
@@ -26,9 +30,6 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-      KAFKA_NUM_PARTITIONS: 6
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
-      KAFKA_LOG_RETENTION_HOURS: 168
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks:
@@ -38,13 +39,14 @@ services:
       interval: 10s
       timeout: 10s
       retries: 5
+    restart: unless-stopped
 
   # One-shot topic provisioning (auto-create is disabled on the broker)
   kafka-init:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka-init
     environment:
-      <<: *ingester-env
+      <<: *topics
     depends_on:
       kafka:
         condition: service_healthy
@@ -76,11 +78,11 @@ services:
       CONFIG_FILE: /app/evm.toml
       DAPR_HOST: evm-ingester-dapr
       DAPR_HTTP_PORT: "3500"
-    ports:
-      - "3000:3000"
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      evm-ingester-dapr:
+        condition: service_healthy
     networks:
       - dex-analytics-network
     restart: unless-stopped
@@ -102,9 +104,17 @@ services:
       - ./dapr/components:/components
       - ./dapr/config:/config
     depends_on:
-      - evm-ingester
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [ "CMD", "/daprd", "--version" ]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
     networks:
       - dex-analytics-network
+    restart: unless-stopped
 
   # Solana ingester: Rust service listening to Solana blockchain events
   # Requires SOLANA_RPC_URL in .env
@@ -128,20 +138,21 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      solana-ingester-dapr:
+        condition: service_healthy
     networks:
       - dex-analytics-network
     restart: unless-stopped
 
   # DAPR sidecar for solana-ingester
+  # No -app-port: the ingester only serves /health and consumes nothing, so pointing
+  # daprd at it would just make it poll /dapr/subscribe against a route that 404s.
   solana-ingester-dapr:
     image: daprio/daprd:1.12.0
     container_name: solana-ingester-dapr
     command: [
       "./daprd",
       "-app-id", "solana-ingester",
-      "-app-port", "3001",
-      "-app-protocol", "http",
-      "-app-channel-address", "solana-ingester",
       "-dapr-http-port", "3501",
       "-dapr-grpc-port", "50003",
       "-components-path", "/components",
@@ -152,9 +163,17 @@ services:
       - ./dapr/components:/components
       - ./dapr/config:/config
     depends_on:
-      - solana-ingester
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [ "CMD", "/daprd", "--version" ]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
     networks:
       - dex-analytics-network
+    restart: unless-stopped
 
   # Flink JobManager in application mode: builds the aggregator jar and runs
   # the StreamProcessor job on startup (no manual `flink run` needed).
@@ -225,6 +244,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
 
   # Analytics Service: Kotlin sink/query service for aggregated analytics
   analytics-service:
@@ -276,6 +296,7 @@ services:
         condition: service_completed_successfully
     networks:
       - dex-analytics-network
+    restart: unless-stopped
 
 networks:
   dex-analytics-network:

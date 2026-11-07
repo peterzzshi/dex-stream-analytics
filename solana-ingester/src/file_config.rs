@@ -153,7 +153,8 @@ pub fn parse_feed_id(value: &str) -> Result<[u8; FEED_ID_BYTES]> {
     }
 
     let mut feed_id = [0u8; FEED_ID_BYTES];
-    for (index, pair) in bytes.chunks_exact(2).enumerate() {
+    let (pairs, _) = bytes.as_chunks::<2>();
+    for (index, pair) in pairs.iter().enumerate() {
         feed_id[index] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
     }
     Ok(feed_id)

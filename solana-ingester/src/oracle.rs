@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::config::{PythConfig, PythFeed};
 use crate::file_config::{feed_id_hex, FEED_ID_BYTES};
@@ -46,7 +46,6 @@ impl PythOracle {
             if let Some(cached) = cache.get(token_mint) {
                 let age = chrono::Utc::now().timestamp() - cached.timestamp;
                 if age < self.config.max_age_seconds {
-                    debug!("Cache hit for {}: ${:.4}", token_mint, cached.price);
                     return Ok(Some(cached.price));
                 }
             }
@@ -54,7 +53,6 @@ impl PythOracle {
 
         // Fetch from Pyth
         let Some(feed) = self.config.price_feeds.get(token_mint).copied() else {
-            debug!("No Pyth price feed configured for {}", token_mint);
             return Ok(None);
         };
 

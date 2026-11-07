@@ -5,15 +5,15 @@ mod decoder;
 mod event_builder;
 mod file_config;
 mod instruction_processor;
-mod listener;
 mod oracle;
 mod rpc_retry;
 mod symbols;
+mod transaction_fetcher;
+mod transaction_handler;
 
 use anyhow::{Context, Result};
 use dex_ingester_common::{
-    EventProcessor, FinalityBuffer, FinalityMode, PoolStats, Publisher, PublisherConfig,
-    RetryConfig,
+    EventProcessor, FinalityBuffer, FinalityMode, Publisher, PublisherConfig, RetryConfig,
 };
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
 use std::str::FromStr;
@@ -27,14 +27,14 @@ use crate::blockchain::RpcClient;
 use crate::config::{Config, PoolConfig};
 use crate::event_builder::EventBuilder;
 use crate::instruction_processor::InstructionProcessor;
-use crate::listener::Listener;
 use crate::oracle::PythOracle;
 use crate::rpc_retry::RetryableRpcClient;
 use crate::symbols::SymbolCache;
+use crate::transaction_fetcher::TransactionFetcher;
+use crate::transaction_handler::TransactionHandler;
 
 const EVENT_SOURCE: &str = "ingester/solana/raydium-amm-v4";
 const RECONNECT_DELAY_SECS: u64 = 5;
-const STATS_INTERVAL_SECS: u64 = 60;
 
 /// Resolves when shutdown is requested, or when the sender is dropped.
 async fn shutdown_requested(shutdown: &mut Receiver<bool>) {
@@ -51,7 +51,7 @@ async fn shutdown_requested(shutdown: &mut Receiver<bool>) {
 /// Everything one pool's stream needs, so the loop functions take `&self` instead of
 /// six cloned arguments.
 struct PoolRunner {
-    listener: Listener,
+    handler: TransactionHandler,
     rpc_client: Arc<RetryableRpcClient>,
     event_processor: Arc<EventProcessor>,
     pool_name: String,
@@ -104,13 +104,6 @@ impl PoolRunner {
             self.pool_name
         );
 
-        let mut stats = PoolStats::default();
-        // One long-lived ticker: a sleep recreated inside `select!` restarts on every
-        // log line, so the report would never fire on a busy pool.
-        let mut ticker = tokio::time::interval(Duration::from_secs(STATS_INTERVAL_SECS));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        ticker.tick().await;
-
         loop {
             tokio::select! {
                 maybe_log = subscription.recv() => {
@@ -118,8 +111,6 @@ impl PoolRunner {
                         warn!("[{}] Subscription stream ended", self.pool_name);
                         break;
                     };
-
-                    stats.received += 1;
 
                     let signature = match Signature::from_str(&log_response.signature) {
                         Ok(signature) => signature,
@@ -129,11 +120,10 @@ impl PoolRunner {
                         }
                     };
 
-                    if let Err(e) = self.ingest(signature, &mut stats).await {
+                    if let Err(e) = self.ingest(signature).await {
                         warn!("[{}] Failed to process transaction {}: {:#}", self.pool_name, signature, e);
                     }
                 }
-                _ = ticker.tick() => self.report_stats(&mut stats),
                 _ = shutdown_requested(shutdown) => {
                     info!("[{}] Shutdown requested in subscription loop", self.pool_name);
                     break;
@@ -145,16 +135,12 @@ impl PoolRunner {
         Ok(())
     }
 
-    async fn ingest(&self, signature: Signature, stats: &mut PoolStats) -> Result<()> {
-        let events = self
-            .listener
-            .fetch_and_process_transaction(signature, &self.pool_address)
-            .await?;
+    async fn ingest(&self, signature: Signature) -> Result<()> {
+        let events = self.handler.handle(signature, &self.pool_address).await?;
 
         if events.is_empty() {
             return Ok(());
         }
-        stats.pool_hits += 1;
 
         // External finality mode panics on a missing position, so a failed read has to
         // drop the transaction rather than buffer it without an upper bound.
@@ -164,40 +150,18 @@ impl PoolRunner {
             .await
             .context("Failed to fetch finalized slot")?;
 
-        let released = self
-            .event_processor
+        self.event_processor
             .advance_finalized(finalized_slot, &self.pool_name)
             .await
             .map_err(anyhow::Error::msg)?;
-        stats.add_published(released.published);
-        stats.add_dead_lettered(released.dead_lettered);
 
         for event in events {
-            let outcome = self
-                .event_processor
+            self.event_processor
                 .process(event, Some(finalized_slot), &self.pool_name)
                 .await;
-
-            stats.processed += 1;
-            stats.add_published(outcome.published);
-            stats.add_dead_lettered(outcome.dead_lettered);
         }
 
         Ok(())
-    }
-
-    fn report_stats(&self, stats: &mut PoolStats) {
-        let snapshot = stats.take();
-        info!(
-            "[{}] Last {}s: {} received, {} touched this pool, {} events processed, {} published, {} dead-lettered",
-            self.pool_name,
-            STATS_INTERVAL_SECS,
-            snapshot.received,
-            snapshot.pool_hits,
-            snapshot.processed,
-            snapshot.published,
-            snapshot.dead_lettered
-        );
     }
 }
 
@@ -205,8 +169,9 @@ impl PoolRunner {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("info,hyper_util=warn,reqwest=warn")
+            }),
         )
         .init();
 
@@ -256,15 +221,21 @@ async fn main() -> Result<()> {
         config.programs.token_metadata.clone(),
     ));
 
+    let publisher = Publisher::new(PublisherConfig::new(
+        &config.shared,
+        EVENT_SOURCE.to_string(),
+    ))?;
+    publisher
+        .wait_until_ready()
+        .await
+        .context("Dapr sidecar never became healthy")?;
+
     let event_processor = Arc::new(EventProcessor::new(
         Arc::new(
             FinalityBuffer::new(FinalityMode::External)
                 .with_event_limit(config.solana.finality_buffer_size),
         ),
-        Arc::new(Publisher::new(PublisherConfig::new(
-            &config.shared,
-            EVENT_SOURCE.to_string(),
-        ))?),
+        Arc::new(publisher),
     ));
 
     // Shutdown is broadcast so every task stops touching the buffer before the final flush.
@@ -339,12 +310,20 @@ fn build_pool_runner(
     event_processor: &Arc<EventProcessor>,
     program_id: Pubkey,
 ) -> PoolRunner {
-    let event_builder = EventBuilder::new(oracle.clone(), config.clone(), pool.clone());
-    let processor =
-        InstructionProcessor::new(event_builder, symbols.clone(), config.clone(), pool.clone());
+    let fetcher = TransactionFetcher::new(rpc_client.clone());
+    let processor = InstructionProcessor::new(config.programs.raydium_amm_v4.clone(), pool.clone());
+    let builder = EventBuilder::new(config.clone(), pool.clone());
+    let handler = TransactionHandler::new(
+        fetcher,
+        processor,
+        builder,
+        oracle.clone(),
+        symbols.clone(),
+        pool.clone(),
+    );
 
     PoolRunner {
-        listener: Listener::new(rpc_client.clone(), processor, pool.clone()),
+        handler,
         rpc_client: rpc_client.clone(),
         event_processor: event_processor.clone(),
         pool_name: pool.name.clone(),

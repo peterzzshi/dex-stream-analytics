@@ -5,7 +5,6 @@ mod event_processor;
 mod finality;
 mod publisher;
 mod retry;
-mod stats;
 
 use serde::Serialize;
 
@@ -16,7 +15,6 @@ pub use event_processor::{EventProcessor, ProcessOutcome};
 pub use finality::{AddResult, FinalityBuffer, FinalityMode};
 pub use publisher::{Outcome, Publisher, PublisherConfig};
 pub use retry::{retry_with_classifier, Retriability};
-pub use stats::PoolStats;
 
 pub const SWAP_SCHEMA: &str = include_str!("../../schemas/SwapEvent.avsc");
 pub const MINT_SCHEMA: &str = include_str!("../../schemas/MintEvent.avsc");

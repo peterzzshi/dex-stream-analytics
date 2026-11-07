@@ -4,7 +4,7 @@ use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use dex_ingester_common::RetryConfig;
 
@@ -62,9 +62,6 @@ where
         match tokio::time::timeout(Duration::from_millis(config.rpc_timeout_ms), operation()).await
         {
             Ok(Ok(result)) => {
-                if attempt > 0 {
-                    debug!("{} succeeded after {} retries", operation_name, attempt);
-                }
                 return Ok(result);
             }
             Ok(Err(e)) => {

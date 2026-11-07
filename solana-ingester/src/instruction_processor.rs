@@ -1,186 +1,141 @@
 use crate::balances;
-use crate::config::{Config, PoolConfig};
-use crate::decoder;
-use crate::event_builder::{EventBuilder, EventContext};
-use crate::symbols::SymbolCache;
+use crate::config::PoolConfig;
+use crate::decoder::{self, DecodedInstruction};
 use anyhow::{Context, Result};
-use dex_ingester_common::Event;
 use solana_sdk::signature::Signature;
 use solana_transaction_status::{
     option_serializer::OptionSerializer, UiInstruction, UiParsedInstruction,
     UiTransactionStatusMeta, UiTransactionTokenBalance,
 };
-use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::warn;
 
+/// Decodes Raydium instructions. Pure instruction processing, no I/O.
 pub struct InstructionProcessor {
-    event_builder: EventBuilder,
-    symbols: Arc<SymbolCache>,
-    config: Arc<Config>,
-    pool: PoolConfig,
+    program_id: String,
+    pool_config: PoolConfig,
 }
 
 impl InstructionProcessor {
-    pub fn new(
-        event_builder: EventBuilder,
-        symbols: Arc<SymbolCache>,
-        config: Arc<Config>,
-        pool: PoolConfig,
-    ) -> Self {
+    pub fn new(program_id: String, pool_config: PoolConfig) -> Self {
         Self {
-            event_builder,
-            symbols,
-            config,
-            pool,
+            program_id,
+            pool_config,
         }
     }
 
-    /// `Ok(None)` means the instruction is irrelevant to this pool — not a failure.
-    pub async fn process(
+    /// Decodes all instructions in a transaction that touch this pool.
+    /// Returns decoded instructions with their context, ready for event building.
+    pub fn decode_instructions(
         &self,
-        instruction: &UiInstruction,
-        index: usize,
-        tx: &TransactionContext<'_>,
-    ) -> Result<Option<Event>> {
-        let Some(view) = InstructionView::parse(instruction, tx.account_keys)? else {
-            return Ok(None);
-        };
-
-        let Some(decoded) = self.validate_and_decode(&view, index, tx)? else {
-            return Ok(None);
-        };
-
-        let Some(event_ctx) = self.resolve_context(&view, index, tx).await? else {
-            return Ok(None);
-        };
-
-        let event = self.event_builder.build(decoded, &event_ctx).await?;
-
-        let volume_usd = match &event {
-            Event::Swap(swap) => swap.volume_usd,
-            _ => None,
-        };
-        info!(
-            "[{}] Ingested {} tx={} slot={} volume_usd={:?}",
-            self.pool.name,
-            event.event_type(),
-            tx.signature,
-            tx.slot,
-            volume_usd
-        );
-
-        Ok(Some(event))
-    }
-
-    fn validate_and_decode(
-        &self,
-        view: &InstructionView<'_>,
-        index: usize,
-        tx: &TransactionContext<'_>,
-    ) -> Result<Option<decoder::DecodedInstruction>> {
-        if view.program_id != self.config.programs.raydium_amm_v4.as_str() {
-            return Ok(None);
-        }
-
-        if !view.touches(tx.account_keys, tx.pool_address) {
-            return Ok(None);
-        }
-
-        let data = match bs58::decode(view.data).into_vec() {
-            Ok(data) => data,
-            Err(e) => {
-                debug!(
-                    "[{}] Skipping instruction {} in {}: failed to decode base58 data: {}",
-                    self.pool.name, index, tx.signature, e
-                );
-                return Ok(None);
-            }
-        };
-
-        match decoder::decode_instruction(&data, view.account_count) {
-            Ok(decoded) => Ok(Some(decoded)),
-            Err(e) => {
-                debug!(
-                    "[{}] Skipping instruction {} in {}: {:#}",
-                    self.pool.name, index, tx.signature, e
-                );
-                Ok(None)
-            }
-        }
-    }
-
-    async fn resolve_context<'t>(
-        &self,
-        view: &InstructionView<'_>,
-        index: usize,
-        tx: &TransactionContext<'t>,
-    ) -> Result<Option<EventContext<'t>>> {
+        tx: &TransactionData<'_>,
+        pool_address: &str,
+    ) -> Result<Vec<DecodedInstructionContext>> {
         let Some((pre_balances, post_balances)) = token_balances(tx.meta) else {
-            debug!(
-                "[{}] Skipping {}: missing pre/post token balances",
-                self.pool.name, tx.signature
-            );
-            return Ok(None);
+            return Ok(Vec::new());
         };
 
-        let authority = view
-            .accounts
-            .get(2)
-            .and_then(|&i| tx.account_keys.get(i))
-            .with_context(|| {
-                format!(
-                    "Instruction in {} has no AMM authority account",
-                    tx.signature
-                )
-            })?;
+        let mut results = Vec::new();
 
-        let (vault0_index, vault1_index) = balances::resolve_vault_indices(
-            pre_balances,
-            post_balances,
-            &view.accounts,
-            authority,
-            &self.pool.token0,
-            &self.pool.token1,
-        )
-        .with_context(|| format!("Failed to resolve pool vaults for {}", tx.pool_address))?;
+        for (index, instruction) in tx.instructions.iter().enumerate() {
+            let Some(view) = InstructionView::parse(instruction, tx.account_keys)? else {
+                continue;
+            };
 
-        let (token0_symbol, token1_symbol) = tokio::join!(
-            self.symbols.get_symbol(&self.pool.token0),
-            self.symbols.get_symbol(&self.pool.token1)
-        );
+            if view.program_id != self.program_id.as_str() {
+                continue;
+            }
 
-        Ok(Some(EventContext {
-            signature: tx.signature,
-            slot: tx.slot,
-            block_time: tx.block_time,
-            instruction_index: index,
-            pool_address: tx.pool_address,
-            user_authority: tx
-                .account_keys
-                .first()
-                .cloned()
-                .unwrap_or_else(|| tx.pool_address.to_string()),
-            token0_symbol,
-            token1_symbol,
-            vault0_index,
-            vault1_index,
-            pre_balances,
-            post_balances,
-            meta: tx.meta,
-            event_timestamp: chrono::Utc::now().timestamp(),
-        }))
+            if !view.touches(tx.account_keys, pool_address) {
+                continue;
+            }
+
+            let data = match bs58::decode(view.data).into_vec() {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+
+            let decoded = match decoder::decode_instruction(&data, view.account_count) {
+                Ok(decoded) => decoded,
+                Err(_) => continue,
+            };
+
+            let authority = match view.accounts.get(2).and_then(|&i| tx.account_keys.get(i)) {
+                Some(authority) => authority,
+                None => {
+                    warn!(
+                        "Skipping instruction {} in {}: no AMM authority account",
+                        index, tx.signature
+                    );
+                    continue;
+                }
+            };
+
+            let (vault0_index, vault1_index) = match balances::resolve_vault_indices(
+                pre_balances,
+                post_balances,
+                &view.accounts,
+                authority,
+                &self.pool_config.token0,
+                &self.pool_config.token1,
+            ) {
+                Ok(indices) => indices,
+                Err(e) => {
+                    warn!(
+                        "Skipping instruction {} in {}: {:#}",
+                        index, tx.signature, e
+                    );
+                    continue;
+                }
+            };
+
+            results.push(DecodedInstructionContext {
+                decoded,
+                signature: *tx.signature,
+                slot: tx.slot,
+                block_time: tx.block_time,
+                instruction_index: index,
+                pool_address: pool_address.to_string(),
+                user_authority: tx
+                    .account_keys
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| pool_address.to_string()),
+                vault0_index,
+                vault1_index,
+                pre_balances: pre_balances.to_vec(),
+                post_balances: post_balances.to_vec(),
+                meta: tx.meta.clone(),
+            });
+        }
+
+        Ok(results)
     }
 }
 
-/// The fields every instruction in one transaction shares, so each call site passes one
-/// borrowed value instead of six copied arguments.
-pub struct TransactionContext<'a> {
-    pub account_keys: &'a [String],
+/// Transaction data needed for instruction decoding.
+pub struct TransactionData<'a> {
     pub signature: &'a Signature,
     pub slot: u64,
     pub block_time: i64,
+    pub account_keys: &'a [String],
+    pub instructions: &'a [UiInstruction],
     pub meta: &'a UiTransactionStatusMeta,
-    pub pool_address: &'a str,
+}
+
+/// A decoded instruction with all its context, ready for event building.
+pub struct DecodedInstructionContext {
+    pub decoded: DecodedInstruction,
+    pub signature: Signature,
+    pub slot: u64,
+    pub block_time: i64,
+    pub instruction_index: usize,
+    pub pool_address: String,
+    pub user_authority: String,
+    pub vault0_index: usize,
+    pub vault1_index: usize,
+    pub pre_balances: Vec<UiTransactionTokenBalance>,
+    pub post_balances: Vec<UiTransactionTokenBalance>,
+    pub meta: UiTransactionStatusMeta,
 }
 
 /// An instruction resolved against the account table: `accounts` are transaction-wide

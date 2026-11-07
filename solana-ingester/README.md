@@ -16,6 +16,10 @@ Set `SOLANA_RPC_URL` in `.env`. It embeds an API key, so it is never written to 
 
 ## Design Notes
 
+- **Pipeline layering**: `TransactionHandler` owns every I/O call — fetch, symbols, price — and hands the results to
+  pure transforms. `InstructionProcessor` decodes; `EventBuilder` assembles an event from a decoded instruction plus
+  the symbol and price arguments it is given. Neither inner module awaits anything, so an event's contents are fixed
+  by the transaction and the prices passed in, not by whatever the oracle holds at build time.
 - **Instruction decoding**: Raydium uses 8-byte discriminators. After matching, data is deserialized via borsh.
   Instructions arrive as `PartiallyDecoded` from routers; swaps reach the pool as inner CPI, not top-level.
 - **Vault resolution**: Vaults resolved per instruction by matching AMM authority against token accounts in

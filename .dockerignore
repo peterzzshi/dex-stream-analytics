@@ -1,7 +1,34 @@
-**/target/
+# Build artifacts
+target/
+build/
+dist/
+
+# Git
 .git/
-.github/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# Dependencies
+node_modules/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
 .env
-*.md
-analytics-service/build/
-analytics-service/.gradle/
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Session docs
+SESSION-HANDOFF.md
+GAPS.md
+DAPR-TEST.md

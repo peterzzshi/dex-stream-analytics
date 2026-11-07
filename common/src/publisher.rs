@@ -8,11 +8,12 @@ use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::time::Duration;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUDEVENTS_JSON: &str = "application/cloudevents+json";
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct PublisherConfig {
@@ -103,6 +104,38 @@ impl Publisher {
             encoder,
             config,
         })
+    }
+
+    /// Single health check at startup. Fails immediately if sidecar is not ready.
+    /// Docker Compose dependencies ensure the sidecar starts first.
+    pub async fn wait_until_ready(&self) -> Result<()> {
+        let url = format!(
+            "http://{}:{}/v1.0/healthz",
+            self.config.dapr_host, self.config.dapr_port
+        );
+        let response = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .with_context(|| format!("sidecar health check to {url} failed"))?;
+
+        if response.status().is_success() {
+            info!(
+                sidecar = %self.config.dapr_host,
+                port = self.config.dapr_port,
+                "Sidecar is healthy"
+            );
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "sidecar {}:{} not ready: HTTP {}",
+                self.config.dapr_host,
+                self.config.dapr_port,
+                response.status()
+            )
+        }
     }
 
     /// Publishes with retry, dead-lettering when the failure is not retriable or the

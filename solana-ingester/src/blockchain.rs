@@ -12,7 +12,7 @@ use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTra
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::warn;
 
 const LOG_CHANNEL_CAPACITY: usize = 1024;
 
@@ -128,8 +128,6 @@ impl RpcClient {
             .await
             .context("Log subscription task ended before reporting readiness")??;
 
-        debug!("Subscribed to logs for program: {}", program_id);
-
         Ok(LogSubscription {
             receiver,
             shutdown: Some(shutdown_sender),
@@ -179,8 +177,10 @@ fn parse_commitment(commitment: &str) -> Result<CommitmentConfig> {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_commitment;
+
     #[test]
-    fn parse_commitment() {
+    fn valid_commitments_are_accepted_and_unknown_ones_rejected() {
         assert!(parse_commitment("finalized").is_ok());
         assert!(parse_commitment("confirmed").is_ok());
         assert!(parse_commitment("processed").is_ok());

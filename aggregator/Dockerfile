@@ -1,8 +1,12 @@
 # Build Flink job with Java 21 and Flink 2.0.1
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /build
+
+# Cache dependencies layer (only invalidated when pom.xml changes)
 COPY pom.xml .
 RUN mvn -q -B dependency:go-offline
+
+# Build application (only re-runs when source changes)
 COPY src src
 RUN mvn -q -B package -DskipTests
 

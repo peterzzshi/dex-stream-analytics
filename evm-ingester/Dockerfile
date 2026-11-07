@@ -35,5 +35,4 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 WORKDIR /app
 COPY --from=builder /build/evm-ingester/target/release/evm-ingester /app/evm-ingester
 COPY evm.toml /app/evm.toml
-ENV RUST_LOG=debug
 CMD ["/app/evm-ingester"]

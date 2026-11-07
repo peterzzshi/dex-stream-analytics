@@ -40,8 +40,6 @@ WORKDIR /app
 COPY --from=builder /build/solana-ingester/target/release/solana-ingester /app/solana-ingester
 COPY solana.toml /app/solana.toml
 
-ENV RUST_LOG=debug
-
 EXPOSE 3001
 
 CMD ["/app/solana-ingester"]

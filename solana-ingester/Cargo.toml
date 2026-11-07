@@ -47,3 +47,6 @@ anchor-lang = "1.2.1"
 
 # SPL Token Metadata
 mpl-token-metadata = "5.1.1"
+
+# TLS/crypto for HTTPS RPC connections
+rustls = { version = "0.23", features = ["ring"] }

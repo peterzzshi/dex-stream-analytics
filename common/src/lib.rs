@@ -20,6 +20,10 @@ pub const SWAP_SCHEMA: &str = include_str!("../../schemas/SwapEvent.avsc");
 pub const MINT_SCHEMA: &str = include_str!("../../schemas/MintEvent.avsc");
 pub const BURN_SCHEMA: &str = include_str!("../../schemas/BurnEvent.avsc");
 pub const TRANSFER_SCHEMA: &str = include_str!("../../schemas/TransferEvent.avsc");
+pub const BRIDGE_LOCK_SCHEMA: &str = include_str!("../../schemas/BridgeLockEvent.avsc");
+pub const BRIDGE_UNLOCK_SCHEMA: &str = include_str!("../../schemas/BridgeUnlockEvent.avsc");
+pub const BRIDGE_MINT_SCHEMA: &str = include_str!("../../schemas/BridgeMintEvent.avsc");
+pub const BRIDGE_BURN_SCHEMA: &str = include_str!("../../schemas/BridgeBurnEvent.avsc");
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +118,104 @@ pub struct TransferEvent {
     pub event_timestamp: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeLockEvent {
+    pub event_id: String,
+    pub block_number: i64,
+    pub block_timestamp: i64,
+    pub transaction_hash: String,
+    pub log_index: i32,
+    pub chain: String,
+    pub chain_name: String,
+    pub bridge_address: String,
+    pub protocol: String,
+    pub gas_used: i64,
+    pub gas_price: String,
+    pub event_timestamp: i64,
+    pub sender: String,
+    pub recipient: String,
+    pub token: String,
+    pub token_symbol: Option<String>,
+    pub amount: String,
+    pub destination_chain: Option<String>,
+    pub source_chain: Option<String>,
+    pub message_hash: Option<String>,
+    pub sequence_number: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUnlockEvent {
+    pub event_id: String,
+    pub block_number: i64,
+    pub block_timestamp: i64,
+    pub transaction_hash: String,
+    pub log_index: i32,
+    pub chain: String,
+    pub chain_name: String,
+    pub bridge_address: String,
+    pub protocol: String,
+    pub gas_used: i64,
+    pub gas_price: String,
+    pub event_timestamp: i64,
+    pub sender: String,
+    pub recipient: String,
+    pub token: String,
+    pub token_symbol: Option<String>,
+    pub amount: String,
+    pub destination_chain: Option<String>,
+    pub source_chain: Option<String>,
+    pub message_hash: Option<String>,
+    pub sequence_number: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeMintEvent {
+    pub event_id: String,
+    pub block_number: i64,
+    pub block_timestamp: i64,
+    pub transaction_hash: String,
+    pub log_index: i32,
+    pub chain: String,
+    pub chain_name: String,
+    pub bridge_address: String,
+    pub protocol: String,
+    pub gas_used: i64,
+    pub gas_price: String,
+    pub event_timestamp: i64,
+    pub recipient: String,
+    pub wrapped_token: String,
+    pub wrapped_token_symbol: Option<String>,
+    pub amount: String,
+    pub source_chain: Option<String>,
+    pub message_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeBurnEvent {
+    pub event_id: String,
+    pub block_number: i64,
+    pub block_timestamp: i64,
+    pub transaction_hash: String,
+    pub log_index: i32,
+    pub chain: String,
+    pub chain_name: String,
+    pub bridge_address: String,
+    pub protocol: String,
+    pub gas_used: i64,
+    pub gas_price: String,
+    pub event_timestamp: i64,
+    pub recipient: String,
+    pub wrapped_token: String,
+    pub wrapped_token_symbol: Option<String>,
+    pub amount: String,
+    pub source_chain: Option<String>,
+    pub message_hash: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EventMeta {
     pub event_id: String,
@@ -130,6 +232,10 @@ pub enum Event {
     Mint(MintEvent),
     Burn(BurnEvent),
     Transfer(TransferEvent),
+    BridgeLock(BridgeLockEvent),
+    BridgeUnlock(BridgeUnlockEvent),
+    BridgeMint(BridgeMintEvent),
+    BridgeBurn(BridgeBurnEvent),
 }
 
 impl Event {
@@ -139,6 +245,10 @@ impl Event {
             Event::Mint(_) => "mint",
             Event::Burn(_) => "burn",
             Event::Transfer(_) => "transfer",
+            Event::BridgeLock(_) => "bridgelock",
+            Event::BridgeUnlock(_) => "bridgeunlock",
+            Event::BridgeMint(_) => "bridgemint",
+            Event::BridgeBurn(_) => "bridgeburn",
         }
     }
 
@@ -170,6 +280,34 @@ impl Event {
                 block_number: e.block_number,
                 pair_address: e.pair_address.clone(),
                 cloudevent_type: "com.dex.events.transfer",
+                event_timestamp: e.event_timestamp,
+            },
+            Event::BridgeLock(e) => EventMeta {
+                event_id: e.event_id.clone(),
+                block_number: e.block_number,
+                pair_address: e.bridge_address.clone(),
+                cloudevent_type: "com.bridge.events.lock",
+                event_timestamp: e.event_timestamp,
+            },
+            Event::BridgeUnlock(e) => EventMeta {
+                event_id: e.event_id.clone(),
+                block_number: e.block_number,
+                pair_address: e.bridge_address.clone(),
+                cloudevent_type: "com.bridge.events.unlock",
+                event_timestamp: e.event_timestamp,
+            },
+            Event::BridgeMint(e) => EventMeta {
+                event_id: e.event_id.clone(),
+                block_number: e.block_number,
+                pair_address: e.bridge_address.clone(),
+                cloudevent_type: "com.bridge.events.mint",
+                event_timestamp: e.event_timestamp,
+            },
+            Event::BridgeBurn(e) => EventMeta {
+                event_id: e.event_id.clone(),
+                block_number: e.block_number,
+                pair_address: e.bridge_address.clone(),
+                cloudevent_type: "com.bridge.events.burn",
                 event_timestamp: e.event_timestamp,
             },
         }

@@ -1,0 +1,70 @@
+[[bridge]]
+name = "Wormhole"
+protocol = "wormhole"
+address = "0x3ee18B2214AFF97000D974cf647E7C347E8fa585"
+chain_id = 1
+chain_name = "ethereum"
+
+[bridge.events.lock]
+signature = "TransferSent(address,uint16,bytes32,uint256)"
+amount_field = "amount"
+token_field = "token"
+sender_field = "sender"
+destination_chain_field = "targetChain"
+
+[bridge.events.unlock]
+signature = "TransferRedeemed(address,uint16,bytes32,uint256)"
+amount_field = "amount"
+token_field = "token"
+recipient_field = "recipient"
+source_chain_field = "sourceChain"
+
+[[bridge]]
+name = "LayerZero"
+protocol = "layerzero"
+address = "0x1a44076050125825900e736c501f859c50fE728c"
+chain_id = 1
+chain_name = "ethereum"
+
+[bridge.events.lock]
+signature = "PacketSent(uint16,bytes,uint64,bytes)"
+amount_field = "payload.amount"
+token_field = "payload.token"
+sender_field = "payload.sender"
+destination_chain_field = "dstChainId"
+sequence_field = "nonce"
+
+[bridge.events.unlock]
+signature = "PacketReceived(uint16,bytes,uint64)"
+amount_field = "payload.amount"
+token_field = "payload.token"
+recipient_field = "payload.recipient"
+source_chain_field = "srcChainId"
+sequence_field = "nonce"
+
+[[bridge]]
+name = "Hop"
+protocol = "hop"
+address = "0xb8901acB165ed027E32754E0FFe830802919727f"
+chain_id = 1
+chain_name = "ethereum"
+
+[bridge.events.lock]
+signature = "TransferSentToL2(uint256,address,uint256,uint256,uint256,address,uint256)"
+amount_field = "amount"
+token_field = "token"
+sender_field = "from"
+destination_chain_field = "chainId"
+
+[bridge.events.unlock]
+signature = "TransferFromL1Completed(address,uint256,uint256,uint256,address)"
+amount_field = "amount"
+token_field = "token"
+recipient_field = "recipient"
+
+[tokens]
+WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+WBTC = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"

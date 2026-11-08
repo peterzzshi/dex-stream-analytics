@@ -1,3 +1,5 @@
+pub mod bridge_decoder;
+pub mod bridge_normalizer;
 pub mod config;
 pub mod decoder;
 pub mod file_config;

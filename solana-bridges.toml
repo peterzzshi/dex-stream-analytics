@@ -1,0 +1,50 @@
+[[bridge]]
+name = "Wormhole Portal"
+protocol = "wormhole"
+program_id = "wormDTUJ6AWPNvk59vGQbDvGJmqbDTdgWgAqcLBCgUb"
+chain_name = "solana"
+
+[bridge.instructions.lock]
+name = "transfer_wrapped"
+amount_field = "amount"
+token_field = "token_account"
+sender_field = "sender"
+destination_chain_field = "target_chain"
+
+[bridge.instructions.unlock]
+name = "complete_transfer_native"
+amount_field = "amount"
+token_field = "mint"
+recipient_field = "recipient"
+
+[bridge.instructions.mint]
+name = "complete_transfer_wrapped"
+amount_field = "amount"
+wrapped_token_field = "wrapped_mint"
+recipient_field = "recipient"
+source_chain_field = "emitter_chain"
+
+[[bridge]]
+name = "Allbridge"
+protocol = "allbridge"
+program_id = "bb1XfoeKzmYZwmW2xxLUHJx8Q8x6dRhvyCMqWze3h4e"
+chain_name = "solana"
+
+[bridge.instructions.lock]
+name = "lock"
+amount_field = "amount"
+token_field = "token_mint"
+sender_field = "user"
+destination_chain_field = "destination_chain_id"
+
+[bridge.instructions.unlock]
+name = "unlock"
+amount_field = "amount"
+token_field = "token_mint"
+recipient_field = "recipient"
+
+[tokens]
+SOL = "So11111111111111111111111111111111111111112"
+USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+WETH = "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs"

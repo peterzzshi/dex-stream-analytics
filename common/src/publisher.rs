@@ -54,6 +54,8 @@ impl PublisherConfig {
         match event {
             Event::Swap(_) => &self.trading_topic,
             Event::Mint(_) | Event::Burn(_) | Event::Transfer(_) => &self.liquidity_topic,
+            Event::BridgeLock(_) | Event::BridgeUnlock(_) => &self.trading_topic,
+            Event::BridgeMint(_) | Event::BridgeBurn(_) => &self.liquidity_topic,
         }
     }
 }

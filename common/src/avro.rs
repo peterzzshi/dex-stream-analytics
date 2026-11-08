@@ -1,5 +1,7 @@
 use crate::{
-    BurnEvent, Event, MintEvent, SwapEvent, TransferEvent, BURN_SCHEMA, MINT_SCHEMA, SWAP_SCHEMA,
+    BridgeBurnEvent, BridgeLockEvent, BridgeMintEvent, BridgeUnlockEvent, BurnEvent, Event,
+    MintEvent, SwapEvent, TransferEvent, BRIDGE_BURN_SCHEMA, BRIDGE_LOCK_SCHEMA,
+    BRIDGE_MINT_SCHEMA, BRIDGE_UNLOCK_SCHEMA, BURN_SCHEMA, MINT_SCHEMA, SWAP_SCHEMA,
     TRANSFER_SCHEMA,
 };
 use anyhow::{Context, Result};
@@ -12,6 +14,10 @@ enum EventType {
     Mint = 1,
     Burn = 2,
     Transfer = 3,
+    BridgeLock = 4,
+    BridgeUnlock = 5,
+    BridgeMint = 6,
+    BridgeBurn = 7,
 }
 
 /// Binds an event struct to the one schema it may be encoded under, so `encode_event`
@@ -36,9 +42,24 @@ impl AvroEvent for TransferEvent {
     const EVENT_TYPE: EventType = EventType::Transfer;
 }
 
+impl AvroEvent for BridgeLockEvent {
+    const EVENT_TYPE: EventType = EventType::BridgeLock;
+}
+
+impl AvroEvent for BridgeUnlockEvent {
+    const EVENT_TYPE: EventType = EventType::BridgeUnlock;
+}
+
+impl AvroEvent for BridgeMintEvent {
+    const EVENT_TYPE: EventType = EventType::BridgeMint;
+}
+
+impl AvroEvent for BridgeBurnEvent {
+    const EVENT_TYPE: EventType = EventType::BridgeBurn;
+}
+
 pub struct AvroEncoder {
-    // Indexed by `EventType as usize`; the order must match the discriminants above.
-    schemas: [Schema; 4],
+    schemas: [Schema; 8],
 }
 
 impl AvroEncoder {
@@ -48,6 +69,10 @@ impl AvroEncoder {
             Schema::parse_str(MINT_SCHEMA).context("parse MintEvent schema")?,
             Schema::parse_str(BURN_SCHEMA).context("parse BurnEvent schema")?,
             Schema::parse_str(TRANSFER_SCHEMA).context("parse TransferEvent schema")?,
+            Schema::parse_str(BRIDGE_LOCK_SCHEMA).context("parse BridgeLockEvent schema")?,
+            Schema::parse_str(BRIDGE_UNLOCK_SCHEMA).context("parse BridgeUnlockEvent schema")?,
+            Schema::parse_str(BRIDGE_MINT_SCHEMA).context("parse BridgeMintEvent schema")?,
+            Schema::parse_str(BRIDGE_BURN_SCHEMA).context("parse BridgeBurnEvent schema")?,
         ];
         Ok(Self { schemas })
     }
@@ -58,6 +83,10 @@ impl AvroEncoder {
             Event::Mint(e) => self.encode_event(e),
             Event::Burn(e) => self.encode_event(e),
             Event::Transfer(e) => self.encode_event(e),
+            Event::BridgeLock(e) => self.encode_event(e),
+            Event::BridgeUnlock(e) => self.encode_event(e),
+            Event::BridgeMint(e) => self.encode_event(e),
+            Event::BridgeBurn(e) => self.encode_event(e),
         }
     }
 

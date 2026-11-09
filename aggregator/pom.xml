@@ -32,7 +32,7 @@
           <execution>
             <configuration>
               <outputDirectory>${project.build.directory}/generated-sources/avro</outputDirectory>
-              <sourceDirectory>${project.basedir}/src/main/resources/avro</sourceDirectory>
+              <sourceDirectory>${project.basedir}/../schemas</sourceDirectory>
               <stringType>String</stringType>
             </configuration>
             <goals>
@@ -165,13 +165,6 @@
             <version>${avro.version}</version>
         </dependency>
 
-        <!-- Kafka clients -->
-        <dependency>
-            <groupId>org.apache.kafka</groupId>
-            <artifactId>kafka-clients</artifactId>
-            <version>${kafka.version}</version>
-        </dependency>
-
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -201,6 +194,7 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
+          <version>2.22.4</version>
         </dependency>
     <dependency>
       <artifactId>jackson-core</artifactId>

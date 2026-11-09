@@ -3,11 +3,12 @@ FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /build
 
 # Cache dependencies layer (only invalidated when pom.xml changes)
-COPY pom.xml .
+COPY aggregator/pom.xml .
 RUN mvn -q -B dependency:go-offline
 
-# Build application (only re-runs when source changes)
-COPY src src
+# Build application (only re-runs when source or schemas change)
+COPY schemas ../schemas
+COPY aggregator/src src
 RUN mvn -q -B package -DskipTests
 
 # Job image: jar baked in, run via `standalone-job` (jobmanager) from compose.

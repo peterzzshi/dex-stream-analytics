@@ -4,7 +4,9 @@ use dex_ingester_common::{
 };
 use ethers::prelude::*;
 use ethers::providers::Ws;
-use evm_ingester::config::{Chain, Config, Pool};
+use evm_ingester::bridge_decoder::BridgeProtocol;
+use evm_ingester::bridge_listener::BridgeListener;
+use evm_ingester::config::{Bridge, Chain, Config, Pool};
 use evm_ingester::listener::Listener;
 use evm_ingester::oracle::ChainlinkOracle;
 use evm_ingester::rpc_retry::RetryableProvider;
@@ -44,6 +46,7 @@ async fn run() -> Result<()> {
     let config = Config::load_from_env()?;
     info!("Configuration loaded successfully");
     info!("Monitoring {} chains", config.chains.len());
+    info!("Monitoring {} bridges", config.bridges.len());
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let mut tasks = JoinSet::new();
@@ -55,7 +58,14 @@ async fn run() -> Result<()> {
         }
     }
 
-    info!("All pool listeners started, waiting for shutdown signal");
+    for bridge_config in &config.bridges {
+        if let Err(e) = spawn_bridge(bridge_config, &config.shared, &shutdown_tx, &mut tasks).await
+        {
+            error!(bridge = %bridge_config.name, "Skipping bridge: {:#}", e);
+        }
+    }
+
+    info!("All listeners started, waiting for shutdown signal");
 
     signal::ctrl_c()
         .await
@@ -298,6 +308,150 @@ async fn process_events(
 
     let published = processor.flush(&pool_name).await;
     info!(pool = %pool_name, published, "Flushed pending events");
+}
+
+async fn spawn_bridge(
+    bridge_config: &Bridge,
+    shared: &SharedConfig,
+    shutdown: &broadcast::Sender<()>,
+    tasks: &mut JoinSet<()>,
+) -> Result<()> {
+    info!(
+        bridge = %bridge_config.name,
+        protocol = %bridge_config.protocol,
+        address = %bridge_config.address,
+        "Initializing bridge listener"
+    );
+
+    let provider = Arc::new(
+        Provider::<Ws>::connect(&std::env::var("ETH_RPC_URL").context("ETH_RPC_URL not set")?)
+            .await
+            .context("failed to connect to WebSocket RPC")?,
+    );
+
+    let rpc = Arc::new(RetryableProvider::new(
+        Arc::clone(&provider),
+        dex_ingester_common::RetryConfig::default(),
+    ));
+
+    let publisher = Arc::new(
+        Publisher::new(PublisherConfig::new(
+            shared,
+            format!("evm-ingester/{}", bridge_config.chain),
+        ))
+        .context("failed to create publisher")?,
+    );
+
+    publisher
+        .wait_until_ready()
+        .await
+        .context("Dapr sidecar never became healthy")?;
+
+    let protocol = match bridge_config.protocol.as_str() {
+        "wormhole" => BridgeProtocol::Wormhole,
+        "layerzero" => BridgeProtocol::LayerZero,
+        "hop" => BridgeProtocol::Hop,
+        other => anyhow::bail!("Unsupported protocol: {}", other),
+    };
+
+    let listener = BridgeListener::new(
+        bridge_config.chain.clone(),
+        bridge_config.chain_name.clone(),
+        bridge_config.address.clone(),
+        protocol,
+        Arc::clone(&rpc),
+    );
+
+    let processor = Arc::new(EventProcessor::new(
+        Arc::new(FinalityBuffer::new(FinalityMode::Depth(12))),
+        Arc::clone(&publisher),
+    ));
+
+    let (event_tx, event_rx) = mpsc::channel::<Event>(EVENT_CHANNEL_BUFFER);
+
+    let bridge_address = bridge_config.address.clone();
+    let subscription_shutdown = shutdown.subscribe();
+    tasks.spawn(async move {
+        if let Err(e) = subscribe_to_bridge_logs(
+            provider,
+            &bridge_address,
+            listener,
+            event_tx,
+            subscription_shutdown,
+        )
+        .await
+        {
+            error!(bridge = %bridge_address, "WebSocket subscription failed: {:#}", e);
+        }
+    });
+
+    let bridge_name = bridge_config.name.clone();
+    let processor_shutdown = shutdown.subscribe();
+    tasks.spawn(async move {
+        process_events(event_rx, processor, bridge_name, processor_shutdown).await;
+    });
+
+    Ok(())
+}
+
+async fn subscribe_to_bridge_logs(
+    provider: Arc<Provider<Ws>>,
+    bridge_address: &str,
+    listener: BridgeListener<Provider<Ws>>,
+    event_tx: mpsc::Sender<Event>,
+    mut shutdown: broadcast::Receiver<()>,
+) -> Result<()> {
+    use ethers::types::Filter;
+    use futures_util::StreamExt;
+
+    let address: Address = bridge_address
+        .parse()
+        .with_context(|| format!("invalid bridge address: {}", bridge_address))?;
+
+    let mut stream = provider
+        .subscribe_logs(&Filter::new().address(address))
+        .await
+        .context("failed to subscribe to logs")?;
+
+    info!(bridge = %bridge_address, "WebSocket subscription established");
+
+    loop {
+        tokio::select! {
+            log_result = stream.next() => {
+                let Some(log) = log_result else {
+                    warn!(bridge = %bridge_address, "WebSocket stream ended");
+                    break;
+                };
+
+                if log.removed == Some(true) {
+                    warn!(
+                        bridge = %bridge_address,
+                        tx_hash = ?log.transaction_hash,
+                        log_index = ?log.log_index,
+                        "Log removed by chain reorg, dropping"
+                    );
+                    continue;
+                }
+
+                match listener.process_log(log).await {
+                    Ok(Some(event)) => {
+                        if event_tx.send(event).await.is_err() {
+                            warn!(bridge = %bridge_address, "Event processor gone, stopping subscription");
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(_) => {}
+                }
+            }
+            _ = shutdown_requested(&mut shutdown) => {
+                info!(bridge = %bridge_address, "WebSocket subscription shutting down");
+                break;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Resolves on shutdown, or when every sender has been dropped. A lagged receiver only

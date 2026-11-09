@@ -3,13 +3,18 @@ use anyhow::{Context, Result};
 use dex_ingester_common::Event;
 use ethers::prelude::*;
 use ethers::types::Log;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct BridgeNormalizer {
     chain_id: String,
     chain_name: String,
     bridge_address: String,
     protocol: BridgeProtocol,
+}
+
+impl BridgeNormalizer {
+    pub fn bridge_address(&self) -> &str {
+        &self.bridge_address
+    }
 }
 
 impl BridgeNormalizer {
@@ -27,7 +32,12 @@ impl BridgeNormalizer {
         }
     }
 
-    pub async fn normalize(&self, log: Log) -> Result<Option<Event>> {
+    pub fn normalize(
+        &self,
+        log: Log,
+        block_timestamp: i64,
+        event_timestamp: i64,
+    ) -> Result<Option<Event>> {
         let decoded = crate::bridge_decoder::decode(&log, self.protocol)?;
         let Some(bridge_event) = decoded else {
             return Ok(None);
@@ -40,11 +50,6 @@ impl BridgeNormalizer {
         let log_index = log.log_index.context("log missing log index")?;
 
         let event_id = format!("{:?}:{}", transaction_hash, log_index);
-        let block_timestamp = 0i64;
-        let event_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
 
         let event = match bridge_event {
             BridgeEvent::WormholeLock(e) => self.normalize_wormhole_lock(

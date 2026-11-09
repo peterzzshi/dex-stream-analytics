@@ -5,12 +5,14 @@ use std::collections::HashMap;
 use std::env;
 use std::str::FromStr;
 
+use crate::bridge_file_config::BridgeFileConfig;
 use crate::file_config::EvmFileConfig;
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub shared: SharedConfig,
     pub chains: Vec<Chain>,
+    pub bridges: Vec<Bridge>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,20 +38,36 @@ pub struct Pool {
     pub name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct Bridge {
+    pub name: String,
+    pub protocol: String,
+    pub address: String,
+    pub chain: String,
+    pub chain_name: String,
+}
+
 impl Config {
     pub fn load_from_env() -> Result<Self> {
         let path = env::var("CONFIG_FILE").context("CONFIG_FILE not set")?;
         let contents = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read CONFIG_FILE {path}"))?;
-        Self::load(|key| env::var(key), &contents)
+
+        let bridge_path =
+            env::var("BRIDGE_CONFIG_FILE").unwrap_or_else(|_| "evm-bridges.toml".to_string());
+        let bridge_contents = std::fs::read_to_string(&bridge_path)
+            .with_context(|| format!("Failed to read bridge config {bridge_path}"))?;
+
+        Self::load(|key| env::var(key), &contents, &bridge_contents)
     }
 
-    fn load<F>(get_env: F, config_toml: &str) -> Result<Self>
+    fn load<F>(get_env: F, config_toml: &str, bridge_toml: &str) -> Result<Self>
     where
         F: Fn(&str) -> Result<String, env::VarError>,
     {
         let shared = SharedConfig::load(&get_env)?;
         let file = EvmFileConfig::parse(config_toml)?;
+        let bridge_file = BridgeFileConfig::parse(bridge_toml)?;
 
         // Addresses were validated by EvmFileConfig::parse, so parsing cannot fail here
         let parse = |s: &str| Address::from_str(s).with_context(|| format!("Invalid address {s}"));
@@ -66,8 +84,8 @@ impl Config {
         }
 
         let chain = Chain {
-            chain: file.chain.id,
-            name: file.chain.name,
+            chain: file.chain.id.clone(),
+            name: file.chain.name.clone(),
             rpc: Secret::new(get_env("ETH_RPC_URL").context("ETH_RPC_URL not set")?),
             confirmations: file.chain.confirmations,
             pools: file
@@ -85,9 +103,22 @@ impl Config {
             retry: RetryConfig::default(),
         };
 
+        let bridges = bridge_file
+            .bridge
+            .into_iter()
+            .map(|b| Bridge {
+                name: b.name,
+                protocol: b.protocol,
+                address: b.address,
+                chain: format!("eip155:{}", b.chain_id),
+                chain_name: b.chain_name,
+            })
+            .collect();
+
         Ok(Config {
             shared,
             chains: vec![chain],
+            bridges,
         })
     }
 }
@@ -124,9 +155,18 @@ mod tests {
         }
     }
 
+    const BRIDGE_CONFIG: &str = r#"
+[[bridge]]
+name = "Wormhole"
+protocol = "wormhole"
+address = "0x3ee18B2214AFF97000D974cf647E7C347E8fa585"
+chain_id = 1
+chain_name = "ethereum"
+"#;
+
     #[test]
     fn token_table_feeds_the_oracle_config() {
-        let config = Config::load(lookup(&env_vars()), VALID).expect("should load");
+        let config = Config::load(lookup(&env_vars()), VALID, BRIDGE_CONFIG).expect("should load");
         let chain = &config.chains[0];
 
         assert_eq!(chain.chain, "eip155:1");
@@ -144,7 +184,7 @@ mod tests {
         let mut vars = env_vars();
         vars.retain(|(k, _)| *k != "ETH_RPC_URL");
 
-        let err = Config::load(lookup(&vars), VALID).unwrap_err();
+        let err = Config::load(lookup(&vars), VALID, BRIDGE_CONFIG).unwrap_err();
 
         assert!(format!("{err:#}").contains("ETH_RPC_URL"));
     }
@@ -153,15 +193,25 @@ mod tests {
     fn malformed_file_fails_load_with_the_offending_key() {
         let contents = VALID.replace("[[pools]]", "[[pools]]\ntypo = 1");
 
-        let err = Config::load(lookup(&env_vars()), &contents).unwrap_err();
+        let err = Config::load(lookup(&env_vars()), &contents, BRIDGE_CONFIG).unwrap_err();
 
         assert!(format!("{err:#}").contains("typo"));
     }
 
     #[test]
     fn config_debug_output_hides_the_rpc_url() {
-        let config = Config::load(lookup(&env_vars()), VALID).expect("should load");
+        let config = Config::load(lookup(&env_vars()), VALID, BRIDGE_CONFIG).expect("should load");
 
         assert!(!format!("{config:?}").contains("eth-sepolia.example.com"));
+    }
+
+    #[test]
+    fn bridge_config_loads_successfully() {
+        let config = Config::load(lookup(&env_vars()), VALID, BRIDGE_CONFIG).expect("should load");
+
+        assert_eq!(config.bridges.len(), 1);
+        assert_eq!(config.bridges[0].name, "Wormhole");
+        assert_eq!(config.bridges[0].protocol, "wormhole");
+        assert_eq!(config.bridges[0].chain, "eip155:1");
     }
 }

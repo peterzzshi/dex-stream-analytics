@@ -107,12 +107,12 @@ pub fn decode(log: &Log, protocol: BridgeProtocol) -> Result<Option<BridgeEvent>
 
 fn decode_wormhole(raw: &RawLog, topic: &H256) -> Result<Option<BridgeEvent>> {
     if topic == &WormholeTransferSent::signature() {
-        let event: WormholeTransferSent = WormholeTransferSent::decode_log(raw)
+        let event = <WormholeTransferSent as EthLogDecode>::decode_log(raw)
             .context("failed to decode WormholeTransferSent")?;
         return Ok(Some(BridgeEvent::WormholeLock(event)));
     }
     if topic == &WormholeTransferRedeemed::signature() {
-        let event: WormholeTransferRedeemed = WormholeTransferRedeemed::decode_log(raw)
+        let event = <WormholeTransferRedeemed as EthLogDecode>::decode_log(raw)
             .context("failed to decode WormholeTransferRedeemed")?;
         return Ok(Some(BridgeEvent::WormholeUnlock(event)));
     }
@@ -121,12 +121,12 @@ fn decode_wormhole(raw: &RawLog, topic: &H256) -> Result<Option<BridgeEvent>> {
 
 fn decode_layerzero(raw: &RawLog, topic: &H256) -> Result<Option<BridgeEvent>> {
     if topic == &LayerZeroPacketSent::signature() {
-        let event: LayerZeroPacketSent =
-            LayerZeroPacketSent::decode_log(raw).context("failed to decode LayerZeroPacketSent")?;
+        let event = <LayerZeroPacketSent as EthLogDecode>::decode_log(raw)
+            .context("failed to decode LayerZeroPacketSent")?;
         return Ok(Some(BridgeEvent::LayerZeroLock(event)));
     }
     if topic == &LayerZeroPacketReceived::signature() {
-        let event: LayerZeroPacketReceived = LayerZeroPacketReceived::decode_log(raw)
+        let event = <LayerZeroPacketReceived as EthLogDecode>::decode_log(raw)
             .context("failed to decode LayerZeroPacketReceived")?;
         return Ok(Some(BridgeEvent::LayerZeroUnlock(event)));
     }
@@ -135,12 +135,12 @@ fn decode_layerzero(raw: &RawLog, topic: &H256) -> Result<Option<BridgeEvent>> {
 
 fn decode_hop(raw: &RawLog, topic: &H256) -> Result<Option<BridgeEvent>> {
     if topic == &HopTransferSentToL2::signature() {
-        let event: HopTransferSentToL2 =
-            HopTransferSentToL2::decode_log(raw).context("failed to decode HopTransferSentToL2")?;
+        let event = <HopTransferSentToL2 as EthLogDecode>::decode_log(raw)
+            .context("failed to decode HopTransferSentToL2")?;
         return Ok(Some(BridgeEvent::HopLock(event)));
     }
     if topic == &HopTransferFromL1Completed::signature() {
-        let event: HopTransferFromL1Completed = HopTransferFromL1Completed::decode_log(raw)
+        let event = <HopTransferFromL1Completed as EthLogDecode>::decode_log(raw)
             .context("failed to decode HopTransferFromL1Completed")?;
         return Ok(Some(BridgeEvent::HopUnlock(event)));
     }

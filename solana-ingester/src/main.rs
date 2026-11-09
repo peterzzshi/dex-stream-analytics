@@ -1,5 +1,9 @@
 mod balances;
 mod blockchain;
+mod bridge_decoder;
+mod bridge_file_config;
+mod bridge_handler;
+mod bridge_normalizer;
 mod config;
 mod decoder;
 mod event_builder;

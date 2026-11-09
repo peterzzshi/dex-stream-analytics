@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::env;
 use std::str::FromStr;
 
+use crate::bridge_file_config::BridgeFileConfig;
 use crate::file_config::{parse_feed_id, FileConfig, FEED_ID_BYTES};
 
 #[derive(Debug, Clone)]
@@ -13,6 +14,7 @@ pub struct Config {
     pub solana: SolanaConfig,
     pub programs: ProgramsConfig,
     pub pools: Vec<PoolConfig>,
+    pub bridges: Vec<BridgeConfig>,
     pub pyth: PythConfig,
     pub tokens: TokensConfig,
 }
@@ -42,6 +44,15 @@ pub struct PoolConfig {
     pub token1: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct BridgeConfig {
+    pub name: String,
+    pub protocol: String,
+    pub program_id: String,
+    pub chain: String,
+    pub chain_name: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PythFeed {
     pub account: Pubkey,
@@ -65,16 +76,23 @@ impl Config {
         let path = env::var("CONFIG_FILE").context("CONFIG_FILE not set")?;
         let contents = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read CONFIG_FILE {path}"))?;
-        Self::load(|key| env::var(key), &contents)
+
+        let bridge_path =
+            env::var("BRIDGE_CONFIG_FILE").unwrap_or_else(|_| "solana-bridges.toml".to_string());
+        let bridge_contents = std::fs::read_to_string(&bridge_path)
+            .with_context(|| format!("Failed to read bridge config {bridge_path}"))?;
+
+        Self::load(|key| env::var(key), &contents, &bridge_contents)
     }
 
     // Testable pure function - takes env lookup and file contents as parameters
-    fn load<F>(get_env: F, config_toml: &str) -> Result<Self>
+    fn load<F>(get_env: F, config_toml: &str, bridge_toml: &str) -> Result<Self>
     where
         F: Fn(&str) -> Result<String, env::VarError>,
     {
         let shared = SharedConfig::load(&get_env)?;
         let file = FileConfig::parse(config_toml)?;
+        let bridge_file = BridgeFileConfig::parse(bridge_toml)?;
 
         let solana = SolanaConfig {
             app_port: get_env("APP_PORT")
@@ -160,11 +178,24 @@ impl Config {
                 .collect(),
         };
 
+        let bridges = bridge_file
+            .bridge
+            .into_iter()
+            .map(|b| BridgeConfig {
+                name: b.name,
+                protocol: b.protocol,
+                program_id: b.program_id,
+                chain: format!("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"),
+                chain_name: b.chain_name,
+            })
+            .collect();
+
         Ok(Config {
             shared,
             solana,
             programs,
             pools,
+            bridges,
             pyth,
             tokens,
         })

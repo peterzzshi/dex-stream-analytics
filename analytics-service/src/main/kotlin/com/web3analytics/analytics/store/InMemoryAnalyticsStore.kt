@@ -2,7 +2,6 @@ package com.web3analytics.analytics.store
 
 import com.web3analytics.analytics.model.LiquidityAnalytics
 import com.web3analytics.analytics.model.MarketTrend
-import com.web3analytics.analytics.model.MevAlert
 import com.web3analytics.analytics.model.PairAddress
 import com.web3analytics.analytics.model.TimeRange
 import com.web3analytics.analytics.model.TradingAnalytics
@@ -13,11 +12,9 @@ import java.util.concurrent.atomic.AtomicLong
 class InMemoryAnalyticsStore : AnalyticsStore {
     private val tradingByPair = ConcurrentHashMap<PairAddress, MutableList<TradingAnalytics>>()
     private val liquidityByPair = ConcurrentHashMap<PairAddress, MutableList<LiquidityAnalytics>>()
-    private val mevByPair = ConcurrentHashMap<PairAddress, MutableList<MevAlert>>()
     private val trendsByPair = ConcurrentHashMap<PairAddress, MutableList<MarketTrend>>()
     private val tradingCount = AtomicLong(0)
     private val liquidityCount = AtomicLong(0)
-    private val mevCount = AtomicLong(0)
     private val trendCount = AtomicLong(0)
 
     override fun storeTradingAnalytics(analytics: TradingAnalytics) {
@@ -34,14 +31,6 @@ class InMemoryAnalyticsStore : AnalyticsStore {
                 Collections.synchronizedList(mutableListOf())
             }.add(analytics)
         liquidityCount.incrementAndGet()
-    }
-
-    override fun storeMevAlert(alert: MevAlert) {
-        mevByPair
-            .computeIfAbsent(alert.pairAddress) {
-                Collections.synchronizedList(mutableListOf())
-            }.add(alert)
-        mevCount.incrementAndGet()
     }
 
     override fun storeMarketTrend(trend: MarketTrend) {
@@ -85,15 +74,6 @@ class InMemoryAnalyticsStore : AnalyticsStore {
             it.windowStart
         }
 
-    override fun getMevAlerts(
-        pairAddress: PairAddress,
-        range: TimeRange,
-    ): List<MevAlert> =
-        mevByPair[pairAddress]
-            ?.filter { it.detectedAt >= range.from && it.detectedAt <= range.to }
-            ?.sortedByDescending { it.detectedAt }
-            ?: emptyList()
-
     override fun getMarketTrends(
         pairAddress: PairAddress,
         range: TimeRange,
@@ -116,8 +96,6 @@ class InMemoryAnalyticsStore : AnalyticsStore {
 
     override fun totalLiquidityWindows(): Long = liquidityCount.get()
 
-    override fun totalMevAlerts(): Long = mevCount.get()
-
     override fun totalMarketTrends(): Long = trendCount.get()
 
     override fun trackedTradingPairs(): Set<PairAddress> = tradingByPair.keys.toSet()
@@ -125,5 +103,5 @@ class InMemoryAnalyticsStore : AnalyticsStore {
     override fun trackedLiquidityPairs(): Set<PairAddress> = liquidityByPair.keys.toSet()
 
     override fun allTrackedPairs(): Set<PairAddress> =
-        tradingByPair.keys + liquidityByPair.keys + mevByPair.keys + trendsByPair.keys
+        tradingByPair.keys + liquidityByPair.keys + trendsByPair.keys
 }

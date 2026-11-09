@@ -42,7 +42,6 @@ Visit http://localhost:8080/dashboard for live analytics.
 | `REDIS_PASSWORD`            | —           | Redis password (optional)          |
 | `TRADING_RETENTION_HOURS`   | `168`       | Trading data retention (7 days)    |
 | `LIQUIDITY_RETENTION_HOURS` | `720`       | Liquidity data retention (30 days) |
-| `MEV_RETENTION_HOURS`       | `168`       | MEV alert retention (7 days)       |
 | `TREND_RETENTION_HOURS`     | `168`       | Market trend retention (7 days)    |
 
 Kafka topics and Dapr subscription routes are wired in `dapr/subscriptions/*.yaml` and match the
@@ -54,8 +53,8 @@ for the full contract.
 - **Dapr subscriptions are declarative** — no programmatic `/dapr/subscribe` endpoint; the sidecar
   reads `dapr/subscriptions/analytics-subscriptions.yaml` and pushes CloudEvents to `/events/*`
   routes.
-- **Pool health scoring** — composite metric (35 % trading activity + 35 % liquidity activity +
-  30 % safety/inverse of MEV alerts) computed at query time, not persisted.
+- **Pool health scoring** — composite metric (50 % trading activity + 50 % liquidity activity)
+  computed at query time, not persisted.
 - **Redis key structure** — `analytics:trading:{pair}`, `analytics:liquidity:{pair}`,
-  `analytics:mev:{pair}`, `analytics:trends:{pair}`, all scored by `windowStart` or `detectedAt`
-  for time-range queries. When multi-chain lands, a chain prefix joins the key.
+  `analytics:trends:{pair}`, all scored by `windowStart` for time-range queries. When
+  multi-chain lands, a chain prefix joins the key.

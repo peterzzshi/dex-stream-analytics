@@ -41,7 +41,6 @@ enum class AnalyticsChannel(
 ) {
     TRADING("trading"),
     LIQUIDITY("liquidity"),
-    MEV("mev"),
     TREND("trend");
 
     companion object {
@@ -61,11 +60,6 @@ sealed class AnalyticsEvent(
         val pairAddress: String,
         val payload: String,
     ) : AnalyticsEvent(AnalyticsChannel.LIQUIDITY.wireName)
-
-    data class MevAlertEvent(
-        val pairAddress: String,
-        val payload: String,
-    ) : AnalyticsEvent(AnalyticsChannel.MEV.wireName)
 
     data class TrendUpdate(
         val pairAddress: String,

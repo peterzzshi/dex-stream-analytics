@@ -1,22 +1,16 @@
 use anyhow::{Context, Result};
 use dex_ingester_common::{Secret, SharedConfig};
 use solana_sdk::pubkey::Pubkey;
-use std::collections::HashMap;
 use std::env;
 use std::str::FromStr;
 
 use crate::bridge_file_config::BridgeFileConfig;
-use crate::file_config::{parse_feed_id, FileConfig, FEED_ID_BYTES};
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub shared: SharedConfig,
     pub solana: SolanaConfig,
-    pub programs: ProgramsConfig,
-    pub pools: Vec<PoolConfig>,
     pub bridges: Vec<BridgeConfig>,
-    pub pyth: PythConfig,
-    pub tokens: TokensConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +18,7 @@ pub struct SolanaConfig {
     pub app_port: u16,
     pub rpc: Secret,
     pub commitment: String,
+    #[expect(dead_code)]
     pub chain: String,
     pub chain_name: String,
     pub finality_buffer_size: usize,
@@ -31,67 +26,53 @@ pub struct SolanaConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct ProgramsConfig {
-    pub raydium_amm_v4: String,
-    pub token_metadata: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PoolConfig {
-    pub name: String,
-    pub address: String,
-    pub token0: String,
-    pub token1: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct BridgeConfig {
     pub name: String,
-    pub protocol: String,
-    pub program_id: String,
+    pub protocol: BridgeProtocol,
+    pub program_id: Pubkey,
     pub chain: String,
     pub chain_name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PythFeed {
-    pub account: Pubkey,
-    pub feed_id: [u8; FEED_ID_BYTES],
+pub enum BridgeProtocol {
+    Wormhole,
+    Allbridge,
 }
 
-#[derive(Debug, Clone)]
-pub struct PythConfig {
-    pub max_age_seconds: i64,
-    pub price_feeds: HashMap<String, PythFeed>,
-    pub stablecoins: Vec<String>,
-}
+impl BridgeProtocol {
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "wormhole" => Ok(BridgeProtocol::Wormhole),
+            "allbridge" => Ok(BridgeProtocol::Allbridge),
+            other => anyhow::bail!("Unknown bridge protocol: {}", other),
+        }
+    }
 
-#[derive(Debug, Clone)]
-pub struct TokensConfig {
-    pub known_symbols: HashMap<String, String>,
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BridgeProtocol::Wormhole => "wormhole",
+            BridgeProtocol::Allbridge => "allbridge",
+        }
+    }
 }
 
 impl Config {
     pub fn load_from_env() -> Result<Self> {
-        let path = env::var("CONFIG_FILE").context("CONFIG_FILE not set")?;
-        let contents = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read CONFIG_FILE {path}"))?;
-
         let bridge_path =
             env::var("BRIDGE_CONFIG_FILE").unwrap_or_else(|_| "solana-bridges.toml".to_string());
         let bridge_contents = std::fs::read_to_string(&bridge_path)
             .with_context(|| format!("Failed to read bridge config {bridge_path}"))?;
 
-        Self::load(|key| env::var(key), &contents, &bridge_contents)
+        Self::load(|key| env::var(key), &bridge_contents)
     }
 
     // Testable pure function - takes env lookup and file contents as parameters
-    fn load<F>(get_env: F, config_toml: &str, bridge_toml: &str) -> Result<Self>
+    fn load<F>(get_env: F, bridge_toml: &str) -> Result<Self>
     where
         F: Fn(&str) -> Result<String, env::VarError>,
     {
         let shared = SharedConfig::load(&get_env)?;
-        let file = FileConfig::parse(config_toml)?;
         let bridge_file = BridgeFileConfig::parse(bridge_toml)?;
 
         let solana = SolanaConfig {
@@ -101,8 +82,8 @@ impl Config {
                 .context("APP_PORT must be a valid number")?,
             rpc: Secret::new(get_env("SOLANA_RPC_URL").context("SOLANA_RPC_URL not set")?),
             commitment: get_env("SOLANA_COMMITMENT").context("SOLANA_COMMITMENT not set")?,
-            chain: file.chain.id.clone(),
-            chain_name: file.chain.name.clone(),
+            chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
+            chain_name: "Solana".to_string(),
             finality_buffer_size: get_env("FINALITY_BUFFER_SIZE")
                 .context("FINALITY_BUFFER_SIZE not set")?
                 .parse()
@@ -113,91 +94,26 @@ impl Config {
                 .context("FINALITY_POLL_INTERVAL_SECS must be a valid number")?,
         };
 
-        let programs = ProgramsConfig {
-            raydium_amm_v4: file.programs.raydium_amm_v4.clone(),
-            token_metadata: file.programs.token_metadata.clone(),
-        };
-
-        // validate() guarantees every pool token is declared in [[tokens]]
-        let symbol_of = |mint: &str| {
-            file.token(mint)
-                .map(|t| t.symbol.clone())
-                .unwrap_or_else(|| mint.to_string())
-        };
-        let pools = file
-            .pools
-            .iter()
-            .map(|p| PoolConfig {
-                name: format!("{}/{}", symbol_of(&p.token0), symbol_of(&p.token1)),
-                address: p.address.clone(),
-                token0: p.token0.clone(),
-                token1: p.token1.clone(),
-            })
-            .collect();
-
-        // validate() guarantees pyth_account and pyth_feed_id are present together.
-        let price_feeds = file
-            .tokens
-            .iter()
-            .filter(|t| t.pyth_account.is_some())
-            .map(|t| {
-                let account = t.pyth_account.as_deref().expect("filtered on is_some");
-                let feed_id = t
-                    .pyth_feed_id
-                    .as_deref()
-                    .with_context(|| format!("Token {} has no pyth_feed_id", t.symbol))?;
-                Ok((
-                    t.mint.clone(),
-                    PythFeed {
-                        account: Pubkey::from_str(account).with_context(|| {
-                            format!("Invalid Pyth account for {}: {account}", t.symbol)
-                        })?,
-                        feed_id: parse_feed_id(feed_id)
-                            .with_context(|| format!("Invalid Pyth feed id for {}", t.symbol))?,
-                    },
-                ))
-            })
-            .collect::<Result<HashMap<String, PythFeed>>>()?;
-
-        let pyth = PythConfig {
-            max_age_seconds: file.pyth.max_age_seconds,
-            price_feeds,
-            stablecoins: file
-                .tokens
-                .iter()
-                .filter(|t| t.stablecoin)
-                .map(|t| t.mint.clone())
-                .collect(),
-        };
-
-        let tokens = TokensConfig {
-            known_symbols: file
-                .tokens
-                .iter()
-                .map(|t| (t.mint.clone(), t.symbol.clone()))
-                .collect(),
-        };
-
         let bridges = bridge_file
             .bridge
             .into_iter()
-            .map(|b| BridgeConfig {
-                name: b.name,
-                protocol: b.protocol,
-                program_id: b.program_id,
-                chain: format!("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"),
-                chain_name: b.chain_name,
+            .map(|b| {
+                Ok(BridgeConfig {
+                    name: b.name.clone(),
+                    protocol: BridgeProtocol::from_str(&b.protocol)
+                        .with_context(|| format!("Invalid protocol for bridge {}", b.name))?,
+                    program_id: Pubkey::from_str(&b.program_id)
+                        .with_context(|| format!("Invalid program_id for bridge {}", b.name))?,
+                    chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
+                    chain_name: b.chain_name,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Config {
             shared,
             solana,
-            programs,
-            pools,
             bridges,
-            pyth,
-            tokens,
         })
     }
 }
@@ -205,10 +121,20 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_config::test_support::VALID;
 
-    const SOL: &str = "So11111111111111111111111111111111111111112";
-    const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const VALID_BRIDGES: &str = r#"
+[[bridge]]
+name = "Wormhole Portal"
+protocol = "wormhole"
+program_id = "wormDTUJ6AWPNvk59vGQbDvGJmqbDTdgWgAqcLBCgUb"
+chain_name = "solana"
+
+[[bridge]]
+name = "Allbridge"
+protocol = "allbridge"
+program_id = "bb1XfoeKzmYZwmW2xxLUHJx8Q8x6dRhvyCMqWze3h4e"
+chain_name = "solana"
+"#;
 
     fn env_without(missing: &'static str) -> impl Fn(&str) -> Result<String, env::VarError> {
         move |key| {
@@ -233,40 +159,59 @@ mod tests {
     }
 
     #[test]
-    fn token_table_feeds_every_runtime_section() {
-        let config = Config::load(env_without(""), VALID).expect("should load");
+    fn bridge_config_loads_with_parsed_protocol_and_pubkey() {
+        let config = Config::load(env_without(""), VALID_BRIDGES).expect("should load");
 
         assert_eq!(config.solana.chain_name, "Solana");
-        assert_eq!(config.pools[0].name, "SOL/USDC");
-        assert_eq!(config.pools[0].token0, SOL);
-        assert_eq!(config.tokens.known_symbols[SOL], "SOL");
-        assert_eq!(config.tokens.known_symbols[USDC], "USDC");
-        assert_eq!(config.pyth.stablecoins, [USDC]);
-        let sol_feed = config.pyth.price_feeds.get(SOL).expect("SOL feed");
+        assert_eq!(config.bridges.len(), 2);
+
+        assert_eq!(config.bridges[0].name, "Wormhole Portal");
+        assert_eq!(config.bridges[0].protocol, BridgeProtocol::Wormhole);
         assert_eq!(
-            sol_feed.account.to_string(),
-            "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE"
+            config.bridges[0].program_id.to_string(),
+            "wormDTUJ6AWPNvk59vGQbDvGJmqbDTdgWgAqcLBCgUb"
         );
-        assert_eq!(
-            crate::file_config::feed_id_hex(&sol_feed.feed_id),
-            "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
-        );
-        assert!(!config.pyth.price_feeds.contains_key(USDC));
+
+        assert_eq!(config.bridges[1].name, "Allbridge");
+        assert_eq!(config.bridges[1].protocol, BridgeProtocol::Allbridge);
     }
 
     #[test]
     fn missing_env_var_is_named_in_the_error() {
-        let err = Config::load(env_without("SOLANA_RPC_URL"), VALID).unwrap_err();
+        let err = Config::load(env_without("SOLANA_RPC_URL"), VALID_BRIDGES).unwrap_err();
 
         assert!(format!("{err:#}").contains("SOLANA_RPC_URL"));
     }
 
     #[test]
-    fn malformed_file_fails_load_with_the_offending_key() {
-        let contents = VALID.replace("[pyth]", "[pyth]\nmax_age = 5");
+    fn invalid_protocol_fails_parse() {
+        let invalid = r#"
+[[bridge]]
+name = "Invalid"
+protocol = "unknown"
+program_id = "wormDTUJ6AWPNvk59vGQbDvGJmqbDTdgWgAqcLBCgUb"
+chain_name = "solana"
+"#;
 
-        let err = Config::load(env_without(""), &contents).unwrap_err();
+        let err = Config::load(env_without(""), invalid).unwrap_err();
 
-        assert!(format!("{err:#}").contains("max_age"));
+        let msg = format!("{err:#}");
+        assert!(msg.contains("protocol") || msg.contains("Invalid"));
+    }
+
+    #[test]
+    fn invalid_program_id_fails_parse() {
+        let invalid = r#"
+[[bridge]]
+name = "Invalid"
+protocol = "wormhole"
+program_id = "not-a-valid-pubkey"
+chain_name = "solana"
+"#;
+
+        let err = Config::load(env_without(""), invalid).unwrap_err();
+
+        let msg = format!("{err:#}");
+        assert!(msg.contains("program_id") || msg.contains("Invalid"));
     }
 }

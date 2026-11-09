@@ -1,146 +1,64 @@
-use crate::bridge_decoder::{BridgeInstruction, BridgeProtocol};
+use crate::bridge_decoder::BridgeProtocol;
 use anyhow::Result;
-use dex_ingester_common::{
-    BridgeBurnEvent, BridgeLockEvent, BridgeMintEvent, BridgeUnlockEvent, Event,
-};
-use solana_sdk::signature::Signature;
+use dex_ingester_common::Event;
+use solana_sdk::pubkey::Pubkey;
 
 pub struct BridgeNormalizer {
-    chain_id: String,
+    chain: String,
     chain_name: String,
-    bridge_address: String,
+    program_id: Pubkey,
     protocol: BridgeProtocol,
 }
 
 impl BridgeNormalizer {
+    #[expect(dead_code)]
+    pub fn program_id(&self) -> &Pubkey {
+        &self.program_id
+    }
+
+    pub fn protocol(&self) -> BridgeProtocol {
+        self.protocol
+    }
+}
+
+impl BridgeNormalizer {
     pub fn new(
-        chain_id: String,
+        chain: String,
         chain_name: String,
-        bridge_address: String,
+        program_id: Pubkey,
         protocol: BridgeProtocol,
     ) -> Self {
         Self {
-            chain_id,
+            chain,
             chain_name,
-            bridge_address,
+            program_id,
             protocol,
         }
     }
 
-    pub fn program_id(&self) -> &str {
-        &self.bridge_address
-    }
-
     pub fn normalize(
         &self,
-        instruction: BridgeInstruction,
-        signature: &Signature,
         slot: u64,
+        tx_signature: String,
+        instruction_data: &[u8],
         block_timestamp: i64,
         event_timestamp: i64,
     ) -> Result<Event> {
-        let event_id = signature.to_string();
-        let transaction_hash = signature.to_string();
+        let event_id = format!("{}:0", tx_signature);
 
-        match instruction {
-            BridgeInstruction::Lock {
-                amount,
-                destination_chain,
-            } => Ok(Event::BridgeLock(BridgeLockEvent {
-                event_id,
-                block_number: slot as i64,
-                block_timestamp,
-                transaction_hash,
-                log_index: 0,
-                chain: self.chain_id.clone(),
-                chain_name: self.chain_name.clone(),
-                bridge_address: self.bridge_address.clone(),
-                protocol: self.protocol.as_str().to_string(),
-                gas_used: 0,
-                gas_price: "0".to_string(),
-                event_timestamp,
-                sender: "".to_string(),
-                recipient: "".to_string(),
-                token: "".to_string(),
-                token_symbol: None,
-                amount: amount.to_string(),
-                destination_chain,
-                source_chain: None,
-                message_hash: None,
-                sequence_number: None,
-            })),
-            BridgeInstruction::Unlock {
-                amount,
-                source_chain,
-            } => Ok(Event::BridgeUnlock(BridgeUnlockEvent {
-                event_id,
-                block_number: slot as i64,
-                block_timestamp,
-                transaction_hash,
-                log_index: 0,
-                chain: self.chain_id.clone(),
-                chain_name: self.chain_name.clone(),
-                bridge_address: self.bridge_address.clone(),
-                protocol: self.protocol.as_str().to_string(),
-                gas_used: 0,
-                gas_price: "0".to_string(),
-                event_timestamp,
-                sender: "".to_string(),
-                recipient: "".to_string(),
-                token: "".to_string(),
-                token_symbol: None,
-                amount: amount.to_string(),
-                destination_chain: None,
-                source_chain,
-                message_hash: None,
-                sequence_number: None,
-            })),
-            BridgeInstruction::Mint {
-                amount,
-                source_chain,
-            } => Ok(Event::BridgeMint(BridgeMintEvent {
-                event_id,
-                block_number: slot as i64,
-                block_timestamp,
-                transaction_hash,
-                log_index: 0,
-                chain: self.chain_id.clone(),
-                chain_name: self.chain_name.clone(),
-                bridge_address: self.bridge_address.clone(),
-                protocol: self.protocol.as_str().to_string(),
-                gas_used: 0,
-                gas_price: "0".to_string(),
-                event_timestamp,
-                recipient: "".to_string(),
-                wrapped_token: "".to_string(),
-                wrapped_token_symbol: None,
-                amount: amount.to_string(),
-                source_chain,
-                message_hash: None,
-            })),
-            BridgeInstruction::Burn {
-                amount,
-                destination_chain,
-            } => Ok(Event::BridgeBurn(BridgeBurnEvent {
-                event_id,
-                block_number: slot as i64,
-                block_timestamp,
-                transaction_hash,
-                log_index: 0,
-                chain: self.chain_id.clone(),
-                chain_name: self.chain_name.clone(),
-                bridge_address: self.bridge_address.clone(),
-                protocol: self.protocol.as_str().to_string(),
-                gas_used: 0,
-                gas_price: "0".to_string(),
-                event_timestamp,
-                sender: "".to_string(),
-                wrapped_token: "".to_string(),
-                wrapped_token_symbol: None,
-                amount: amount.to_string(),
-                destination_chain,
-                message_hash: None,
-            })),
-        }
+        crate::bridge_decoder::decode_instruction(
+            &self.program_id,
+            self.protocol,
+            instruction_data,
+            self.chain.clone(),
+            self.chain_name.clone(),
+            self.program_id.to_string(),
+            event_id,
+            slot as i64,
+            block_timestamp,
+            tx_signature,
+            0,
+            event_timestamp,
+        )
     }
 }

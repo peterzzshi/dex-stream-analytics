@@ -7,7 +7,6 @@ data class AppConfig(
     val redisPassword: String? = env("REDIS_PASSWORD"),
     val tradingRetentionHours: Int = env("TRADING_RETENTION_HOURS")?.toIntOrNull() ?: 168,
     val liquidityRetentionHours: Int = env("LIQUIDITY_RETENTION_HOURS")?.toIntOrNull() ?: 720,
-    val mevRetentionHours: Int = env("MEV_RETENTION_HOURS")?.toIntOrNull() ?: 168,
     val trendRetentionHours: Int = env("TREND_RETENTION_HOURS")?.toIntOrNull() ?: 168,
 ) {
     companion object {

@@ -314,10 +314,10 @@ impl FinalityBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Event, SwapEvent};
+    use crate::{BridgeLockEvent, Event};
 
     fn mock_event(block_number: i64) -> Event {
-        Event::Swap(SwapEvent {
+        Event::BridgeLock(BridgeLockEvent {
             event_id: format!("event-{}", block_number),
             block_number,
             block_timestamp: 1000000,
@@ -325,22 +325,20 @@ mod tests {
             log_index: 0,
             chain: "eip155:1".to_string(),
             chain_name: "Ethereum".to_string(),
-            pair_address: "0x123".to_string(),
-            token0: "0xtoken0".to_string(),
-            token1: "0xtoken1".to_string(),
-            token0_symbol: None,
-            token1_symbol: None,
-            sender: "0xsender".to_string(),
-            recipient: "0xrecipient".to_string(),
-            amount0_in: "100".to_string(),
-            amount1_in: "0".to_string(),
-            amount0_out: "0".to_string(),
-            amount1_out: "200".to_string(),
-            price: 2.0,
-            volume_usd: Some(100.0),
+            bridge_address: "0x123".to_string(),
+            protocol: "wormhole".to_string(),
             gas_used: 150000,
             gas_price: "50".to_string(),
             event_timestamp: 1000000,
+            sender: "0xsender".to_string(),
+            recipient: "0xrecipient".to_string(),
+            token: "0xtoken".to_string(),
+            token_symbol: None,
+            amount: "1000000".to_string(),
+            destination_chain: Some("solana:5eykt".to_string()),
+            source_chain: None,
+            message_hash: None,
+            sequence_number: None,
         })
     }
 

@@ -1,7 +1,6 @@
 (function() {
     const $ = id => document.getElementById(id);
     let eventCount = 0;
-    let alertCount = 0;
 
     function connect() {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -47,13 +46,6 @@
                     '  L: ' + fmt(d.lowPrice,4) + '  C: ' + fmt(d.closePrice,4);
                 break;
             case 'liquidity':
-                break;
-            case 'mev':
-                alertCount++;
-                $('alert-count').textContent = alertCount;
-                prependToFeed('alert-feed',
-                    '<span class="severity ' + (d.severity||'') + '">' + (d.severity||'?') + '</span>' +
-                    (d.alertType||'unknown') + ' — ' + (d.pairAddress||'').substring(0,10) + '...');
                 break;
             case 'trend': {
                 setText('price-change', fmt(d.priceChangePercent, 2) + '%');

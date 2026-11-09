@@ -15,7 +15,6 @@ class PoolHealthScorer(
 
         val tradingWindows = store.getTradingWindows(pairAddress, range24h)
         val liquidityWindows = store.getLiquidityWindows(pairAddress, range24h)
-        val alerts = store.getMevAlerts(pairAddress, range24h)
         val latestTrend = store.getLatestMarketTrend(pairAddress)
 
         val volumeUSD = tradingWindows.mapNotNull { it.volumeUSD }.sum()
@@ -23,15 +22,12 @@ class PoolHealthScorer(
 
         val tradingScore = scoreTradingActivity(tradingWindows.size, volumeUSD, uniqueTraders)
         val liquidityScore = scoreLiquidity(liquidityWindows.size)
-        val safetyScore = scoreSafety(alerts.size)
 
         return PoolHealth.compute(
             pairAddress = pairAddress,
             tradingScore = tradingScore,
             liquidityScore = liquidityScore,
-            safetyScore = safetyScore,
             trend = latestTrend?.trend ?: "UNKNOWN",
-            recentAlertCount = alerts.size,
             volumeUSD24h = volumeUSD,
             uniqueTraders24h = uniqueTraders
         )
@@ -56,16 +52,6 @@ class PoolHealthScorer(
             if (windowCount == 0) return 0.5 // neutral when no data
             // Having liquidity events is positive (active pool)
             return min(windowCount / 12.0, 1.0)
-        }
-
-        fun scoreSafety(alertCount: Int): Double {
-            // No alerts = perfect safety; each alert degrades the score
-            return when {
-                alertCount == 0 -> 1.0
-                alertCount <= 2 -> 0.7
-                alertCount <= 5 -> 0.4
-                else -> 0.1
-            }
         }
     }
 }

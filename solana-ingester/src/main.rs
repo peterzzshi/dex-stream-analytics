@@ -1,19 +1,10 @@
-mod balances;
 mod blockchain;
 mod bridge_decoder;
 mod bridge_file_config;
 mod bridge_handler;
 mod bridge_normalizer;
 mod config;
-mod decoder;
-mod event_builder;
-mod file_config;
-mod instruction_processor;
-mod oracle;
 mod rpc_retry;
-mod symbols;
-mod transaction_fetcher;
-mod transaction_handler;
 
 use anyhow::{Context, Result};
 use dex_ingester_common::{
@@ -28,16 +19,11 @@ use tokio::time::{Duration, MissedTickBehavior};
 use tracing::{error, info, warn};
 
 use crate::blockchain::RpcClient;
-use crate::config::{Config, PoolConfig};
-use crate::event_builder::EventBuilder;
-use crate::instruction_processor::InstructionProcessor;
-use crate::oracle::PythOracle;
+use crate::bridge_handler::BridgeHandler;
+use crate::config::{BridgeConfig, Config};
 use crate::rpc_retry::RetryableRpcClient;
-use crate::symbols::SymbolCache;
-use crate::transaction_fetcher::TransactionFetcher;
-use crate::transaction_handler::TransactionHandler;
 
-const EVENT_SOURCE: &str = "ingester/solana/raydium-amm-v4";
+const EVENT_SOURCE: &str = "ingester/solana/bridge";
 const RECONNECT_DELAY_SECS: u64 = 5;
 
 /// Resolves when shutdown is requested, or when the sender is dropped.
@@ -52,43 +38,41 @@ async fn shutdown_requested(shutdown: &mut Receiver<bool>) {
     }
 }
 
-/// Everything one pool's stream needs, so the loop functions take `&self` instead of
-/// six cloned arguments.
-struct PoolRunner {
-    handler: TransactionHandler,
+/// Bridge program runner with reconnect-on-drop loop.
+struct BridgeRunner {
+    handler: BridgeHandler,
     rpc_client: Arc<RetryableRpcClient>,
     event_processor: Arc<EventProcessor>,
-    pool_name: String,
-    pool_address: String,
+    bridge_name: String,
     program_id: Pubkey,
 }
 
-impl PoolRunner {
+impl BridgeRunner {
     async fn run(self, mut shutdown: Receiver<bool>) {
-        info!("[{}] Starting monitoring task", self.pool_name);
+        info!("[{}] Starting bridge monitoring task", self.bridge_name);
 
         loop {
             if let Err(e) = self.stream(&mut shutdown).await {
-                error!("[{}] Subscription loop failed: {:#}", self.pool_name, e);
+                error!("[{}] Subscription loop failed: {:#}", self.bridge_name, e);
             }
 
             if *shutdown.borrow() {
                 info!(
-                    "[{}] Shutdown requested, stopping monitoring task",
-                    self.pool_name
+                    "[{}] Shutdown requested, stopping bridge monitoring task",
+                    self.bridge_name
                 );
                 return;
             }
 
             warn!(
                 "[{}] WebSocket subscription closed, attempting to reconnect...",
-                self.pool_name
+                self.bridge_name
             );
 
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(RECONNECT_DELAY_SECS)) => {}
                 _ = shutdown_requested(&mut shutdown) => {
-                    info!("[{}] Shutdown requested, stopping monitoring task", self.pool_name);
+                    info!("[{}] Shutdown requested, stopping bridge monitoring task", self.bridge_name);
                     return;
                 }
             }
@@ -103,33 +87,30 @@ impl PoolRunner {
             .await
             .context("Failed to subscribe to logs")?;
 
-        info!(
-            "[{}] Subscribed to Raydium AMM v4 program logs",
-            self.pool_name
-        );
+        info!("[{}] Subscribed to bridge program logs", self.bridge_name);
 
         loop {
             tokio::select! {
                 maybe_log = subscription.recv() => {
                     let Some(log_response) = maybe_log else {
-                        warn!("[{}] Subscription stream ended", self.pool_name);
+                        warn!("[{}] Subscription stream ended", self.bridge_name);
                         break;
                     };
 
                     let signature = match Signature::from_str(&log_response.signature) {
                         Ok(signature) => signature,
                         Err(e) => {
-                            warn!("[{}] Failed to parse signature {}: {}", self.pool_name, log_response.signature, e);
+                            warn!("[{}] Failed to parse signature {}: {}", self.bridge_name, log_response.signature, e);
                             continue;
                         }
                     };
 
                     if let Err(e) = self.ingest(signature).await {
-                        warn!("[{}] Failed to process transaction {}: {:#}", self.pool_name, signature, e);
+                        warn!("[{}] Failed to process transaction {}: {:#}", self.bridge_name, signature, e);
                     }
                 }
                 _ = shutdown_requested(shutdown) => {
-                    info!("[{}] Shutdown requested in subscription loop", self.pool_name);
+                    info!("[{}] Shutdown requested in subscription loop", self.bridge_name);
                     break;
                 }
             }
@@ -140,14 +121,12 @@ impl PoolRunner {
     }
 
     async fn ingest(&self, signature: Signature) -> Result<()> {
-        let events = self.handler.handle(signature, &self.pool_address).await?;
+        let events = self.handler.handle(signature).await?;
 
         if events.is_empty() {
             return Ok(());
         }
 
-        // External finality mode panics on a missing position, so a failed read has to
-        // drop the transaction rather than buffer it without an upper bound.
         let finalized_slot = self
             .rpc_client
             .get_finalized_slot()
@@ -155,13 +134,13 @@ impl PoolRunner {
             .context("Failed to fetch finalized slot")?;
 
         self.event_processor
-            .advance_finalized(finalized_slot, &self.pool_name)
+            .advance_finalized(finalized_slot, &self.bridge_name)
             .await
             .map_err(anyhow::Error::msg)?;
 
         for event in events {
             self.event_processor
-                .process(event, Some(finalized_slot), &self.pool_name)
+                .process(event, Some(finalized_slot), &self.bridge_name)
                 .await;
         }
 
@@ -187,8 +166,8 @@ async fn main() -> Result<()> {
         "Loaded configuration for chain: {}",
         config.solana.chain_name
     );
-    for pool in &config.pools {
-        info!("  - {} at {}", pool.name, pool.address);
+    for bridge in &config.bridges {
+        info!("  - {} ({})", bridge.name, bridge.protocol.as_str());
     }
 
     let app_port = config.solana.app_port;
@@ -209,21 +188,6 @@ async fn main() -> Result<()> {
         "Connected to Solana RPC with commitment: {:?}",
         config.solana.commitment
     );
-
-    // The oracle and symbol cache query HTTP endpoints directly, not the WS subscription.
-    let http_rpc_url = config
-        .solana
-        .rpc
-        .expose()
-        .replace("wss://", "https://")
-        .replace("ws://", "http://");
-
-    let oracle = Arc::new(PythOracle::new(http_rpc_url.clone(), config.pyth.clone()));
-    let symbols = Arc::new(SymbolCache::new(
-        http_rpc_url,
-        config.tokens.clone(),
-        config.programs.token_metadata.clone(),
-    ));
 
     let publisher = Publisher::new(PublisherConfig::new(
         &config.shared,
@@ -256,24 +220,13 @@ async fn main() -> Result<()> {
         config.solana.finality_poll_interval_secs
     );
 
-    let program_id =
-        Pubkey::from_str(&config.programs.raydium_amm_v4).context("Invalid Raydium program ID")?;
-
     info!("All components initialized successfully");
 
-    let mut pool_tasks = Vec::new();
-    for pool in config.pools.iter() {
-        let runner = build_pool_runner(
-            pool,
-            &config,
-            &rpc_client,
-            &oracle,
-            &symbols,
-            &event_processor,
-            program_id,
-        );
-        info!("Started monitoring task for pool: {}", pool.name);
-        pool_tasks.push(tokio::spawn(runner.run(shutdown_rx.clone())));
+    let mut bridge_tasks = Vec::new();
+    for bridge in config.bridges.iter() {
+        let runner = build_bridge_runner(bridge, &rpc_client, &event_processor)?;
+        info!("Started monitoring task for bridge: {}", bridge.name);
+        bridge_tasks.push(tokio::spawn(runner.run(shutdown_rx.clone())));
     }
 
     info!("Ingester ready. Press Ctrl+C to stop.");
@@ -289,9 +242,9 @@ async fn main() -> Result<()> {
         warn!("Shutdown receivers already gone");
     }
 
-    for task in pool_tasks {
+    for task in bridge_tasks {
         if let Err(e) = task.await {
-            warn!("Pool monitoring task failed: {}", e);
+            warn!("Bridge monitoring task failed: {}", e);
         }
     }
     if let Err(e) = poller_task.await {
@@ -305,35 +258,26 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn build_pool_runner(
-    pool: &PoolConfig,
-    config: &Arc<Config>,
+fn build_bridge_runner(
+    bridge: &BridgeConfig,
     rpc_client: &Arc<RetryableRpcClient>,
-    oracle: &Arc<PythOracle>,
-    symbols: &Arc<SymbolCache>,
     event_processor: &Arc<EventProcessor>,
-    program_id: Pubkey,
-) -> PoolRunner {
-    let fetcher = TransactionFetcher::new(rpc_client.clone());
-    let processor = InstructionProcessor::new(config.programs.raydium_amm_v4.clone(), pool.clone());
-    let builder = EventBuilder::new(config.clone(), pool.clone());
-    let handler = TransactionHandler::new(
-        fetcher,
-        processor,
-        builder,
-        oracle.clone(),
-        symbols.clone(),
-        pool.clone(),
+) -> Result<BridgeRunner> {
+    let handler = BridgeHandler::new(
+        bridge.chain.clone(),
+        bridge.chain_name.clone(),
+        bridge.program_id.to_string(),
+        bridge.protocol,
+        rpc_client.clone(),
     );
 
-    PoolRunner {
+    Ok(BridgeRunner {
         handler,
         rpc_client: rpc_client.clone(),
         event_processor: event_processor.clone(),
-        pool_name: pool.name.clone(),
-        pool_address: pool.address.clone(),
-        program_id,
-    }
+        bridge_name: bridge.name.clone(),
+        program_id: bridge.program_id,
+    })
 }
 
 async fn finality_polling_task(

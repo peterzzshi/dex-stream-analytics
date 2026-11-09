@@ -65,7 +65,7 @@ fun Route.dashboardWebSocket(eventBus: AnalyticsEventBus) {
  * Updates [target] in place from a client message. The message is parsed as a
  * JSON array, a CSV list, or a bare channel name, and tokens are matched
  * exactly against known channel names (not as substrings) to avoid false
- * positives like "removeAll" matching "mev". An empty selection resubscribes
+ * positives like "removeAll" matching "trend". An empty selection resubscribes
  * to all channels.
  */
 private fun applyChannelFilter(
@@ -89,7 +89,6 @@ private fun buildWebSocketMessage(event: AnalyticsEvent): String {
         when (event) {
             is AnalyticsEvent.TradingUpdate -> event.pairAddress to event.payload
             is AnalyticsEvent.LiquidityUpdate -> event.pairAddress to event.payload
-            is AnalyticsEvent.MevAlertEvent -> event.pairAddress to event.payload
             is AnalyticsEvent.TrendUpdate -> event.pairAddress to event.payload
         }
     val escapedPair = pair.replace("\\", "\\\\").replace("\"", "\\\"")

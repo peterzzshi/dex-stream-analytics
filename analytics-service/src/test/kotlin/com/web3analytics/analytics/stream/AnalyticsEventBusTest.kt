@@ -27,11 +27,11 @@ class AnalyticsEventBusTest {
         runBlocking {
             val bus = AnalyticsEventBus()
 
-            bus.emit(AnalyticsEvent.MevAlertEvent("0xabc", "first"))
-            bus.emit(AnalyticsEvent.MevAlertEvent("0xabc", "latest"))
+            bus.emit(AnalyticsEvent.LiquidityUpdate("0xabc", "first"))
+            bus.emit(AnalyticsEvent.LiquidityUpdate("0xabc", "latest"))
 
             val received = withTimeout(5_000) { bus.events.first() }
 
-            assertEquals("latest", (received as AnalyticsEvent.MevAlertEvent).payload)
+            assertEquals("latest", (received as AnalyticsEvent.LiquidityUpdate).payload)
         }
 }

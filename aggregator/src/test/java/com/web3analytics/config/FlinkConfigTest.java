@@ -20,14 +20,12 @@ class FlinkConfigTest {
     env.put("TOPIC_LIQUIDITY_EVENTS", "liquidity");
     env.put("TOPIC_TRADING_ANALYTICS", "trading-analytics");
     env.put("TOPIC_LIQUIDITY_ANALYTICS", "liquidity-analytics");
-    env.put("TOPIC_PATTERN_ANALYTICS", "patterns");
     env.put("TOPIC_MARKET_TRENDS", "trends");
     env.put("FLINK_CONSUMER_GROUP", "test-group");
     env.put("FLINK_PARALLELISM", "4");
     env.put("FLINK_CHECKPOINT_MS", "60000");
     env.put("TRADING_WINDOW_MINUTES", "5");
     env.put("LIQUIDITY_WINDOW_MINUTES", "60");
-    env.put("SESSION_GAP_SECONDS", "3");
     env.put("TREND_WINDOW_MINUTES", "30");
     env.put("TREND_SLIDE_MINUTES", "5");
     return env;

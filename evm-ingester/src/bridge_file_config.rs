@@ -2,8 +2,6 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
 
-use crate::file_config::is_valid_eth_address;
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BridgeFileConfig {
@@ -54,6 +52,16 @@ fn check_address(field: &str, value: &str) -> Result<()> {
         bail!("{field} is not a valid EVM address: {value}");
     }
     Ok(())
+}
+
+pub fn is_valid_eth_address(addr: &str) -> bool {
+    if !addr.starts_with("0x") {
+        return false;
+    }
+    if addr.len() != 42 {
+        return false;
+    }
+    addr[2..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -115,5 +123,28 @@ chain_name = "ethereum"
         let contents = VALID.replace("protocol = \"wormhole\"", "protocol = \"unknown\"");
 
         assert!(err_of(&contents).contains("Invalid protocol"));
+    }
+
+    #[test]
+    fn accepts_only_well_formed_addresses() {
+        assert!(is_valid_eth_address(
+            "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
+        ));
+        assert!(is_valid_eth_address(
+            "0x0000000000000000000000000000000000000000"
+        ));
+
+        assert!(!is_valid_eth_address(
+            "5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
+        )); // no 0x
+        assert!(!is_valid_eth_address(
+            "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6"
+        )); // too short
+        assert!(!is_valid_eth_address(
+            "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6fX"
+        )); // too long
+        assert!(!is_valid_eth_address(
+            "0xZZZZbEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
+        )); // invalid hex
     }
 }

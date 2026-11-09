@@ -6,7 +6,6 @@ import com.web3analytics.analytics.fp.io
 import com.web3analytics.analytics.fp.respondEither
 import com.web3analytics.analytics.model.LiquidityAnalytics
 import com.web3analytics.analytics.model.MarketTrend
-import com.web3analytics.analytics.model.MevAlert
 import com.web3analytics.analytics.model.TradingAnalytics
 import com.web3analytics.analytics.store.AnalyticsStore
 import com.web3analytics.analytics.stream.AnalyticsEvent
@@ -61,27 +60,6 @@ fun Route.subscriptionRoutes(
                     )
                     mapOf("status" to "SUCCESS").also {
                         eventBus.emit(AnalyticsEvent.LiquidityUpdate(analytics.pairAddress.value, payload))
-                    }
-                }
-        call.respondEither(result)
-    }
-
-    post("/events/pattern-analytics") {
-        val body = call.receiveText()
-        val result =
-            mapper
-                .extractCloudEventData<MevAlert>(body)
-                .map { alert ->
-                    io { store.storeMevAlert(alert) }
-                    val payload = mapper.writeValueAsString(alert)
-                    logger.info(
-                        "Stored MEV alert: pair={} type={} severity={}",
-                        alert.pairAddress,
-                        alert.alertType,
-                        alert.severity,
-                    )
-                    mapOf("status" to "SUCCESS").also {
-                        eventBus.emit(AnalyticsEvent.MevAlertEvent(alert.pairAddress.value, payload))
                     }
                 }
         call.respondEither(result)

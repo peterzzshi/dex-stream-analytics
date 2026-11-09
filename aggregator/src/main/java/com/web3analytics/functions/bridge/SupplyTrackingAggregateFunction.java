@@ -2,9 +2,9 @@ package com.web3analytics.functions.bridge;
 
 import com.web3analytics.bridge.BridgeBurnEvent;
 import com.web3analytics.bridge.BridgeMintEvent;
+import com.web3analytics.functions.Web3Math;
 import com.web3analytics.types.TriState;
 import java.io.Serial;
-import java.math.BigInteger;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.java.tuple.Tuple2;
 
@@ -16,14 +16,6 @@ public class SupplyTrackingAggregateFunction implements
 
   @Serial
   private static final long serialVersionUID = 1L;
-
-  private static BigInteger parseBigInt(final String amount) {
-    try {
-      return new BigInteger(amount);
-    } catch (final NumberFormatException e) {
-      return BigInteger.ZERO;
-    }
-  }
 
   @Override
   public SupplyTrackingAccumulator createAccumulator() {
@@ -46,7 +38,7 @@ public class SupplyTrackingAggregateFunction implements
         acc.tokenSymbol = TriState.of(event.getWrappedTokenSymbol());
       }
       acc.mintCount++;
-      acc.totalMinted = acc.totalMinted.add(parseBigInt(event.getAmount()));
+      acc.totalMinted = acc.totalMinted.add(Web3Math.parseBigInt(event.getAmount()));
     }
 
     if (tuple.f1 != null) {
@@ -60,7 +52,7 @@ public class SupplyTrackingAggregateFunction implements
         acc.tokenSymbol = TriState.of(event.getWrappedTokenSymbol());
       }
       acc.burnCount++;
-      acc.totalBurned = acc.totalBurned.add(parseBigInt(event.getAmount()));
+      acc.totalBurned = acc.totalBurned.add(Web3Math.parseBigInt(event.getAmount()));
     }
 
     return acc;
@@ -68,8 +60,15 @@ public class SupplyTrackingAggregateFunction implements
 
   @Override
   public SupplyTrackingAccumulator getResult(final SupplyTrackingAccumulator acc) {
-    acc.netMinted = acc.totalMinted.subtract(acc.totalBurned);
-    return acc;
+    final SupplyTrackingAccumulator result = new SupplyTrackingAccumulator(
+        acc.bridgeAddress, acc.chain, acc.protocol, acc.windowEnd);
+    result.tokenSymbol = acc.tokenSymbol;
+    result.mintCount = acc.mintCount;
+    result.burnCount = acc.burnCount;
+    result.totalMinted = acc.totalMinted;
+    result.totalBurned = acc.totalBurned;
+    result.netMinted = acc.totalMinted.subtract(acc.totalBurned);
+    return result;
   }
 
   @Override

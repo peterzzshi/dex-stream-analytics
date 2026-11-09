@@ -23,14 +23,6 @@ fun Route.poolRoutes(store: AnalyticsStore) {
         call.respondEither(result)
     }
 
-    get("/pools/{pair}/alerts") {
-        val result =
-            call
-                .requirePairAndRange()
-                .map { (pair, range) -> io { store.getMevAlerts(pair, range) } }
-        call.respondEither(result)
-    }
-
     get("/pools/{pair}/trends") {
         val result =
             call

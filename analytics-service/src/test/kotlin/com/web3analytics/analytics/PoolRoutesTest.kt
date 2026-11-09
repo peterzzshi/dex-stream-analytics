@@ -3,8 +3,8 @@ package com.web3analytics.analytics
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.web3analytics.analytics.model.MarketTrend
-import com.web3analytics.analytics.model.MevAlert
 import com.web3analytics.analytics.model.PairAddress
+import com.web3analytics.analytics.model.TradingAnalytics
 import com.web3analytics.analytics.store.InMemoryAnalyticsStore
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -30,7 +30,6 @@ class PoolRoutesTest {
     @Test
     fun `GET pools health returns health score`() =
         testApp { store ->
-            store.storeMevAlert(mevAlert("0xpair", severity = "HIGH"))
             store.storeMarketTrend(marketTrend("0xpair", trend = "BULLISH"))
 
             val response = client.get("/pools/0xpair/health")
@@ -39,23 +38,7 @@ class PoolRoutesTest {
             val body = mapper.readTree(response.bodyAsText())
             assertEquals("0xpair", body["pairAddress"].asText())
             assertTrue(body["overallScore"].asDouble() > 0)
-            assertTrue(body["safetyScore"].asDouble() > 0)
-            assertEquals(1, body["recentAlertCount"].asInt())
-        }
-
-    @Test
-    fun `GET pools alerts returns alerts for pair`() =
-        testApp { store ->
-            store.storeMevAlert(mevAlert("0xpair", alertType = "SANDWICH_ATTACK"))
-            store.storeMevAlert(mevAlert("0xpair", alertType = "JIT_LIQUIDITY"))
-            store.storeMevAlert(mevAlert("0xother", alertType = "SANDWICH_ATTACK"))
-
-            val now = System.currentTimeMillis()
-            val response = client.get("/pools/0xpair/alerts?from=${now - 60000}&to=${now + 60000}")
-            assertEquals(HttpStatusCode.OK, response.status)
-
-            val alerts: List<Map<String, Any>> = mapper.readValue(response.bodyAsText())
-            assertEquals(2, alerts.size)
+            assertEquals("BULLISH", body["trend"].asText())
         }
 
     @Test
@@ -74,21 +57,18 @@ class PoolRoutesTest {
     @Test
     fun `GET pools leaderboard returns ranked pools`() =
         testApp { store ->
-            // Pool with alerts (lower safety score)
-            store.storeMevAlert(mevAlert("0xrisky"))
-            store.storeMevAlert(mevAlert("0xrisky"))
-            store.storeMevAlert(mevAlert("0xrisky"))
+            // Active pool: high trading volume and trader count (higher trading score)
+            store.storeTradingAnalytics(tradingAnalytics("0xactive", volumeUSD = 500_000.0, uniqueTraders = 50))
 
-            // Pool without alerts (higher safety score)
-            store.storeMarketTrend(marketTrend("0xsafe"))
+            // Quiet pool: a tracked pair with no trading activity (lower trading score)
+            store.storeMarketTrend(marketTrend("0xquiet"))
 
             val response = client.get("/pools/leaderboard")
             assertEquals(HttpStatusCode.OK, response.status)
 
             val leaderboard: List<Map<String, Any>> = mapper.readValue(response.bodyAsText())
             assertEquals(2, leaderboard.size)
-            // Safe pool should rank higher
-            assertEquals("0xsafe", leaderboard[0]["pairAddress"])
+            assertEquals("0xactive", leaderboard[0]["pairAddress"])
         }
 
     @Test
@@ -102,16 +82,19 @@ class PoolRoutesTest {
             assertTrue(body["overallScore"].asDouble() >= 0)
         }
 
-    private fun mevAlert(
+    private fun tradingAnalytics(
         pair: String,
-        alertType: String = "SANDWICH_ATTACK",
-        severity: String = "HIGH"
-    ) = MevAlert(
-        alertId = "alert-${System.nanoTime()}",
-        alertType = alertType,
+        volumeUSD: Double = 0.0,
+        uniqueTraders: Int = 0,
+        windowStart: Long = System.currentTimeMillis()
+    ) = TradingAnalytics(
+        windowId = "$pair:trading:$windowStart",
+        windowStart = windowStart,
+        windowEnd = windowStart + 300000,
         pairAddress = PairAddress(pair),
-        severity = severity,
-        detectedAt = System.currentTimeMillis()
+        volumeUSD = volumeUSD,
+        uniqueTraders = uniqueTraders,
+        processedAt = System.currentTimeMillis()
     )
 
     private fun marketTrend(

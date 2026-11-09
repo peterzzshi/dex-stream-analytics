@@ -9,20 +9,6 @@ import kotlin.test.assertTrue
 
 class PoolHealthScorerTest {
     @Test
-    fun `perfect safety score when no alerts`() {
-        val score = PoolHealthScorer.scoreSafety(0)
-        assertEquals(1.0, score)
-    }
-
-    @Test
-    fun `reduced safety score with alerts`() {
-        assertEquals(0.7, PoolHealthScorer.scoreSafety(1))
-        assertEquals(0.7, PoolHealthScorer.scoreSafety(2))
-        assertEquals(0.4, PoolHealthScorer.scoreSafety(3))
-        assertEquals(0.1, PoolHealthScorer.scoreSafety(10))
-    }
-
-    @Test
     fun `trading score increases with volume and traders`() {
         val low = PoolHealthScorer.scoreTradingActivity(0, 0.0, 0)
         val mid = PoolHealthScorer.scoreTradingActivity(12, 50000.0, 5)
@@ -55,6 +41,5 @@ class PoolHealthScorerTest {
         assertEquals("0xtest", health.pairAddress.value)
         assertTrue(health.overallScore in 0.0..1.0)
         assertEquals("UNKNOWN", health.trend)
-        assertEquals(0, health.recentAlertCount)
     }
 }

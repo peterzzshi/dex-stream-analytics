@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY --from=builder /build/solana-ingester/target/release/solana-ingester /app/solana-ingester
-COPY solana.toml /app/solana.toml
+COPY solana-ingester/solana-bridges.toml /app/solana-bridges.toml
 
 EXPOSE 3001
 

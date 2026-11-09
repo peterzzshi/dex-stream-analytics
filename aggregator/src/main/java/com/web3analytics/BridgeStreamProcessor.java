@@ -14,7 +14,9 @@ import com.web3analytics.serde.BridgeMintEventDeserializer;
 import com.web3analytics.serde.BridgeUnlockEventDeserializer;
 import com.web3analytics.sinks.RestApiSink;
 import java.time.Duration;
+import java.util.function.Function;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.connector.kafka.source.KafkaSource;
@@ -86,70 +88,46 @@ public class BridgeStreamProcessor {
 
   private static DataStream<BridgeLockEvent> createLockEventStream(
       final StreamExecutionEnvironment env) {
-    final KafkaSource<BridgeLockEvent> source = KafkaSource.<BridgeLockEvent>builder()
-        .setBootstrapServers(KAFKA_BOOTSTRAP_SERVERS)
-        .setTopics(BRIDGE_TRANSFER_TOPIC)
-        .setGroupId("bridge-lock-consumer")
-        .setStartingOffsets(OffsetsInitializer.earliest())
-        .setValueOnlyDeserializer(new BridgeLockEventDeserializer())
-        .build();
-
-    final WatermarkStrategy<BridgeLockEvent> watermarkStrategy = WatermarkStrategy
-        .<BridgeLockEvent>forBoundedOutOfOrderness(Duration.ofSeconds(WATERMARK_DELAY_SECONDS))
-        .withTimestampAssigner((event, timestamp) -> event.getBlockTimestamp());
-
-    return env.fromSource(source, watermarkStrategy, "Bridge Lock Events");
+    return createBridgeStream(env, BRIDGE_TRANSFER_TOPIC, "bridge-lock-consumer",
+        new BridgeLockEventDeserializer(), BridgeLockEvent::getBlockTimestamp, "Bridge Lock Events");
   }
 
   private static DataStream<BridgeUnlockEvent> createUnlockEventStream(
       final StreamExecutionEnvironment env) {
-    final KafkaSource<BridgeUnlockEvent> source = KafkaSource.<BridgeUnlockEvent>builder()
-        .setBootstrapServers(KAFKA_BOOTSTRAP_SERVERS)
-        .setTopics(BRIDGE_TRANSFER_TOPIC)
-        .setGroupId("bridge-unlock-consumer")
-        .setStartingOffsets(OffsetsInitializer.earliest())
-        .setValueOnlyDeserializer(new BridgeUnlockEventDeserializer())
-        .build();
-
-    final WatermarkStrategy<BridgeUnlockEvent> watermarkStrategy = WatermarkStrategy
-        .<BridgeUnlockEvent>forBoundedOutOfOrderness(Duration.ofSeconds(WATERMARK_DELAY_SECONDS))
-        .withTimestampAssigner((event, timestamp) -> event.getBlockTimestamp());
-
-    return env.fromSource(source, watermarkStrategy, "Bridge Unlock Events");
+    return createBridgeStream(env, BRIDGE_TRANSFER_TOPIC, "bridge-unlock-consumer",
+        new BridgeUnlockEventDeserializer(), BridgeUnlockEvent::getBlockTimestamp, "Bridge Unlock Events");
   }
 
   private static DataStream<BridgeMintEvent> createMintEventStream(
       final StreamExecutionEnvironment env) {
-    final KafkaSource<BridgeMintEvent> source = KafkaSource.<BridgeMintEvent>builder()
-        .setBootstrapServers(KAFKA_BOOTSTRAP_SERVERS)
-        .setTopics(BRIDGE_SUPPLY_TOPIC)
-        .setGroupId("bridge-mint-consumer")
-        .setStartingOffsets(OffsetsInitializer.earliest())
-        .setValueOnlyDeserializer(new BridgeMintEventDeserializer())
-        .build();
-
-    final WatermarkStrategy<BridgeMintEvent> watermarkStrategy = WatermarkStrategy
-        .<BridgeMintEvent>forBoundedOutOfOrderness(Duration.ofSeconds(WATERMARK_DELAY_SECONDS))
-        .withTimestampAssigner((event, timestamp) -> event.getBlockTimestamp());
-
-    return env.fromSource(source, watermarkStrategy, "Bridge Mint Events");
+    return createBridgeStream(env, BRIDGE_SUPPLY_TOPIC, "bridge-mint-consumer",
+        new BridgeMintEventDeserializer(), BridgeMintEvent::getBlockTimestamp, "Bridge Mint Events");
   }
 
   private static DataStream<BridgeBurnEvent> createBurnEventStream(
       final StreamExecutionEnvironment env) {
-    final KafkaSource<BridgeBurnEvent> source = KafkaSource.<BridgeBurnEvent>builder()
+    return createBridgeStream(env, BRIDGE_SUPPLY_TOPIC, "bridge-burn-consumer",
+        new BridgeBurnEventDeserializer(), BridgeBurnEvent::getBlockTimestamp, "Bridge Burn Events");
+  }
+
+  private static <T> DataStream<T> createBridgeStream(
+      final StreamExecutionEnvironment env,
+      final String topic,
+      final String groupId,
+      final DeserializationSchema<T> deserializer,
+      final Function<T, Long> timestampFn,
+      final String sourceName) {
+    final KafkaSource<T> source = KafkaSource.<T>builder()
         .setBootstrapServers(KAFKA_BOOTSTRAP_SERVERS)
-        .setTopics(BRIDGE_SUPPLY_TOPIC)
-        .setGroupId("bridge-burn-consumer")
+        .setTopics(topic)
+        .setGroupId(groupId)
         .setStartingOffsets(OffsetsInitializer.earliest())
-        .setValueOnlyDeserializer(new BridgeBurnEventDeserializer())
+        .setValueOnlyDeserializer(deserializer)
         .build();
-
-    final WatermarkStrategy<BridgeBurnEvent> watermarkStrategy = WatermarkStrategy
-        .<BridgeBurnEvent>forBoundedOutOfOrderness(Duration.ofSeconds(WATERMARK_DELAY_SECONDS))
-        .withTimestampAssigner((event, timestamp) -> event.getBlockTimestamp());
-
-    return env.fromSource(source, watermarkStrategy, "Bridge Burn Events");
+    final WatermarkStrategy<T> watermarkStrategy = WatermarkStrategy
+        .<T>forBoundedOutOfOrderness(Duration.ofSeconds(WATERMARK_DELAY_SECONDS))
+        .withTimestampAssigner((event, timestamp) -> timestampFn.apply(event));
+    return env.fromSource(source, watermarkStrategy, sourceName);
   }
 
   private static void buildTransferVolumePipeline(
@@ -237,29 +215,33 @@ public class BridgeStreamProcessor {
 
   private static String extractBridgeAddress(
       final Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent> tuple) {
-    if (tuple.f0 != null) {
-      return tuple.f0.getBridgeAddress();
-    }
-    if (tuple.f1 != null) {
-      return tuple.f1.getBridgeAddress();
-    }
-    if (tuple.f2 != null) {
-      return tuple.f2.getBridgeAddress();
-    }
-    return tuple.f3.getBridgeAddress();
+    return extractKey(tuple, event -> event, false);
   }
 
   private static String extractBridgeAddressWithChain(
       final Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent> tuple) {
+    return extractKey(tuple, event -> event, true);
+  }
+
+  private static String extractKey(
+      final Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent> tuple,
+      final Function<Object, Object> identity,
+      final boolean includeChain) {
+    final String addr;
+    final String chain;
     if (tuple.f0 != null) {
-      return tuple.f0.getBridgeAddress() + ":" + tuple.f0.getChain();
+      addr = tuple.f0.getBridgeAddress();
+      chain = tuple.f0.getChain();
+    } else if (tuple.f1 != null) {
+      addr = tuple.f1.getBridgeAddress();
+      chain = tuple.f1.getChain();
+    } else if (tuple.f2 != null) {
+      addr = tuple.f2.getBridgeAddress();
+      chain = tuple.f2.getChain();
+    } else {
+      addr = tuple.f3.getBridgeAddress();
+      chain = tuple.f3.getChain();
     }
-    if (tuple.f1 != null) {
-      return tuple.f1.getBridgeAddress() + ":" + tuple.f1.getChain();
-    }
-    if (tuple.f2 != null) {
-      return tuple.f2.getBridgeAddress() + ":" + tuple.f2.getChain();
-    }
-    return tuple.f3.getBridgeAddress() + ":" + tuple.f3.getChain();
+    return includeChain ? addr + ":" + chain : addr;
   }
 }

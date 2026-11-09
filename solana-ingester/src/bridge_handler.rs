@@ -1,10 +1,11 @@
-use crate::blockchain::RpcClient;
-use crate::bridge_decoder::{self, BridgeProtocol};
+use crate::bridge_decoder::BridgeProtocol;
 use crate::bridge_normalizer::BridgeNormalizer;
 use crate::rpc_retry::RetryableRpcClient;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dex_ingester_common::Event;
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
@@ -22,27 +23,22 @@ impl BridgeHandler {
         protocol: BridgeProtocol,
         rpc_client: Arc<RetryableRpcClient>,
     ) -> Self {
+        let program_id = Pubkey::from_str(&program_id).expect("valid program_id");
         Self {
             normalizer: BridgeNormalizer::new(chain_id, chain_name, program_id, protocol),
             rpc_client,
         }
     }
 
-    pub fn program_id(&self) -> &str {
+    #[expect(dead_code)]
+    pub fn program_id(&self) -> &Pubkey {
         self.normalizer.program_id()
     }
 
     pub async fn handle(&self, signature: Signature) -> Result<Vec<Event>> {
-        let tx = match self.rpc_client.get_transaction(&signature).await? {
-            Some(tx) => tx,
-            None => {
-                warn!("Transaction not found: {}", signature);
-                return Ok(vec![]);
-            }
-        };
+        let tx = self.rpc_client.get_transaction(signature).await?;
 
-        let slot = tx.slot.try_into().context("slot does not fit in u64")?;
-
+        let slot = tx.slot;
         let block_timestamp = tx.block_time.unwrap_or(0);
 
         let event_timestamp = SystemTime::now()
@@ -65,19 +61,18 @@ impl BridgeHandler {
 
         let mut events = Vec::new();
 
-        for instruction in &tx_data.message.instructions {
-            match bridge_decoder::decode(instruction, self.normalizer.protocol) {
-                Ok(Some(bridge_instruction)) => {
-                    let event = self.normalizer.normalize(
-                        bridge_instruction,
-                        &signature,
-                        slot,
-                        block_timestamp,
-                        event_timestamp,
-                    )?;
+        for instruction in tx_data.message.instructions() {
+            let instruction_data = instruction.data.as_slice();
+            match self.normalizer.normalize(
+                slot,
+                signature.to_string(),
+                instruction_data,
+                block_timestamp,
+                event_timestamp,
+            ) {
+                Ok(event) => {
                     events.push(event);
                 }
-                Ok(None) => {}
                 Err(e) => {
                     warn!("Failed to decode bridge instruction: {:#}", e);
                 }
@@ -88,6 +83,6 @@ impl BridgeHandler {
     }
 
     pub fn protocol(&self) -> BridgeProtocol {
-        self.normalizer.protocol
+        self.normalizer.protocol()
     }
 }

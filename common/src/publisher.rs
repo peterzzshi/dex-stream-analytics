@@ -52,8 +52,6 @@ impl PublisherConfig {
 
     fn topic_for(&self, event: &Event) -> &str {
         match event {
-            Event::Swap(_) => &self.trading_topic,
-            Event::Mint(_) | Event::Burn(_) | Event::Transfer(_) => &self.liquidity_topic,
             Event::BridgeLock(_) | Event::BridgeUnlock(_) => &self.trading_topic,
             Event::BridgeMint(_) | Event::BridgeBurn(_) => &self.liquidity_topic,
         }
@@ -322,7 +320,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MintEvent, SwapEvent};
+    use crate::{BridgeLockEvent, BridgeMintEvent};
     use std::cell::Cell;
 
     fn config() -> PublisherConfig {
@@ -339,36 +337,34 @@ mod tests {
         }
     }
 
-    fn swap() -> Event {
-        Event::Swap(SwapEvent {
-            event_id: "swap-1".to_string(),
+    fn bridge_lock() -> Event {
+        Event::BridgeLock(BridgeLockEvent {
+            event_id: "lock-1".to_string(),
             block_number: 1,
             block_timestamp: 1_000,
             transaction_hash: "0xabc".to_string(),
             log_index: 0,
             chain: "eip155:1".to_string(),
             chain_name: "Ethereum".to_string(),
-            pair_address: "0xpair".to_string(),
-            token0: "t0".to_string(),
-            token1: "t1".to_string(),
-            token0_symbol: None,
-            token1_symbol: None,
-            sender: "s".to_string(),
-            recipient: "r".to_string(),
-            amount0_in: "1".to_string(),
-            amount1_in: "0".to_string(),
-            amount0_out: "0".to_string(),
-            amount1_out: "2".to_string(),
-            price: 2.0,
-            volume_usd: None,
-            gas_used: 0,
-            gas_price: "0".to_string(),
+            bridge_address: "0xbridge".to_string(),
+            protocol: "wormhole".to_string(),
+            gas_used: 150000,
+            gas_price: "50".to_string(),
             event_timestamp: 1_000,
+            sender: "0xsender".to_string(),
+            recipient: "0xrecipient".to_string(),
+            token: "0xtoken".to_string(),
+            token_symbol: None,
+            amount: "1000000".to_string(),
+            destination_chain: Some("solana:5eykt".to_string()),
+            source_chain: None,
+            message_hash: None,
+            sequence_number: None,
         })
     }
 
-    fn mint() -> Event {
-        Event::Mint(MintEvent {
+    fn bridge_mint() -> Event {
+        Event::BridgeMint(BridgeMintEvent {
             event_id: "mint-1".to_string(),
             block_number: 1,
             block_timestamp: 1_000,
@@ -376,23 +372,25 @@ mod tests {
             log_index: 0,
             chain: "eip155:1".to_string(),
             chain_name: "Ethereum".to_string(),
-            pair_address: "0xpair".to_string(),
-            token0: "t0".to_string(),
-            token1: "t1".to_string(),
-            token0_symbol: None,
-            token1_symbol: None,
-            sender: "s".to_string(),
-            amount0: "1".to_string(),
-            amount1: "2".to_string(),
+            bridge_address: "0xbridge".to_string(),
+            protocol: "wormhole".to_string(),
+            gas_used: 150000,
+            gas_price: "50".to_string(),
             event_timestamp: 1_000,
+            recipient: "0xrecipient".to_string(),
+            wrapped_token: "0xwrapped".to_string(),
+            wrapped_token_symbol: None,
+            amount: "1000000".to_string(),
+            source_chain: None,
+            message_hash: None,
         })
     }
 
     #[test]
-    fn swaps_route_to_trading_and_liquidity_events_to_liquidity() {
+    fn bridge_events_route_to_correct_topics() {
         let cfg = config();
-        assert_eq!(cfg.topic_for(&swap()), "trading");
-        assert_eq!(cfg.topic_for(&mint()), "liquidity");
+        assert_eq!(cfg.topic_for(&bridge_lock()), "trading");
+        assert_eq!(cfg.topic_for(&bridge_mint()), "liquidity");
     }
 
     /// `(name, failure, attempts)` — a `fn` rather than a value because the retry loop

@@ -27,14 +27,12 @@ graph TD
         KL[dex-liquidity-events]
         OT[dex-trading-analytics]
         OL[dex-liquidity-analytics]
-        OP[dex-pattern-analytics]
         OM[dex-market-trends]
     end
 
     subgraph "Aggregator · Flink 2 / Java 21"
         F1[Trading Pipeline<br/>tumbling 5 min]
         F2[Liquidity Pipeline<br/>tumbling 1 h]
-        F3[MEV Detection<br/>session 3 s gap]
         F4[Market Trends<br/>sliding 30 min / 5 min]
     end
 
@@ -62,14 +60,12 @@ graph TD
     KT -- native connector --> F1
     KT -- native connector --> F4
     KL -- native connector --> F2
-    KT & KL -- union --> F3
 
     F1 --> OT
     F2 --> OL
-    F3 --> OP
     F4 --> OM
 
-    OT & OL & OP & OM -- "Dapr pub/sub · rawPayload" --> API_DAPR
+    OT & OL & OM -- "Dapr pub/sub · rawPayload" --> API_DAPR
     API_DAPR --> API
     API --> REDIS
 ```
@@ -80,10 +76,9 @@ graph TD
 |---|---|---|---|---|
 | `dex-trading-events` | SwapEvent | `dex-trading-analytics` | 5-min tumbling | TWAP, OHLC, volume, trader activity |
 | `dex-liquidity-events` | Mint + Burn + Transfer | `dex-liquidity-analytics` | 1-hour tumbling | LP flows, TVL changes, churn rate |
-| Both topics | All events | `dex-pattern-analytics` | Session (3 s gap) | Sandwich attacks, JIT liquidity |
 | `dex-trading-events` | SwapEvent | `dex-market-trends` | 30-min sliding / 5-min slide | Price momentum, volatility, trend direction |
 
-Swap events produce **trading** analytics; Mint/Burn events produce **liquidity** analytics. MEV detection requires cross-event correlation across both topics.
+Swap events produce **trading** analytics; Mint/Burn events produce **liquidity** analytics.
 
 ## Design Decisions
 
@@ -131,14 +126,9 @@ curated rather than discovered.)
 
 Events are separated by schema into `dex-trading-events` (SwapEvent only, 7-day retention) and
 `dex-liquidity-events` (Mint / Burn / Transfer, 30-day retention). The split buys independent
-retention, independent consumer scaling, and a smaller hot topic. It costs cross-stream
-ordering: the two topics are consumed separately and unioned for MEV detection, so an event's
-position relative to the other stream must be recoverable from the payload. On EVM it is —
-`logIndex` is block-global. On Solana it is not: `log_index` is the instruction index *within a
-transaction*, so two transactions in the same slot both carry `log_index: 0`. Today that is a
-tolerated imprecision because the JIT detector only asserts coincident block ranges, not
-interleaving order; an ordering-dependent detector would need a slot-level sequence number in
-the schema.
+retention, independent consumer scaling, and a smaller hot topic. Each topic feeds its own
+windowing functions (trading, liquidity, market trends) independently, with no cross-stream
+union or ordering dependency between them.
 
 The liquidity topic carries multiple schemas (Mint, Burn, Transfer). The aggregator resolves the correct Avro schema via the CloudEvent `type` header before decode — no shape-guessing.
 
@@ -148,8 +138,8 @@ The aggregator uses Flink's native Kafka connector for exactly-once semantics (t
 
 Dapr **is** used where its strengths apply: the ingester (decouple from Kafka) and the analytics service (simple subscription model).
 
-**Flink choice rationale**: Selected over Kafka Streams for richer windowing (session windows for MEV detection),
-event-time semantics, and exactly-once sink semantics. Kafka Streams would also have worked at this scale; Flink was
+**Flink choice rationale**: Selected over Kafka Streams for richer windowing (sliding windows for
+market trends), event-time semantics, and exactly-once sink semantics. Kafka Streams would also have worked at this scale; Flink was
 chosen because it is the runtime this pipeline is meant to demonstrate, and because its event-time model absorbs the
 out-of-order arrival that blockchain finality produces.
 
@@ -250,11 +240,9 @@ graph LR
     DECODE_T --> F1[Tumbling 5 min<br/>SwapAggregator]
     DECODE_T --> F4[Sliding 30 min / 5 min<br/>MarketTrendWindowFunction]
     DECODE_L --> F2[Tumbling 1 h<br/>LiquidityWindowFunction]
-    DECODE_T & DECODE_L --> F3[Session 3 s gap<br/>MevDetectionFunction]
 
     F1 --> OT[dex-trading-analytics]
     F2 --> OL[dex-liquidity-analytics]
-    F3 --> OP[dex-pattern-analytics]
     F4 --> OM[dex-market-trends]
 ```
 
@@ -293,7 +281,6 @@ Subscribes to all four output topics via Dapr push. Stores data in Redis sorted 
 | `dex-dlq-events`          | JSON (failed payload + reason) | 3          | 30 d      |
 | `dex-trading-analytics`   | AggregatedAnalytics            | 3          | 30 d      |
 | `dex-liquidity-analytics` | LiquidityAnalytics             | 3          | 90 d      |
-| `dex-pattern-analytics`   | MevAlert                       | 3          | 30 d      |
 | `dex-market-trends`       | MarketTrend                    | 3          | 30 d      |
 
 `dex-dlq-events` is written by both ingesters on publish failure and by nothing else — there is no
@@ -331,7 +318,6 @@ pointing at live chain access.
   automatic multi-pool discovery
 - In-memory checkpointing — production needs S3/GCS + RocksDB state backend
 - No authentication/rate limiting — production needs JWT auth + WAF
-- Basic MEV heuristics — production needs gas cost modeling, multi-hop routing analysis
 
 **Production patterns retained**:
 
@@ -356,6 +342,5 @@ pointing at live chain access.
 - **Natural-language query layer**: a read-only compiler from prose to a typed query plan over the
   analytics API. The model selects a query; the engine returns every number.
 - **Multi-pool discovery**: subscribe to Factory `PairCreated` instead of declaring pools in TOML
-- **Advanced MEV detection**: gas cost modeling, multi-hop routing analysis, cross-pool correlation
 - **Observability**: Prometheus metrics, Grafana dashboards, structured logging
 - **Production hardening**: Kafka SASL/TLS, Dapr mTLS, secrets management

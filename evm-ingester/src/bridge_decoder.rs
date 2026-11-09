@@ -1,6 +1,8 @@
-use anyhow::{Context, Result};
-use ethers::abi::RawLog;
+use anyhow::{bail, Context, Result};
+use dex_ingester_common::{BridgeLockEvent, BridgeUnlockEvent, Event};
+use ethers::contract::{EthEvent, EthLogDecode};
 use ethers::prelude::*;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeProtocol {
@@ -15,6 +17,19 @@ impl BridgeProtocol {
             Self::Wormhole => "wormhole",
             Self::LayerZero => "layerzero",
             Self::Hop => "hop",
+        }
+    }
+}
+
+impl FromStr for BridgeProtocol {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "wormhole" => Ok(Self::Wormhole),
+            "layerzero" => Ok(Self::LayerZero),
+            "hop" => Ok(Self::Hop),
+            other => bail!("Unknown bridge protocol: {}", other),
         }
     }
 }
@@ -78,71 +93,193 @@ pub struct HopTransferFromL1Completed {
     pub relayer: Address,
 }
 
-#[derive(Debug, Clone)]
-pub enum BridgeEvent {
-    WormholeLock(WormholeTransferSent),
-    WormholeUnlock(WormholeTransferRedeemed),
-    LayerZeroLock(LayerZeroPacketSent),
-    LayerZeroUnlock(LayerZeroPacketReceived),
-    HopLock(HopTransferSentToL2),
-    HopUnlock(HopTransferFromL1Completed),
-}
-
-pub fn decode(log: &Log, protocol: BridgeProtocol) -> Result<Option<BridgeEvent>> {
-    let Some(topic) = log.topics.first() else {
-        return Ok(None);
-    };
-
-    let raw = RawLog {
-        topics: log.topics.clone(),
-        data: log.data.to_vec(),
-    };
-
+pub fn decode(
+    log: &Log,
+    protocol: BridgeProtocol,
+    chain: String,
+    chain_name: String,
+    bridge_address: String,
+    event_id: String,
+    block_number: i64,
+    block_timestamp: i64,
+    transaction_hash: H256,
+    log_index: i32,
+    event_timestamp: i64,
+) -> Result<Event> {
     match protocol {
-        BridgeProtocol::Wormhole => decode_wormhole(&raw, topic),
-        BridgeProtocol::LayerZero => decode_layerzero(&raw, topic),
-        BridgeProtocol::Hop => decode_hop(&raw, topic),
+        BridgeProtocol::Wormhole => {
+            if log.topics[0] == WormholeTransferSent::signature() {
+                let event = <WormholeTransferSent as EthLogDecode>::decode_log(&log.clone().into())
+                    .context("failed to decode WormholeTransferSent")?;
+                Ok(Event::BridgeLock(BridgeLockEvent {
+                    event_id,
+                    block_number,
+                    block_timestamp,
+                    transaction_hash: format!("{:?}", transaction_hash),
+                    log_index,
+                    chain,
+                    chain_name,
+                    bridge_address,
+                    protocol: protocol.as_str().to_string(),
+                    gas_used: 0,
+                    gas_price: "0".to_string(),
+                    event_timestamp,
+                    sender: format!("{:?}", event.sender),
+                    recipient: format!("0x{}", hex::encode(event.recipient)),
+                    token: "".to_string(),
+                    token_symbol: None,
+                    amount: event.amount.to_string(),
+                    destination_chain: Some(format!("eip155:{}", event.target_chain)),
+                    source_chain: None,
+                    message_hash: None,
+                    sequence_number: None,
+                }))
+            } else if log.topics[0] == WormholeTransferRedeemed::signature() {
+                let event =
+                    <WormholeTransferRedeemed as EthLogDecode>::decode_log(&log.clone().into())
+                        .context("failed to decode WormholeTransferRedeemed")?;
+                Ok(Event::BridgeUnlock(BridgeUnlockEvent {
+                    event_id,
+                    block_number,
+                    block_timestamp,
+                    transaction_hash: format!("{:?}", transaction_hash),
+                    log_index,
+                    chain,
+                    chain_name,
+                    bridge_address,
+                    protocol: protocol.as_str().to_string(),
+                    gas_used: 0,
+                    gas_price: "0".to_string(),
+                    event_timestamp,
+                    sender: format!("0x{}", hex::encode(event.sender)),
+                    recipient: format!("{:?}", event.recipient),
+                    token: "".to_string(),
+                    token_symbol: None,
+                    amount: event.amount.to_string(),
+                    destination_chain: None,
+                    source_chain: Some(format!("eip155:{}", event.source_chain)),
+                    message_hash: None,
+                    sequence_number: None,
+                }))
+            } else {
+                bail!("unknown Wormhole event signature: {:?}", log.topics[0])
+            }
+        }
+        BridgeProtocol::LayerZero => {
+            if log.topics[0] == LayerZeroPacketSent::signature() {
+                let event = <LayerZeroPacketSent as EthLogDecode>::decode_log(&log.clone().into())
+                    .context("failed to decode LayerZeroPacketSent")?;
+                Ok(Event::BridgeLock(BridgeLockEvent {
+                    event_id,
+                    block_number,
+                    block_timestamp,
+                    transaction_hash: format!("{:?}", transaction_hash),
+                    log_index,
+                    chain,
+                    chain_name,
+                    bridge_address,
+                    protocol: protocol.as_str().to_string(),
+                    gas_used: 0,
+                    gas_price: "0".to_string(),
+                    event_timestamp,
+                    sender: "".to_string(),
+                    recipient: "".to_string(),
+                    token: "".to_string(),
+                    token_symbol: None,
+                    amount: "0".to_string(),
+                    destination_chain: Some(format!("eip155:{}", event.dst_chain_id)),
+                    source_chain: None,
+                    message_hash: None,
+                    sequence_number: Some(event.nonce as i64),
+                }))
+            } else if log.topics[0] == LayerZeroPacketReceived::signature() {
+                let event =
+                    <LayerZeroPacketReceived as EthLogDecode>::decode_log(&log.clone().into())
+                        .context("failed to decode LayerZeroPacketReceived")?;
+                Ok(Event::BridgeUnlock(BridgeUnlockEvent {
+                    event_id,
+                    block_number,
+                    block_timestamp,
+                    transaction_hash: format!("{:?}", transaction_hash),
+                    log_index,
+                    chain,
+                    chain_name,
+                    bridge_address,
+                    protocol: protocol.as_str().to_string(),
+                    gas_used: 0,
+                    gas_price: "0".to_string(),
+                    event_timestamp,
+                    sender: "".to_string(),
+                    recipient: "".to_string(),
+                    token: "".to_string(),
+                    token_symbol: None,
+                    amount: "0".to_string(),
+                    destination_chain: None,
+                    source_chain: Some(format!("eip155:{}", event.src_chain_id)),
+                    message_hash: None,
+                    sequence_number: Some(event.nonce as i64),
+                }))
+            } else {
+                bail!("unknown LayerZero event signature: {:?}", log.topics[0])
+            }
+        }
+        BridgeProtocol::Hop => {
+            if log.topics[0] == HopTransferSentToL2::signature() {
+                let event = <HopTransferSentToL2 as EthLogDecode>::decode_log(&log.clone().into())
+                    .context("failed to decode HopTransferSentToL2")?;
+                Ok(Event::BridgeLock(BridgeLockEvent {
+                    event_id,
+                    block_number,
+                    block_timestamp,
+                    transaction_hash: format!("{:?}", transaction_hash),
+                    log_index,
+                    chain,
+                    chain_name,
+                    bridge_address,
+                    protocol: protocol.as_str().to_string(),
+                    gas_used: 0,
+                    gas_price: "0".to_string(),
+                    event_timestamp,
+                    sender: "".to_string(),
+                    recipient: format!("{:?}", event.recipient),
+                    token: "".to_string(),
+                    token_symbol: None,
+                    amount: event.amount.to_string(),
+                    destination_chain: Some(event.chain_id.to_string()),
+                    source_chain: None,
+                    message_hash: None,
+                    sequence_number: None,
+                }))
+            } else if log.topics[0] == HopTransferFromL1Completed::signature() {
+                let event =
+                    <HopTransferFromL1Completed as EthLogDecode>::decode_log(&log.clone().into())
+                        .context("failed to decode HopTransferFromL1Completed")?;
+                Ok(Event::BridgeUnlock(BridgeUnlockEvent {
+                    event_id,
+                    block_number,
+                    block_timestamp,
+                    transaction_hash: format!("{:?}", transaction_hash),
+                    log_index,
+                    chain,
+                    chain_name,
+                    bridge_address,
+                    protocol: protocol.as_str().to_string(),
+                    gas_used: 0,
+                    gas_price: "0".to_string(),
+                    event_timestamp,
+                    sender: "".to_string(),
+                    recipient: format!("{:?}", event.recipient),
+                    token: "".to_string(),
+                    token_symbol: None,
+                    amount: event.amount.to_string(),
+                    destination_chain: None,
+                    source_chain: None,
+                    message_hash: None,
+                    sequence_number: None,
+                }))
+            } else {
+                bail!("unknown Hop event signature: {:?}", log.topics[0])
+            }
+        }
     }
-}
-
-fn decode_wormhole(raw: &RawLog, topic: &H256) -> Result<Option<BridgeEvent>> {
-    if topic == &WormholeTransferSent::signature() {
-        let event = <WormholeTransferSent as EthLogDecode>::decode_log(raw)
-            .context("failed to decode WormholeTransferSent")?;
-        return Ok(Some(BridgeEvent::WormholeLock(event)));
-    }
-    if topic == &WormholeTransferRedeemed::signature() {
-        let event = <WormholeTransferRedeemed as EthLogDecode>::decode_log(raw)
-            .context("failed to decode WormholeTransferRedeemed")?;
-        return Ok(Some(BridgeEvent::WormholeUnlock(event)));
-    }
-    Ok(None)
-}
-
-fn decode_layerzero(raw: &RawLog, topic: &H256) -> Result<Option<BridgeEvent>> {
-    if topic == &LayerZeroPacketSent::signature() {
-        let event = <LayerZeroPacketSent as EthLogDecode>::decode_log(raw)
-            .context("failed to decode LayerZeroPacketSent")?;
-        return Ok(Some(BridgeEvent::LayerZeroLock(event)));
-    }
-    if topic == &LayerZeroPacketReceived::signature() {
-        let event = <LayerZeroPacketReceived as EthLogDecode>::decode_log(raw)
-            .context("failed to decode LayerZeroPacketReceived")?;
-        return Ok(Some(BridgeEvent::LayerZeroUnlock(event)));
-    }
-    Ok(None)
-}
-
-fn decode_hop(raw: &RawLog, topic: &H256) -> Result<Option<BridgeEvent>> {
-    if topic == &HopTransferSentToL2::signature() {
-        let event = <HopTransferSentToL2 as EthLogDecode>::decode_log(raw)
-            .context("failed to decode HopTransferSentToL2")?;
-        return Ok(Some(BridgeEvent::HopLock(event)));
-    }
-    if topic == &HopTransferFromL1Completed::signature() {
-        let event = <HopTransferFromL1Completed as EthLogDecode>::decode_log(raw)
-            .context("failed to decode HopTransferFromL1Completed")?;
-        return Ok(Some(BridgeEvent::HopUnlock(event)));
-    }
-    Ok(None)
 }

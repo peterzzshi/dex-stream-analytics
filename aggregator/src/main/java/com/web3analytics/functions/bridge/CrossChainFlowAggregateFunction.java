@@ -4,6 +4,7 @@ import com.web3analytics.bridge.BridgeBurnEvent;
 import com.web3analytics.bridge.BridgeLockEvent;
 import com.web3analytics.bridge.BridgeMintEvent;
 import com.web3analytics.bridge.BridgeUnlockEvent;
+import com.web3analytics.functions.Web3Math;
 import java.io.Serial;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -19,14 +20,6 @@ public class CrossChainFlowAggregateFunction implements
 
   @Serial
   private static final long serialVersionUID = 1L;
-
-  private static BigInteger parseBigInt(final String amount) {
-    try {
-      return new BigInteger(amount);
-    } catch (final NumberFormatException e) {
-      return BigInteger.ZERO;
-    }
-  }
 
   private static double calculateImbalanceRatio(final BigInteger inflow, final BigInteger outflow) {
     final BigInteger total = inflow.add(outflow);
@@ -56,7 +49,7 @@ public class CrossChainFlowAggregateFunction implements
         acc.bridgeAddress = event.getBridgeAddress();
         acc.protocol = event.getProtocol().toString();
       }
-      acc.totalInflow = acc.totalInflow.add(parseBigInt(event.getAmount()));
+      acc.totalInflow = acc.totalInflow.add(Web3Math.parseBigInt(event.getAmount()));
     }
 
     if (tuple.f1 != null) {
@@ -65,7 +58,7 @@ public class CrossChainFlowAggregateFunction implements
         acc.bridgeAddress = event.getBridgeAddress();
         acc.protocol = event.getProtocol().toString();
       }
-      acc.totalOutflow = acc.totalOutflow.add(parseBigInt(event.getAmount()));
+      acc.totalOutflow = acc.totalOutflow.add(Web3Math.parseBigInt(event.getAmount()));
     }
 
     if (tuple.f2 != null) {
@@ -74,7 +67,7 @@ public class CrossChainFlowAggregateFunction implements
         acc.bridgeAddress = event.getBridgeAddress();
         acc.protocol = event.getProtocol().toString();
       }
-      acc.totalInflow = acc.totalInflow.add(parseBigInt(event.getAmount()));
+      acc.totalInflow = acc.totalInflow.add(Web3Math.parseBigInt(event.getAmount()));
     }
 
     if (tuple.f3 != null) {
@@ -83,7 +76,7 @@ public class CrossChainFlowAggregateFunction implements
         acc.bridgeAddress = event.getBridgeAddress();
         acc.protocol = event.getProtocol().toString();
       }
-      acc.totalOutflow = acc.totalOutflow.add(parseBigInt(event.getAmount()));
+      acc.totalOutflow = acc.totalOutflow.add(Web3Math.parseBigInt(event.getAmount()));
     }
 
     return acc;
@@ -91,9 +84,15 @@ public class CrossChainFlowAggregateFunction implements
 
   @Override
   public CrossChainFlowAccumulator getResult(final CrossChainFlowAccumulator acc) {
-    acc.netFlow = acc.totalInflow.subtract(acc.totalOutflow);
-    acc.imbalanceRatio = calculateImbalanceRatio(acc.totalInflow, acc.totalOutflow);
-    return acc;
+    final BigInteger netFlow = acc.totalInflow.subtract(acc.totalOutflow);
+    final double imbalanceRatio = calculateImbalanceRatio(acc.totalInflow, acc.totalOutflow);
+    final CrossChainFlowAccumulator result = new CrossChainFlowAccumulator(
+        acc.bridgeAddress, acc.protocol, acc.windowEnd);
+    result.totalInflow = acc.totalInflow;
+    result.totalOutflow = acc.totalOutflow;
+    result.netFlow = netFlow;
+    result.imbalanceRatio = imbalanceRatio;
+    return result;
   }
 
   @Override

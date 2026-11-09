@@ -1,15 +1,13 @@
 use anyhow::{Context, Result};
 use dex_ingester_common::{
-    Event, EventProcessor, FinalityBuffer, FinalityMode, Publisher, PublisherConfig, SharedConfig,
+    Event, EventProcessor, FinalityBuffer, FinalityMode, Publisher, PublisherConfig,
 };
 use ethers::prelude::*;
 use ethers::providers::Ws;
-use evm_ingester::bridge_decoder::BridgeProtocol;
 use evm_ingester::bridge_listener::BridgeListener;
-use evm_ingester::config::{Bridge, Chain, Config, Pool};
-use evm_ingester::listener::Listener;
-use evm_ingester::oracle::ChainlinkOracle;
+use evm_ingester::config::{Bridge, Config};
 use evm_ingester::rpc_retry::RetryableProvider;
+use futures_util::StreamExt;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc};
@@ -45,27 +43,19 @@ async fn main() -> Result<()> {
 async fn run() -> Result<()> {
     let config = Config::load_from_env()?;
     info!("Configuration loaded successfully");
-    info!("Monitoring {} chains", config.chains.len());
     info!("Monitoring {} bridges", config.bridges.len());
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let mut tasks = JoinSet::new();
 
-    for chain_config in &config.chains {
-        if let Err(e) = spawn_chain(chain_config, &config.shared, &shutdown_tx, &mut tasks).await {
-            // One unreachable chain should not take the others down with it.
-            error!(chain = %chain_config.chain, "Skipping chain: {:#}", e);
-        }
-    }
-
+    // Spawn all bridges (parallel connection initialization)
     for bridge_config in &config.bridges {
-        if let Err(e) = spawn_bridge(bridge_config, &config.shared, &shutdown_tx, &mut tasks).await
-        {
+        if let Err(e) = spawn_bridge(bridge_config, &config, &shutdown_tx, &mut tasks).await {
             error!(bridge = %bridge_config.name, "Skipping bridge: {:#}", e);
         }
     }
 
-    info!("All listeners started, waiting for shutdown signal");
+    info!("All bridge listeners started, waiting for shutdown signal");
 
     signal::ctrl_c()
         .await
@@ -85,259 +75,35 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-/// Per-chain resources every pool on that chain shares.
-struct ChainRuntime {
-    provider: Arc<Provider<Ws>>,
-    rpc: Arc<RetryableProvider<Provider<Ws>>>,
-    oracle: Arc<ChainlinkOracle<Provider<Ws>>>,
-    publisher: Arc<Publisher>,
-}
-
-async fn spawn_chain(
-    chain_config: &Chain,
-    shared: &SharedConfig,
-    shutdown: &broadcast::Sender<()>,
-    tasks: &mut JoinSet<()>,
-) -> Result<()> {
-    info!(
-        chain = %chain_config.chain,
-        name = %chain_config.name,
-        pools = chain_config.pools.len(),
-        "Initializing chain"
-    );
-
-    let provider = Arc::new(
-        Provider::<Ws>::connect(chain_config.rpc.expose())
-            .await
-            .context("failed to connect to WebSocket RPC")?,
-    );
-
-    let runtime = ChainRuntime {
-        rpc: Arc::new(RetryableProvider::new(
-            Arc::clone(&provider),
-            chain_config.retry.clone(),
-        )),
-        oracle: Arc::new(ChainlinkOracle::new(
-            Arc::clone(&provider),
-            chain_config.oracle.clone(),
-        )),
-        publisher: Arc::new(
-            Publisher::new(PublisherConfig::new(
-                shared,
-                format!("evm-ingester/{}", chain_config.chain),
-            ))
-            .context("failed to create publisher")?,
-        ),
-        provider,
-    };
-
-    // Publishing into a sidecar that is not listening yet dead-letters the event, and the
-    // per-publish retry budget is shorter than a cold daprd start.
-    runtime
-        .publisher
-        .wait_until_ready()
-        .await
-        .context("Dapr sidecar never became healthy")?;
-
-    for pool_config in &chain_config.pools {
-        if let Err(e) = spawn_pool(chain_config, &runtime, pool_config, shutdown, tasks).await {
-            error!(
-                chain = %chain_config.chain,
-                pool = %pool_config.name,
-                "Skipping pool: {:#}",
-                e
-            );
-        }
-    }
-
-    Ok(())
-}
-
-async fn spawn_pool(
-    chain_config: &Chain,
-    runtime: &ChainRuntime,
-    pool_config: &Pool,
-    shutdown: &broadcast::Sender<()>,
-    tasks: &mut JoinSet<()>,
-) -> Result<()> {
-    info!(
-        chain = %chain_config.chain,
-        pool = %pool_config.name,
-        pair = %pool_config.pair_address,
-        "Starting pool listener"
-    );
-
-    let listener = Listener::new(
-        chain_config.chain.clone(),
-        chain_config.name.clone(),
-        pool_config.clone(),
-        Arc::clone(&runtime.oracle),
-        Arc::clone(&runtime.rpc),
-    )
-    .await
-    .with_context(|| {
-        format!(
-            "failed to initialise listener for pool {}",
-            pool_config.name
-        )
-    })?;
-
-    // Depth mode: the buffer holds each event until its own block is `confirmations` deep,
-    // so there is no external finality source to poll.
-    let processor = Arc::new(EventProcessor::new(
-        Arc::new(FinalityBuffer::new(FinalityMode::Depth(
-            chain_config.confirmations,
-        ))),
-        Arc::clone(&runtime.publisher),
-    ));
-
-    let (event_tx, event_rx) = mpsc::channel::<Event>(EVENT_CHANNEL_BUFFER);
-
-    let provider = Arc::clone(&runtime.provider);
-    let pool_address = pool_config.pair_address.clone();
-    let subscription_shutdown = shutdown.subscribe();
-    tasks.spawn(async move {
-        if let Err(e) = subscribe_to_logs(
-            provider,
-            &pool_address,
-            listener,
-            event_tx,
-            subscription_shutdown,
-        )
-        .await
-        {
-            error!(pool = %pool_address, "WebSocket subscription failed: {:#}", e);
-        }
-    });
-
-    let pool_name = pool_config.name.clone();
-    let processor_shutdown = shutdown.subscribe();
-    tasks.spawn(async move {
-        process_events(event_rx, processor, pool_name, processor_shutdown).await;
-    });
-
-    Ok(())
-}
-
-async fn subscribe_to_logs(
-    provider: Arc<Provider<Ws>>,
-    pool_address: &str,
-    listener: Listener<ChainlinkOracle<Provider<Ws>>, Provider<Ws>>,
-    event_tx: mpsc::Sender<Event>,
-    mut shutdown: broadcast::Receiver<()>,
-) -> Result<()> {
-    use ethers::types::Filter;
-    use futures_util::StreamExt;
-
-    let address: Address = pool_address
-        .parse()
-        .with_context(|| format!("invalid pool address: {}", pool_address))?;
-
-    let mut stream = provider
-        .subscribe_logs(&Filter::new().address(address))
-        .await
-        .context("failed to subscribe to logs")?;
-
-    info!(pool = %pool_address, "WebSocket subscription established");
-
-    loop {
-        tokio::select! {
-            log_result = stream.next() => {
-                let Some(log) = log_result else {
-                    warn!(pool = %pool_address, "WebSocket stream ended");
-                    break;
-                };
-
-                if log.removed == Some(true) {
-                    warn!(
-                        pool = %pool_address,
-                        tx_hash = ?log.transaction_hash,
-                        log_index = ?log.log_index,
-                        "Log removed by chain reorg, dropping"
-                    );
-                    continue;
-                }
-
-                match listener.process_log(log).await {
-                    Ok(Some(event)) => {
-                        if event_tx.send(event).await.is_err() {
-                            warn!(pool = %pool_address, "Event processor gone, stopping subscription");
-                            break;
-                        }
-                    }
-                    // Sync, Transfer, and unknown topics: normal log stream noise.
-                    Ok(None) => {}
-                    // Already logged with full context (topics, data, tx) inside process_log.
-                    Err(_) => {}
-                }
-            }
-            _ = shutdown_requested(&mut shutdown) => {
-                info!(pool = %pool_address, "WebSocket subscription shutting down");
-                break;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Drain and publish. Flow accounting belongs to the analytics service, so the only
-/// per-event signal here is the one the processor emits as each event is published.
-async fn process_events(
-    mut events: mpsc::Receiver<Event>,
-    processor: Arc<EventProcessor>,
-    pool_name: String,
-    mut shutdown: broadcast::Receiver<()>,
-) {
-    loop {
-        tokio::select! {
-            maybe_event = events.recv() => {
-                let Some(event) = maybe_event else {
-                    warn!(pool = %pool_name, "Event channel closed");
-                    break;
-                };
-
-                processor.process(event, None, &pool_name).await;
-            }
-            _ = shutdown_requested(&mut shutdown) => {
-                info!(pool = %pool_name, "Event processor shutting down");
-                break;
-            }
-        }
-    }
-
-    let published = processor.flush(&pool_name).await;
-    info!(pool = %pool_name, published, "Flushed pending events");
-}
-
 async fn spawn_bridge(
-    bridge_config: &Bridge,
-    shared: &SharedConfig,
+    bridge: &Bridge,
+    config: &Config,
     shutdown: &broadcast::Sender<()>,
     tasks: &mut JoinSet<()>,
 ) -> Result<()> {
     info!(
-        bridge = %bridge_config.name,
-        protocol = %bridge_config.protocol,
-        address = %bridge_config.address,
+        bridge = %bridge.name,
+        protocol = %bridge.protocol.as_str(),
+        address = ?bridge.address,
+        chain = %bridge.chain_id,
         "Initializing bridge listener"
     );
 
     let provider = Arc::new(
-        Provider::<Ws>::connect(&std::env::var("ETH_RPC_URL").context("ETH_RPC_URL not set")?)
+        Provider::<Ws>::connect(bridge.rpc.expose())
             .await
             .context("failed to connect to WebSocket RPC")?,
     );
 
     let rpc = Arc::new(RetryableProvider::new(
         Arc::clone(&provider),
-        dex_ingester_common::RetryConfig::default(),
+        bridge.retry.clone(),
     ));
 
     let publisher = Arc::new(
         Publisher::new(PublisherConfig::new(
-            shared,
-            format!("evm-ingester/{}", bridge_config.chain),
+            &config.shared,
+            format!("evm-ingester/{}", bridge.chain_id),
         ))
         .context("failed to create publisher")?,
     );
@@ -347,32 +113,28 @@ async fn spawn_bridge(
         .await
         .context("Dapr sidecar never became healthy")?;
 
-    let protocol = match bridge_config.protocol.as_str() {
-        "wormhole" => BridgeProtocol::Wormhole,
-        "layerzero" => BridgeProtocol::LayerZero,
-        "hop" => BridgeProtocol::Hop,
-        other => anyhow::bail!("Unsupported protocol: {}", other),
-    };
-
     let listener = BridgeListener::new(
-        bridge_config.chain.clone(),
-        bridge_config.chain_name.clone(),
-        bridge_config.address.clone(),
-        protocol,
+        bridge.chain_id.clone(),
+        bridge.chain_name.clone(),
+        format!("{:?}", bridge.address),
+        bridge.protocol,
         Arc::clone(&rpc),
     );
 
     let processor = Arc::new(EventProcessor::new(
-        Arc::new(FinalityBuffer::new(FinalityMode::Depth(12))),
+        Arc::new(FinalityBuffer::new(FinalityMode::Depth(
+            bridge.confirmations,
+        ))),
         Arc::clone(&publisher),
     ));
 
     let (event_tx, event_rx) = mpsc::channel::<Event>(EVENT_CHANNEL_BUFFER);
 
-    let bridge_address = bridge_config.address.clone();
+    let bridge_address = format!("{:?}", bridge.address);
+    let bridge_name = bridge.name.clone();
     let subscription_shutdown = shutdown.subscribe();
     tasks.spawn(async move {
-        if let Err(e) = subscribe_to_bridge_logs(
+        if let Err(e) = subscribe_to_logs(
             provider,
             &bridge_address,
             listener,
@@ -385,7 +147,6 @@ async fn spawn_bridge(
         }
     });
 
-    let bridge_name = bridge_config.name.clone();
     let processor_shutdown = shutdown.subscribe();
     tasks.spawn(async move {
         process_events(event_rx, processor, bridge_name, processor_shutdown).await;
@@ -394,16 +155,16 @@ async fn spawn_bridge(
     Ok(())
 }
 
-async fn subscribe_to_bridge_logs(
+async fn subscribe_to_logs<P>(
     provider: Arc<Provider<Ws>>,
     bridge_address: &str,
-    listener: BridgeListener<Provider<Ws>>,
+    listener: BridgeListener<P>,
     event_tx: mpsc::Sender<Event>,
     mut shutdown: broadcast::Receiver<()>,
-) -> Result<()> {
-    use ethers::types::Filter;
-    use futures_util::StreamExt;
-
+) -> Result<()>
+where
+    P: Middleware + 'static,
+{
     let address: Address = bridge_address
         .parse()
         .with_context(|| format!("invalid bridge address: {}", bridge_address))?;
@@ -452,6 +213,33 @@ async fn subscribe_to_bridge_logs(
     }
 
     Ok(())
+}
+
+async fn process_events(
+    mut events: mpsc::Receiver<Event>,
+    processor: Arc<EventProcessor>,
+    bridge_name: String,
+    mut shutdown: broadcast::Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            maybe_event = events.recv() => {
+                let Some(event) = maybe_event else {
+                    warn!(bridge = %bridge_name, "Event channel closed");
+                    break;
+                };
+
+                processor.process(event, None, &bridge_name).await;
+            }
+            _ = shutdown_requested(&mut shutdown) => {
+                info!(bridge = %bridge_name, "Event processor shutting down");
+                break;
+            }
+        }
+    }
+
+    let published = processor.flush(&bridge_name).await;
+    info!(bridge = %bridge_name, published, "Flushed pending events");
 }
 
 /// Resolves on shutdown, or when every sender has been dropped. A lagged receiver only

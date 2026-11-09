@@ -23,7 +23,6 @@ graph LR
     subgraph Output Analytics
         AA[AggregatedAnalytics]
         LA[LiquidityAnalytics]
-        MA[MevAlert]
         MT[MarketTrend]
     end
 
@@ -31,7 +30,6 @@ graph LR
     SE --> AA
     SE --> MT
     ME & BE & TE --> LA
-    SE & ME & BE --> MA
 ```
 
 ## Blockchain Source
@@ -165,25 +163,6 @@ LP token movement for correlation with Mint/Burn.
 | uniqueProviders | int | Distinct LP addresses |
 | processedAt | long | Flink processing time |
 
-### MevAlert (`dex-pattern-analytics`)
-
-Session window (3 s gap) detecting MEV patterns across all event types.
-
-| Field | Type | Notes |
-|---|---|---|
-| alertId | string | UUID |
-| alertType | string | `SANDWICH_ATTACK` or `JIT_LIQUIDITY` |
-| windowStart / windowEnd | long | Session boundaries |
-| pairAddress, token0Symbol?, token1Symbol? | — | Pair context |
-| blockNumber | long | Primary block of activity |
-| attackerAddress | string? | Detected attacker |
-| victimAddresses | string[] | Affected addresses |
-| estimatedProfitUSD | double | Estimated attacker profit |
-| severity | string | `HIGH` / `MEDIUM` / `LOW` |
-| description | string? | Human-readable explanation |
-| involvedTransactions | string[] | Transaction hashes |
-| detectedAt | long | Detection timestamp |
-
 ### MarketTrend (`dex-market-trends`)
 
 30-minute sliding window (5-minute slide) over SwapEvents.
@@ -209,11 +188,9 @@ Not persisted — computed by the analytics service from stored data.
 |---------------------------------|--------------|--------------------------------------------------|
 | pairAddress                     | string       | Pool identifier                                  |
 | overallScore                    | double       | Weighted composite (0–1)                         |
-| tradingScore                    | double       | 35 % weight — volume, activity, trader diversity |
-| liquidityScore                  | double       | 35 % weight — LP event activity                  |
-| safetyScore                     | double       | 30 % weight — inverse of MEV alert count         |
+| tradingScore                    | double       | 50 % weight — volume, activity, trader diversity |
+| liquidityScore                  | double       | 50 % weight — LP event activity                  |
 | trend                           | string       | Latest market trend direction                    |
-| recentAlertCount                | int          | MEV alerts in last 24 h                          |
 | volumeUSD24h / uniqueTraders24h | double / int | 24-hour metrics                                  |
 | evaluatedAt                     | long         | Computation timestamp                            |
 

@@ -1,6 +1,6 @@
 # dex-stream-analytics
 
-Real-time Flink pipeline detecting MEV and scoring DEX pool health from live DEX events (Uniswap V2 on EVM, Raydium AMM
+Real-time Flink pipeline scoring DEX pool health from live DEX events (Uniswap V2 on EVM, Raydium AMM
 v4 on Solana).
 
 ## Commands

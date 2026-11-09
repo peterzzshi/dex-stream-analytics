@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.web3analytics.analytics.config.AppConfig
 import com.web3analytics.analytics.model.LiquidityAnalytics
 import com.web3analytics.analytics.model.MarketTrend
-import com.web3analytics.analytics.model.MevAlert
 import com.web3analytics.analytics.model.PairAddress
 import com.web3analytics.analytics.model.TimeRange
 import com.web3analytics.analytics.model.TradingAnalytics
@@ -176,23 +175,6 @@ class RedisAnalyticsStore(
         pool.resource.use { jedis -> return jedis.smembers(LIQUIDITY_PAIRS_KEY).map(::PairAddress).toSet() }
     }
 
-    override fun storeMevAlert(alert: MevAlert) {
-        pool.resource.use { jedis ->
-            writeWindow(
-                jedis,
-                WindowWrite(
-                    key = mevKey(alert.pairAddress),
-                    pairsKey = MEV_PAIRS_KEY,
-                    countKey = MEV_ALERT_COUNT_KEY,
-                    score = alert.detectedAt.toDouble(),
-                    pairAddress = alert.pairAddress,
-                    retentionHours = config.mevRetentionHours,
-                    json = mapper.writeValueAsString(alert),
-                ),
-            )
-        }
-    }
-
     override fun storeMarketTrend(trend: MarketTrend) {
         pool.resource.use { jedis ->
             writeWindow(
@@ -207,23 +189,6 @@ class RedisAnalyticsStore(
                     json = mapper.writeValueAsString(trend),
                 ),
             )
-        }
-    }
-
-    override fun getMevAlerts(
-        pairAddress: PairAddress,
-        range: TimeRange,
-    ): List<MevAlert> {
-        pool.resource.use { jedis ->
-            val results =
-                jedis.zrangeByScore(
-                    mevKey(pairAddress),
-                    range.from.toDouble(),
-                    range.to.toDouble(),
-                )
-            return results
-                .map { mapper.readValue(it, MevAlert::class.java) }
-                .sortedByDescending { it.detectedAt }
         }
     }
 
@@ -249,10 +214,6 @@ class RedisAnalyticsStore(
         }
     }
 
-    override fun totalMevAlerts(): Long {
-        pool.resource.use { jedis -> return jedis.get(MEV_ALERT_COUNT_KEY)?.toLongOrNull() ?: 0L }
-    }
-
     override fun totalMarketTrends(): Long {
         pool.resource.use { jedis -> return jedis.get(TREND_WINDOW_COUNT_KEY)?.toLongOrNull() ?: 0L }
     }
@@ -262,10 +223,9 @@ class RedisAnalyticsStore(
             val pipeline = jedis.pipelined()
             val trading = pipeline.smembers(TRADING_PAIRS_KEY)
             val liquidity = pipeline.smembers(LIQUIDITY_PAIRS_KEY)
-            val mev = pipeline.smembers(MEV_PAIRS_KEY)
             val trend = pipeline.smembers(TREND_PAIRS_KEY)
             pipeline.sync()
-            return (trading.get() + liquidity.get() + mev.get() + trend.get())
+            return (trading.get() + liquidity.get() + trend.get())
                 .map(::PairAddress)
                 .toSet()
         }
@@ -274,18 +234,14 @@ class RedisAnalyticsStore(
     companion object {
         private const val TRADING_PAIRS_KEY = "analytics:trading:pairs"
         private const val LIQUIDITY_PAIRS_KEY = "analytics:liquidity:pairs"
-        private const val MEV_PAIRS_KEY = "analytics:mev:pairs"
         private const val TREND_PAIRS_KEY = "analytics:trends:pairs"
         private const val TRADING_WINDOW_COUNT_KEY = "analytics:trading:window_count"
         private const val LIQUIDITY_WINDOW_COUNT_KEY = "analytics:liquidity:window_count"
-        private const val MEV_ALERT_COUNT_KEY = "analytics:mev:alert_count"
         private const val TREND_WINDOW_COUNT_KEY = "analytics:trends:window_count"
 
         private fun tradingKey(pair: PairAddress) = "analytics:trading:${pair.value}"
 
         private fun liquidityKey(pair: PairAddress) = "analytics:liquidity:${pair.value}"
-
-        private fun mevKey(pair: PairAddress) = "analytics:mev:${pair.value}"
 
         private fun trendKey(pair: PairAddress) = "analytics:trends:${pair.value}"
     }

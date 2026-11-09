@@ -59,7 +59,6 @@ services:
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic $$TOPIC_DLQ --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-trading-analytics --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-liquidity-analytics --partitions 3 --replication-factor 1 --config retention.ms=7776000000 &&
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-pattern-analytics --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-market-trends --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
         echo "All topics created"
     networks:
@@ -195,14 +194,12 @@ services:
       - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
       - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
       - TOPIC_LIQUIDITY_ANALYTICS=dex-liquidity-analytics
-      - TOPIC_PATTERN_ANALYTICS=dex-pattern-analytics
       - TOPIC_MARKET_TRENDS=dex-market-trends
       - FLINK_CONSUMER_GROUP=dex-processor
       - FLINK_PARALLELISM=2
       - FLINK_CHECKPOINT_MS=10000
       - TRADING_WINDOW_MINUTES=5
       - LIQUIDITY_WINDOW_MINUTES=60
-      - SESSION_GAP_SECONDS=3
       - TREND_WINDOW_MINUTES=30
       - TREND_SLIDE_MINUTES=5
     depends_on:

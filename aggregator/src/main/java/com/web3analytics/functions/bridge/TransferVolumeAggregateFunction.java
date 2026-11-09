@@ -2,9 +2,9 @@ package com.web3analytics.functions.bridge;
 
 import com.web3analytics.bridge.BridgeLockEvent;
 import com.web3analytics.bridge.BridgeUnlockEvent;
+import com.web3analytics.functions.Web3Math;
 import com.web3analytics.types.TriState;
 import java.io.Serial;
-import java.math.BigInteger;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.java.tuple.Tuple2;
 
@@ -16,14 +16,6 @@ public class TransferVolumeAggregateFunction implements
 
   @Serial
   private static final long serialVersionUID = 1L;
-
-  private static BigInteger parseBigInt(final String amount) {
-    try {
-      return new BigInteger(amount);
-    } catch (final NumberFormatException e) {
-      return BigInteger.ZERO;
-    }
-  }
 
   @Override
   public TransferVolumeAccumulator createAccumulator() {
@@ -46,7 +38,7 @@ public class TransferVolumeAggregateFunction implements
         acc.token0Symbol = TriState.of(event.getTokenSymbol());
       }
       acc.lockCount++;
-      acc.totalLockAmount = acc.totalLockAmount.add(parseBigInt(event.getAmount()));
+      acc.totalLockAmount = acc.totalLockAmount.add(Web3Math.parseBigInt(event.getAmount()));
     }
 
     if (tuple.f1 != null) {
@@ -60,7 +52,7 @@ public class TransferVolumeAggregateFunction implements
         acc.token1Symbol = TriState.of(event.getTokenSymbol());
       }
       acc.unlockCount++;
-      acc.totalUnlockAmount = acc.totalUnlockAmount.add(parseBigInt(event.getAmount()));
+      acc.totalUnlockAmount = acc.totalUnlockAmount.add(Web3Math.parseBigInt(event.getAmount()));
     }
 
     return acc;

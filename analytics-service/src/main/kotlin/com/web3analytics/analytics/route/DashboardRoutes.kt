@@ -50,7 +50,6 @@ fun Route.dashboardRoutes() {
                                 metricBox("overall-score", "Overall", "—")
                                 metricBox("trading-score", "Trading", "—")
                                 metricBox("liquidity-score", "Liquidity", "—")
-                                metricBox("safety-score", "Safety", "—")
                             }
                             div("trend-badge") {
                                 id = "trend-badge"
@@ -73,19 +72,6 @@ fun Route.dashboardRoutes() {
                                     +"O: — H: — L: — C: —"
                                 }
                             }
-                        }
-
-                        // MEV Alerts Card
-                        section("card alert-card") {
-                            h2 { +"MEV Alerts" }
-                            div("alert-count") {
-                                span("big-number") {
-                                    id = "alert-count"
-                                    +"0"
-                                }
-                                span { +" alerts (24h)" }
-                            }
-                            ul("alert-feed") { id = "alert-feed" }
                         }
 
                         // Market Trends Card

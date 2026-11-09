@@ -8,14 +8,12 @@ public record FlinkConfig(
         String topicLiquidityEvents,
         String topicTradingAnalytics,
         String topicLiquidityAnalytics,
-        String topicPatternAnalytics,
         String topicMarketTrends,
         String consumerGroup,
         int parallelism,
         int checkpointMs,
         int tradingWindowMinutes,
         int liquidityWindowMinutes,
-        int sessionGapSeconds,
         int trendWindowMinutes,
         int trendSlideMinutes
 ) {
@@ -31,14 +29,12 @@ public record FlinkConfig(
             getRequired(env, "TOPIC_LIQUIDITY_EVENTS"),
             getRequired(env, "TOPIC_TRADING_ANALYTICS"),
             getRequired(env, "TOPIC_LIQUIDITY_ANALYTICS"),
-            getRequired(env, "TOPIC_PATTERN_ANALYTICS"),
             getRequired(env, "TOPIC_MARKET_TRENDS"),
             getRequired(env, "FLINK_CONSUMER_GROUP"),
             parseInt(env, "FLINK_PARALLELISM"),
             parseInt(env, "FLINK_CHECKPOINT_MS"),
             parseInt(env, "TRADING_WINDOW_MINUTES"),
             parseInt(env, "LIQUIDITY_WINDOW_MINUTES"),
-            parseInt(env, "SESSION_GAP_SECONDS"),
             parseInt(env, "TREND_WINDOW_MINUTES"),
             parseInt(env, "TREND_SLIDE_MINUTES")
         );

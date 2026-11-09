@@ -1,14 +1,14 @@
 # DEX Stream Analytics
 
-Real-time analytics for DeFi liquidity pools — measure MEV extraction, score pool health, and track market trends from
+Real-time analytics for DeFi liquidity pools — score pool health and track market trends from
 finalized on-chain events.
 
 ## Problem
 
-Traders lose 2-5% to sandwich attacks, and LPs can't identify toxic pools before committing
-capital. Existing tools (Dune, DEXTools) aggregate after the fact with 5-15 min lag. This
-pipeline computes per-pool metrics from finalized chain events with bounded, event-time
-semantics, so the numbers are reproducible rather than sampled from a moving head.
+LPs can't identify toxic pools before committing capital, and existing tools (Dune, DEXTools)
+aggregate after the fact with 5-15 min lag. This pipeline computes per-pool metrics from
+finalized chain events with bounded, event-time semantics, so the numbers are reproducible
+rather than sampled from a moving head.
 
 **On latency, honestly**: this is a post-trade pipeline, not a pre-trade warning system. An
 EVM event is published only after 12 confirmations (~2.4 min) and then has to clear a 60 s
@@ -20,9 +20,8 @@ their transaction executes would need the mempool, not the chain.
 
 Apache Flink pipeline processing live DEX events from both EVM and Solana chains:
 
-- **MEV detection**: Sandwich and JIT-liquidity patterns, computed on finalized events after the
-  chain's own finality gate rather than intra-block
-- **Pool health scoring**: Composite metric (trading + liquidity + safety)
+- **Pool health scoring**: Composite metric (trading + liquidity), computed on finalized events
+  after the chain's own finality gate rather than intra-block
 - **Market analytics**: TWAP, OHLC, volume from on-chain events
 - **Multi-chain support**: EVM (Uniswap V2) and Solana (Raydium AMM v4) ingesters publishing to shared Kafka topics
 
@@ -110,4 +109,3 @@ to shared Kafka topics; aggregator and analytics-service process EVM and Solana 
    typed query plan over the analytics API. The model selects a query; the engine returns every
    number.
 2. **Additional EVM L2s** — config entries in `evm-ingester`, no new code
-3. **Enhanced MEV detection** — Cross-chain arbitrage patterns, multi-pool sandwich detection

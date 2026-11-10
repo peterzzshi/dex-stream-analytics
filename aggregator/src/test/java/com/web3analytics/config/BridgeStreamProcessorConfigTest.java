@@ -6,7 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.UnaryOperator;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 class BridgeStreamProcessorConfigTest {
 
@@ -36,6 +40,21 @@ class BridgeStreamProcessorConfigTest {
     return env::get;
   }
 
+  private static void createConfig(final Map<String, String> env) {
+    BridgeStreamProcessorConfig.fromEnv(envOf(env));
+  }
+
+  static Stream<Arguments> invalidConfigScenarios() {
+    return Stream.of(
+        Arguments.of("TRANSFER_WINDOW_SECONDS", "five-minutes",
+            "Invalid integer for TRANSFER_WINDOW_SECONDS: five-minutes"),
+        Arguments.of("WATERMARK_DELAY_SECONDS", "0",
+            "WATERMARK_DELAY_SECONDS must be positive, got 0"),
+        Arguments.of("RESTART_DELAY_SECONDS", "10s",
+            "Invalid integer for RESTART_DELAY_SECONDS: 10s")
+    );
+  }
+
   @Test
   void readsEveryValueFromTheEnvironment() {
     final BridgeStreamProcessorConfig config =
@@ -54,7 +73,7 @@ class BridgeStreamProcessorConfigTest {
     env.remove("REENTRANCY_WINDOW_SECONDS");
 
     final IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-        () -> BridgeStreamProcessorConfig.fromEnv(envOf(env)));
+        () -> BridgeStreamProcessorConfigTest.createConfig(env));
 
     assertEquals("Missing required env var: REENTRANCY_WINDOW_SECONDS", error.getMessage());
   }
@@ -65,39 +84,19 @@ class BridgeStreamProcessorConfigTest {
     env.put("BRIDGE_SUPPLY_TOPIC", "   ");
 
     assertThrows(IllegalArgumentException.class,
-        () -> BridgeStreamProcessorConfig.fromEnv(envOf(env)));
+        () -> BridgeStreamProcessorConfigTest.createConfig(env));
   }
 
-  @Test
-  void nonNumericWindowIsRejected() {
+  @ParameterizedTest
+  @MethodSource("invalidConfigScenarios")
+  void invalidConfigurationIsRejected(final String envKey, final String envValue,
+      final String expectedError) {
     final Map<String, String> env = validEnv();
-    env.put("TRANSFER_WINDOW_SECONDS", "five-minutes");
+    env.put(envKey, envValue);
 
     final IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-        () -> BridgeStreamProcessorConfig.fromEnv(envOf(env)));
+        () -> BridgeStreamProcessorConfigTest.createConfig(env));
 
-    assertEquals("Invalid integer for TRANSFER_WINDOW_SECONDS: five-minutes", error.getMessage());
-  }
-
-  @Test
-  void zeroOrNegativeWindowIsRejected() {
-    final Map<String, String> env = validEnv();
-    env.put("WATERMARK_DELAY_SECONDS", "0");
-
-    final IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-        () -> BridgeStreamProcessorConfig.fromEnv(envOf(env)));
-
-    assertEquals("WATERMARK_DELAY_SECONDS must be positive, got 0", error.getMessage());
-  }
-
-  @Test
-  void nonNumericRestartDelayIsRejected() {
-    final Map<String, String> env = validEnv();
-    env.put("RESTART_DELAY_SECONDS", "10s");
-
-    final IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-        () -> BridgeStreamProcessorConfig.fromEnv(envOf(env)));
-
-    assertEquals("Invalid integer for RESTART_DELAY_SECONDS: 10s", error.getMessage());
+    assertEquals(expectedError, error.getMessage());
   }
 }

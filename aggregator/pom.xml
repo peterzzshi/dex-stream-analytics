@@ -1,16 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns="http://maven.apache.org/POM/4.0.0"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
          http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-
-    <groupId>com.web3analytics</groupId>
     <artifactId>aggregator</artifactId>
-    <version>1.0-SNAPSHOT</version>
-    <packaging>jar</packaging>
-
-    <name>Web3 DEX Analytics - Flink Aggregator</name>
 
   <build>
     <plugins>
@@ -31,10 +24,10 @@
         <executions>
           <execution>
             <configuration>
+              <enableDecimalLogicalType>true</enableDecimalLogicalType>
               <outputDirectory>${project.build.directory}/generated-sources/avro</outputDirectory>
               <sourceDirectory>${project.basedir}/../schemas</sourceDirectory>
               <stringType>String</stringType>
-              <enableDecimalLogicalType>true</enableDecimalLogicalType>
             </configuration>
             <goals>
               <goal>schema</goal>
@@ -132,69 +125,68 @@
     </plugins>
 
   </build>
-
   <dependencies>
         <!-- Flink Core (provided by the Flink dist at runtime — must not be
              bundled, or user-jar copies of Flink classes shadow the cluster's
              and Java-serialized lambdas fail with ClassCastException) -->
         <dependency>
-            <groupId>org.apache.flink</groupId>
             <artifactId>flink-streaming-java</artifactId>
-            <version>${flink.version}</version>
+          <groupId>org.apache.flink</groupId>
             <scope>provided</scope>
+          <version>${flink.version}</version>
         </dependency>
 
         <!-- Flink Kafka Connector (native, avoids DAPR) — not in the dist, stays bundled -->
         <dependency>
+          <artifactId>flink-connector-kafka</artifactId>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-connector-kafka</artifactId>
           <version>5.0.0-2.2</version>
         </dependency>
 
         <!-- Flink Avro (unused at runtime — provided for compilation only) -->
         <dependency>
+          <artifactId>flink-avro</artifactId>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-avro</artifactId>
+          <scope>provided</scope>
             <version>${flink.version}</version>
-            <scope>provided</scope>
         </dependency>
 
         <!-- Avro -->
         <dependency>
-            <groupId>org.apache.avro</groupId>
             <artifactId>avro</artifactId>
+          <groupId>org.apache.avro</groupId>
             <version>${avro.version}</version>
         </dependency>
 
         <!-- Logging -->
         <dependency>
+          <artifactId>slf4j-api</artifactId>
             <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
             <version>${slf4j.version}</version>
         </dependency>
         <dependency>
+          <artifactId>log4j-slf4j2-impl</artifactId>
             <groupId>org.apache.logging.log4j</groupId>
-            <artifactId>log4j-slf4j2-impl</artifactId>
+          <scope>runtime</scope>
             <version>${log4j.version}</version>
-            <scope>runtime</scope>
         </dependency>
         <dependency>
+          <artifactId>log4j-api</artifactId>
             <groupId>org.apache.logging.log4j</groupId>
-            <artifactId>log4j-api</artifactId>
+          <scope>runtime</scope>
             <version>${log4j.version}</version>
-            <scope>runtime</scope>
         </dependency>
         <dependency>
-            <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-core</artifactId>
-            <version>${log4j.version}</version>
+          <groupId>org.apache.logging.log4j</groupId>
             <scope>runtime</scope>
+          <version>${log4j.version}</version>
         </dependency>
 
         <!-- JSON processing -->
         <dependency>
+          <artifactId>jackson-databind</artifactId>
             <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
           <version>2.22.4</version>
         </dependency>
     <dependency>
@@ -216,16 +208,13 @@
 
         <!-- Testing -->
         <dependency>
+          <artifactId>junit-jupiter</artifactId>
             <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
+          <scope>test</scope>
             <version>${junit.version}</version>
-            <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.apache.flink</groupId>
             <artifactId>flink-test-utils</artifactId>
-            <version>${flink.version}</version>
-            <scope>test</scope>
           <exclusions>
             <!-- Exclude ZooKeeper test utilities - not needed for our tests
                  curator-test pulls in zookeeper:3.9.6 with CVE-2023-44981, CVE-2024-23944
@@ -235,15 +224,23 @@
               <groupId>org.apache.curator</groupId>
             </exclusion>
           </exclusions>
+          <groupId>org.apache.flink</groupId>
+          <scope>test</scope>
+          <version>${flink.version}</version>
         </dependency>
         <dependency>
+          <artifactId>assertj-core</artifactId>
             <groupId>org.assertj</groupId>
-            <artifactId>assertj-core</artifactId>
+          <scope>test</scope>
             <version>${assertj.version}</version>
+        </dependency>
+    <dependency>
+      <artifactId>jqwik</artifactId>
+      <groupId>net.jqwik</groupId>
             <scope>test</scope>
+      <version>${jqwik.version}</version>
         </dependency>
     </dependencies>
-
   <dependencyManagement>
     <dependencies>
       <!-- Security: Override vulnerable transitive dependencies
@@ -301,34 +298,41 @@
       </dependency>
     </dependencies>
   </dependencyManagement>
+  <groupId>com.web3analytics</groupId>
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <name>Web3 DEX Analytics - Flink Aggregator</name>
+
+  <packaging>jar</packaging>
 
   <profiles>
         <!-- Development profile: Includes Flink runtime for IntelliJ/standalone -->
         <profile>
-            <id>dev</id>
             <activation>
                 <activeByDefault>true</activeByDefault>
             </activation>
             <dependencies>
                 <dependency>
+                  <artifactId>flink-clients</artifactId>
                     <groupId>org.apache.flink</groupId>
-                    <artifactId>flink-clients</artifactId>
                     <version>${flink.version}</version>
                 </dependency>
                 <dependency>
-                    <groupId>org.apache.flink</groupId>
                     <artifactId>flink-connector-base</artifactId>
+                  <groupId>org.apache.flink</groupId>
                     <version>${flink.version}</version>
                 </dependency>
             </dependencies>
+          <id>dev</id>
         </profile>
 
         <!-- Production profile: Flink runtime provided by cluster -->
         <profile>
-            <id>prod</id>
             <dependencies>
                 <!-- All Flink dependencies remain 'provided' -->
             </dependencies>
+          <id>prod</id>
         </profile>
     </profiles>
 
@@ -337,6 +341,7 @@
     <avro.version>1.12.1</avro.version>
     <flink.version>2.3.0</flink.version>
     <java.version>21</java.version>
+    <jqwik.version>1.9.2</jqwik.version>
     <junit.version>5.11.4</junit.version>
 
     <kafka.version>4.2.0</kafka.version>
@@ -348,4 +353,6 @@
     <scala.binary.version>2.12</scala.binary.version>
     <slf4j.version>2.0.16</slf4j.version>
   </properties>
+
+  <version>1.0-SNAPSHOT</version>
 </project>

@@ -1,0 +1,30 @@
+{
+  "type": "record",
+  "name": "BridgeTransferEvent",
+  "namespace": "com.web3analytics.bridge",
+  "doc": "A value movement through a bridge. `direction` discriminates a lock (value entering the bridge) from an unlock (value released), so consumers branch on an explicit field instead of on the record name.",
+  "fields": [
+    {"name": "eventId", "type": "string"},
+    {"name": "blockNumber", "type": "long"},
+    {"name": "blockTimestamp", "type": "long"},
+    {"name": "transactionHash", "type": "string"},
+    {"name": "logIndex", "type": "int"},
+    {"name": "chain", "type": "string", "doc": "CAIP-2 format: eip155:1 or solana:5eykt..."},
+    {"name": "chainName", "type": "string"},
+    {"name": "bridgeAddress", "type": "string"},
+    {"name": "protocol", "type": {"type": "enum", "name": "BridgeProtocol", "symbols": ["wormhole", "layerzero", "hop", "allbridge"]}},
+    {"name": "direction", "type": {"type": "enum", "name": "TransferDirection", "symbols": ["lock", "unlock"]}},
+    {"name": "gasUsed", "type": "long"},
+    {"name": "gasPrice", "type": "string"},
+    {"name": "eventTimestamp", "type": "long"},
+    {"name": "sender", "type": "string"},
+    {"name": "recipient", "type": "string"},
+    {"name": "token", "type": "string"},
+    {"name": "tokenSymbol", "type": ["null", "string"], "default": null},
+    {"name": "amount", "type": {"type": "bytes", "logicalType": "decimal", "precision": 78, "scale": 0}},
+    {"name": "destinationChain", "type": ["null", "string"], "default": null},
+    {"name": "sourceChain", "type": ["null", "string"], "default": null},
+    {"name": "messageHash", "type": ["null", "string"], "default": null},
+    {"name": "sequenceNumber", "type": ["null", "long"], "default": null}
+  ]
+}

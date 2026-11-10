@@ -1,346 +1,255 @@
 # Architecture
 
-Technical architecture for the DEX Stream Analytics pipeline.
+**Status**: Ingesters and Flink aggregator migrated to bridge security monitoring. Analytics service remains on DEX endpoints (not migrated).
+
+Technical architecture for the Bridge Security Monitor ingestion and aggregation pipeline.
 
 ## System Overview
 
 ```mermaid
 graph TD
     subgraph Blockchain
-        POLY[Ethereum]
-        PAIR[Uniswap V2 Pair<br/>USDC/WETH]
-        CHAIN[Chainlink Price Feeds]
+        ETH[Ethereum Mainnet]
+        WORMHOLE[Wormhole Token Bridge]
+        LAYERZERO[LayerZero Endpoint]
+        HOP[Hop Protocol Bridge]
         SOL[Solana]
-        SOLPAIR[Raydium AMM v4 Pool<br/>SOL/USDC]
-        PYTH[Pyth Price Feeds]
+        WORMHOLE_SOL[Wormhole Portal]
+        ALLBRIDGE[Allbridge]
     end
 
     subgraph "Ingesters · Rust"
-        ING[evm-ingester]
-        SING[solana-ingester]
-        DAPR_I[Dapr sidecar]
+        EVM[evm-ingester<br/>Bridge-only]
+        SOLING[solana-ingester<br/>Bridge-only]
+        DAPR_E[Dapr sidecar]
         DAPR_S[Dapr sidecar]
     end
 
     subgraph "Kafka · KRaft"
-        KT[dex-trading-events]
-        KL[dex-liquidity-events]
-        OT[dex-trading-analytics]
-        OL[dex-liquidity-analytics]
-        OM[dex-market-trends]
+        KT[bridge-transfer-events<br/>BridgeTransferEvent<br/>direction: lock | unlock]
+        KS[bridge-supply-events<br/>BridgeSupplyEvent<br/>operation: mint | burn]
+        DLQ[bridge-dlq-events]
     end
 
     subgraph "Aggregator · Flink 2 / Java 21"
-        F1[Trading Pipeline<br/>tumbling 5 min]
-        F2[Liquidity Pipeline<br/>tumbling 1 h]
-        F4[Market Trends<br/>sliding 30 min / 5 min]
+        F1[Transfer Volume<br/>5-min tumbling]
+        F2[Supply Tracking<br/>5-min tumbling]
+        F3[Cross-Chain Flow<br/>5-min tumbling]
+        F4[Exploit Detection<br/>60-sec session]
+        F5[Reentrancy Detection<br/>5-sec tumbling]
     end
 
     subgraph "Analytics Service · Kotlin / Ktor"
-        API[REST API + Pool Health]
-        API_DAPR[Dapr sidecar]
-        REDIS[(Redis)]
+        API[REST API<br/>NOT MIGRATED]
+        REDIS[(Redis<br/>DEX data only)]
     end
 
-    POLY -- "WebSocket · eth_subscribe" --> ING
-    PAIR -. "logs filtered by pair + topics" .-> ING
-    CHAIN -- "RPC · latestRoundData" --> ING
+    ETH -- "WebSocket · eth_subscribe" --> EVM
+    WORMHOLE -. "TransferSent/Redeemed" .-> EVM
+    LAYERZERO -. "PacketSent/Received" .-> EVM
+    HOP -. "TransferSentToL2/FromL1Completed" .-> EVM
 
-    SOL -- "WebSocket · logsSubscribe<br/>RPC · finalized slot" --> SING
-    SOLPAIR -. " transactions filtered by program + pool " .-> SING
-    PYTH -- "price accounts" --> SING
+    SOL -- "WebSocket · logsSubscribe<br/>RPC · finalized slot" --> SOLING
+    WORMHOLE_SOL -. "transfer_wrapped/complete_transfer" .-> SOLING
+    ALLBRIDGE -. "lock/unlock" .-> SOLING
 
-    ING --> DAPR_I
-    SING --> DAPR_S
+    EVM --> DAPR_E
+    SOLING --> DAPR_S
 
-    DAPR_I -- SwapEvent --> KT
-    DAPR_I -- "Mint / Burn / Transfer" --> KL
-    DAPR_S -- "SwapEvent / Mint / Burn" --> KT & KL
+    DAPR_E -- "BridgeTransferEvent" --> KT
+    DAPR_E -- "BridgeSupplyEvent" --> KS
+    DAPR_S -- "BridgeTransferEvent<br/>BridgeSupplyEvent" --> KT & KS
 
     KT -- native connector --> F1
-    KT -- native connector --> F4
-    KL -- native connector --> F2
+    KT & KS -- native connector --> F2
+    KT & KS -- union --> F3
+    KT & KS -- union --> F4
+    KT -- union --> F5
 
-    F1 --> OT
-    F2 --> OL
-    F4 --> OM
+    F1 -- "POST /api/bridges/transfer-volume" --> API
+    F2 -- "POST /api/bridges/supply" --> API
+    F3 -- "POST /api/bridges/flow" --> API
+    F4 -- "POST /api/bridges/alert" --> API
+    F5 -- "POST /api/bridges/reentrancy" --> API
 
-    OT & OL & OM -- "Dapr pub/sub · rawPayload" --> API_DAPR
-    API_DAPR --> API
-    API --> REDIS
+    API -. "NOT IMPLEMENTED" .-> REDIS
+
+    style API fill:#f88,stroke:#d44
+    style REDIS fill:#f88,stroke:#d44
 ```
 
 ## Event-to-Analytics Mapping
 
-| Input Topic | Event Types | Output Topic | Window | Purpose |
+| Input Topic | Event Types | Pipeline | Window | Purpose |
 |---|---|---|---|---|
-| `dex-trading-events` | SwapEvent | `dex-trading-analytics` | 5-min tumbling | TWAP, OHLC, volume, trader activity |
-| `dex-liquidity-events` | Mint + Burn + Transfer | `dex-liquidity-analytics` | 1-hour tumbling | LP flows, TVL changes, churn rate |
-| `dex-trading-events` | SwapEvent | `dex-market-trends` | 30-min sliding / 5-min slide | Price momentum, volatility, trend direction |
+| `bridge-transfer-events` | `direction`: lock, unlock | Transfer Volume | 5-min tumbling | Lock/unlock counts, total amounts |
+| `bridge-supply-events` | `operation`: mint, burn | Supply Tracking | 5-min tumbling | Net minted, total wrapped supply |
+| Both topics | Both records | Cross-Chain Flow | 5-min tumbling | Net flow, imbalance ratio |
+| Both topics | Both records | Exploit Detection | 60-sec session | Rapid transfers, large amounts, supply mismatch |
+| `bridge-transfer-events` | `direction`: lock, unlock | Reentrancy Detection | 5-sec tumbling | Multiple lock/unlock calls in one transaction |
 
-Swap events produce **trading** analytics; Mint/Burn events produce **liquidity** analytics.
+Window lengths are env vars (`*_WINDOW_SECONDS`, `EXPLOIT_SESSION_GAP_SECONDS`) with no defaults; the
+values here are the `docker-compose.yml` ones.
+
+Lock/Unlock events track **value transfer** across bridges. Mint/Burn events track **wrapped token supply** changes.
+
+Lock and Unlock were originally separate Avro records and separate Flink streams, unioned at the
+aggregator with `Either<BridgeLockEvent, BridgeUnlockEvent>`. Their schemas had identical field
+lists — same 21 names, same types, same order — so the split carried no type safety, only a
+duplicate struct, a duplicate Kafka consumer, and a downstream union that could not be switched
+over exhaustively (`org.apache.flink.types.Either` is not a sealed type, so a `switch` needs a
+`default` that would silently absorb any future subtype). The two records were consolidated into
+`BridgeTransferEvent` with an Avro enum field `direction`; Mint/Burn became `BridgeSupplyEvent`
+with `operation`.
+
+What the aggregation now branches on is a compiler-checked enum rather than `Either.isLeft()`, so
+a new direction is a compile error at every switch that does not handle it. The four logical event
+types are still distinguished — as field values, not as record names.
 
 ## Design Decisions
 
-### Chain-Agnostic Pool Identity
+### Chain-Agnostic Bridge Identity
 
-The domain model treats a chain as an attribute of a pool, not an identity of one. **A pool is
-identified by `(chain, pairAddress)`** — a pair address alone is ambiguous, because the same
-address can exist on another chain and the same logical market (WETH/USDC) is a *different pool*
-on each chain.
+Bridges are identified by `(chain, bridgeAddress)`. A bridge address alone is ambiguous because the same contract address can exist on different chains.
 
-Two chain families are implemented: EVM (`evm-ingester`) and Solana (`solana-ingester`).
-Pools are declared per chain in `evm.toml` / `solana.toml`, so a single ingester instance serves
-all pools on its chain.
+Two chain families implemented:
+- **EVM** (`evm-ingester`): Wormhole, LayerZero, Hop on Ethereum mainnet
+- **Solana** (`solana-ingester`): Wormhole Portal, Allbridge
 
-The distinction is enforced at three layers, so adding a chain is additive:
+Bridges declared per chain in `evm-bridges.toml` / `solana-bridges.toml`.
 
-| Layer        | Today                                                                |
-|--------------|----------------------------------------------------------------------|
-| Ingester     | one binary per family; pools, tokens and feeds in that family's TOML |
-| Event schema | `chain` (CAIP-2 string) + `chainName` (string) on every event        |
-| Flink key    | `(chain, pairAddress)` on all four pipelines                         |
+| Layer | Implementation |
+|-------|----------------|
+| Ingester | One binary per chain family; bridges in family-specific TOML |
+| Event schema | `chain` (CAIP-2) + `chainName` + `protocol` enum on every event |
+| Flink key | `(chain, bridgeAddress)` on all pipelines |
 
-`chain` is CAIP-2 (`eip155:1`, `solana:5eykt...`), not EIP-155's bare numeric chain ID.
-EIP-155 can't name a non-EVM cluster, so the chain-neutral form is the only one that works
-across both families.
+`chain` uses CAIP-2 format (`eip155:1`, `solana:5eykt...`) for chain-neutral identity across EVM and non-EVM chains.
 
-**Why the ingester and not the RPC**: chain identity arrives in the block/slot payload, but a
-chain is a deployment fact (which RPC, which pair, which finality model), not an inference.
-Reading it from the per-chain config file (alongside the pools, tokens and feeds it must agree with) keeps one code path
-per chain family and makes a misconfigured chain a
-startup error rather than a mislabelled event.
+**Why Solana**: Forces testing of non-EIP-155 chain IDs and non-confirmation-count finality (finalized slot polling vs block confirmations). Proves the chain-neutral abstraction works across structurally different families.
 
-**Why Solana before another EVM chain**: the aggregator, Avro envelope, Kafka topics, and
-analytics service are already chain-neutral; adding Arbitrum or Base would only prove the
-seam works within one chain family. Solana forces the two abstractions that actually need
-testing — a non-EIP-155 chain identifier and a non-confirmation-count finality model — so it
-exercises the design seam, not just an extra deployment.
+### Event Schema Split
 
-**Why not more chains today**: each additional family is another ingester binary, another
-finality model, and another set of config that must agree with the on-chain reality. The
-chain-neutral seam is already proven across two structurally different families; breadth
-adds deployments, not evidence. (Ethereum mainnet is monitored today — see `evm.toml`;
-mainnet RPC cost is a real constraint at multi-pool scale, which is why the pool list is
-curated rather than discovered.)
+Events separated into two topics, one record type each:
+- `bridge-transfer-events` (`BridgeTransferEvent`, `direction` = lock | unlock, 7-day retention) —
+  value movement
+- `bridge-supply-events` (`BridgeSupplyEvent`, `operation` = mint | burn, 30-day retention) —
+  wrapped token supply
 
-Events are separated by schema into `dex-trading-events` (SwapEvent only, 7-day retention) and
-`dex-liquidity-events` (Mint / Burn / Transfer, 30-day retention). The split buys independent
-retention, independent consumer scaling, and a smaller hot topic. Each topic feeds its own
-windowing functions (trading, liquidity, market trends) independently, with no cross-stream
-union or ordering dependency between them.
+Split provides independent retention, consumer scaling, and clearer semantic boundaries.
 
-The liquidity topic carries multiple schemas (Mint, Burn, Transfer). The aggregator resolves the correct Avro schema via the CloudEvent `type` header before decode — no shape-guessing.
+The two records are genuinely different shapes (22 vs 19 fields), so the `BridgeActivity` union
+that Cross-Chain Flow and Exploit Detection consume is a real normalization across heterogeneous
+topics, not two names for the same payload.
+
+### Protocol Type Safety
+
+`protocol` field is an Avro enum (`wormhole`, `layerzero`, `hop`, `allbridge`), enforced at:
+1. **Config load** (Rust ingester): `BridgeProtocol::from_str()` validates protocol names
+2. **Avro schema**: Enum with fixed symbols, deserialization fails on unknown values
+3. **Flink**: No string parsing, type-safe enum used in aggregation keys
+
+Prevents runtime string-matching bugs and typos.
 
 ### Flink Native Kafka (Not Dapr)
 
-The aggregator uses Flink's native Kafka connector for exactly-once semantics (two-phase commit), checkpoint integration, event-time watermarks, and backpressure. Dapr's at-least-once HTTP model cannot provide these guarantees.
+Aggregator uses Flink's native Kafka connector for:
+- Exactly-once semantics (two-phase commit)
+- Checkpoint integration
+- Event-time watermarks
+- Backpressure
 
-Dapr **is** used where its strengths apply: the ingester (decouple from Kafka) and the analytics service (simple subscription model).
+Dapr used where its strengths apply: ingesters (decouple from Kafka) and analytics service (subscription model).
 
-**Flink choice rationale**: Selected over Kafka Streams for richer windowing (sliding windows for
-market trends), event-time semantics, and exactly-once sink semantics. Kafka Streams would also have worked at this scale; Flink was
-chosen because it is the runtime this pipeline is meant to demonstrate, and because its event-time model absorbs the
-out-of-order arrival that blockchain finality produces.
+### Finality Guarantees
 
-### Chainlink Price Oracle
+**EVM**: 12-block confirmation depth before events enter finality buffer
+- Depth-based finality with deduplication cache
+- Handles reorgs up to 12 blocks deep
+- Cache cleanup after finalized block passes
 
-USD volume is computed in the ingester using Chainlink on-chain price feeds with a four-tier fallback: stablecoin shortcut → Chainlink token0 → Chainlink token1 → swap-implied price. Prices are cached with 5-minute TTL; stablecoin lookups are zero-cost.
+**Solana**: External finality polling
+- Separate task queries finalized slot every N seconds
+- Finality buffer releases events when block reaches finalized slot
+- No confirmation counting, cluster finality is authoritative
 
-### Finality Gate
+Both models use the same `FinalityBuffer` abstraction with different modes (`Depth` vs `External`).
 
-The ingester buffers events for N block confirmations (`confirmations` in `evm.toml`, required; 12 for mainnet) before
-publishing. This
-prevents reorg artifacts from entering the analytics pipeline. The cost is latency, and it is
-not small: at 12-second Ethereum blocks, 12 confirmations is roughly 2.4 minutes before an
-event is even published, and the 60-second watermark plus the first window boundary sit on top
-of that. Solana finalizes in about 13 seconds, so the two chains do not converge to the same
-analytics latency.
+### RestApiSink Pattern
 
-### Startup Readiness
+Flink aggregator sinks directly to REST API (no Kafka output topics):
+- POST per window close (e.g., 1 POST per bridge per 5-min window)
+- 10s connection timeout, 30s request timeout
+- Range inputs serialized as JSON strings — a 78-digit `BigInteger` cannot survive a
+  `long`/`double` on the receiving side as a bare number
 
-Publishing into a sidecar that is not listening yet fails, and the failure path ends in the DLQ:
-the per-publish retry budget (three retries, 100 ms initial backoff, ±25 % jitter — roughly
-700 ms) is shorter than a cold `daprd` start. Compose ordering alone does not cover this —
-`service_started` returns when the container is created, not when daprd can serve HTTP.
+**Failure classification.** Each failure is a typed exception, so the sink `catch`es the one case
+it can handle and lets the rest propagate:
 
-So `Publisher::wait_until_ready` polls the sidecar's `/v1.0/healthz` every 250 ms for up to 30 s
-before ingestion starts, and the process exits if the sidecar never answers. Neither ingester
-exposes a health port: they are push-only producers, so nothing calls into them.
+| Exception | Statuses | Handling |
+|---|---|---|
+| `NetworkException` | no response (refused, timed out) | retry |
+| `ServerException` | 5xx | retry |
+| `RateLimitException` | 429, 408 | retry after a 4× longer backoff |
+| `RejectedException` | any other 4xx | log, count in `recordsDroppedFatal`, drop |
 
-## Component Overview
+`RestApiSink.post()` is the only place a status number is interpreted: 429/408 → `RateLimitException`,
+5xx → `ServerException`, any other non-2xx → `RejectedException`.
 
-### evm-ingester (Rust)
+A code that cannot serialize fails the job rather than counting as a drop — a broken serializer is
+a defect in this pipeline, not bad input. Only a 4xx rejection increments `recordsDroppedFatal`.
 
-Listens to every Uniswap V2 pair declared in `evm.toml` over a single WebSocket subscription (`eth_subscribe` on the
-four event topics, filtered by the union of pair addresses). Enriches
-each raw log with the block timestamp, transaction gas data, token symbols, and a Chainlink USD
-price. Encodes to Avro and publishes via Dapr. A listener task feeds a publisher through a
-buffered channel.
+There is no `retriable()` predicate. `SinkException` is `sealed` over the four subtypes, and the
+retry decision is a pattern `switch` in the sink, so the compiler refuses to build a switch that
+misses a failure type. A predicate would invert that: a new subtype would inherit "retry" from the
+base class without anyone deciding it should.
 
-Coverage is a config list, not a code path. The pipeline is identical for one pool or twenty; the
-pair set is bounded by what the RPC tier sustains, so scaling monitoring is a provider-plan
-decision rather than an architectural one.
+**Retry is inline, not Flink's restart strategy.** A restart replays from the last checkpoint, so
+the operator re-emits every window since then — including the ones that already succeeded — and one
+failing window becomes a burst of duplicate POSTs. An inline retry re-sends only the record that
+failed. Four attempts with a delay of 100ms doubling (capped at 10s, jittered) keep the worst case
+far below the 10-minute checkpoint timeout, so the blocking wait cannot starve a checkpoint.
+Retries are counted in the `sinkRetries` metric.
 
-Named `evm-ingester` (not just `ingester`) because the design is one ingester binary per chain *family*, not per chain:
-a second EVM chain reuses this binary with a different `CONFIG_FILE` and RPC URL; Solana is a
-different enough execution and account model (no event logs, no EIP-155 chain ID,
-commitment-level finality) to need its own ingester, `solana-ingester` — see
-[Future Work](#future-work).
+**After retries are exhausted the sink throws.** The record then reaches Flink's fixed-delay
+restart strategy, which is the only remaining option; swallowing it would silently lose a window.
+`RESTART_MAX_ATTEMPTS` bounds that loop so a permanently failing sink ends as a failed job.
 
-**Deployment**: one Docker container per chain, configured through a `CONFIG_FILE` TOML file (`evm.toml`, baked into the
-image at build time) for chain, pool, token and oracle data, plus
-environment variables for Dapr coordinates, topics, and the RPC URL. The RPC URL stays in env
-rather than the config file because it embeds an API key (`ETH_RPC_URL`) and a config file leaked
-one before. Adding another EVM chain means another instance with its own `CONFIG_FILE` and env;
-the Kafka topics are shared.
+A stateful restart still replays from the last checkpoint, so a POST that already succeeded before
+the failure can be delivered again. Idempotency on the receiving side is therefore required — the
+sink cannot supply it.
 
-**Design note — enrichment happens here, not in Flink**: Chainlink reads and symbol lookups are
-cached in the ingester so the values written to the event are frozen at ingest. Flink replay
-then re-derives the same numbers deterministically; moving enrichment downstream would make
-reprocessing depend on the oracle's later state.
+### TriState Field-Level Merge
 
-### solana-ingester (Rust)
+`TriState<T>` models three states for enriched fields:
+- `Undefined` — not yet seen
+- `Defined(value)` — successfully enriched
+- `Null` — enrichment failed (poison state)
 
-Subscribes to Raydium AMM v4 transactions over WebSocket (`logsSubscribe`). Solana has no event
-logs, so a swap is decoded from the instruction and its fill amounts come from diffing the
-transaction's pre/post token balances. USD prices come from Pyth; token symbols from the SPL
-token metadata program. A price account's address alone proves nothing — any Pyth receiver
-account deserializes — so the oracle also checks that the feed id inside the account is the one
-configured for that token, and only accepts fully Wormhole-verified updates. Finality is a
-commitment level, not a confirmation count: the ingester
-polls the finalized slot over RPC and publishes buffered events once their slot is finalized. It
-publishes the same Avro events, CloudEvent envelope and topics as `evm-ingester`, plus a Dapr DLQ
-topic (`TOPIC_DLQ`). Chain, programs, tokens and pools come from `solana.toml`; secrets and
-runtime scalars from env. See [solana-ingester/README.md](solana-ingester/README.md).
+Merge semantics:
+- `Defined` keeps first defined value (idempotent)
+- `Undefined` takes first event's value
+- `Null` stays null (failed enrichment propagates)
 
-**Design note — one I/O layer, pure transforms beneath it**: a log line travels
-`TransactionHandler` → `TransactionFetcher` / `SymbolCache` / `PythOracle` → `EventBuilder`, with
-`InstructionProcessor` decoding in between. The handler is the only module that awaits anything:
-it fetches the transaction, resolves symbols once per pool, quotes only the sold side of a swap,
-and hands the results to the builder. `InstructionProcessor` and `EventBuilder` are pure
-functions of their inputs — no RPC, no clock reads inside the event, no hidden oracle call — so
-an event's contents are fully determined by the transaction and the prices passed in. This is
-what makes enrichment-at-ingest auditable: the numbers a replay reproduces are the numbers the
-builder received, not whatever the oracle happened to hold later. Keep new I/O in the handler;
-a failure to resolve one instruction's vaults skips that instruction and logs, rather than
-dropping the whole transaction.
+Inspired by field-level eventual consistency in Braze profile updates (REA experience). Currently untested with real data (all `token_symbol` fields are null).
 
-### stream-aggregator (Flink / Java 21)
+### Exploit Detection Patterns
 
-Four parallel pipelines reading from two input topics. Decoded and watermarked once per source,
-then keyed by `(chain, pairAddress)` — the string `chain + ":" + pairAddress` — for per-pool
-partitioning:
+Session window (60-second gap) with heuristics:
+1. **Rapid Transfers** — >10 events in single session
+2. **Large Transfer** — single transfer >1000 tokens
+3. **Supply Mismatch** — netLocked vs netMinted differs by >10%
 
-```mermaid
-graph LR
-    KT[dex-trading-events] --> DECODE_T[Decode + Watermark]
-    KL[dex-liquidity-events] --> DECODE_L[Decode + Watermark]
+Patterns 4-6 (Unusual Size, New Address, Cross-Chain Correlation) designed but not implemented. Requires sliding windows with stddev, block metadata lookup, and message hash matching respectively.
 
-    DECODE_T --> F1[Tumbling 5 min<br/>SwapAggregator]
-    DECODE_T --> F4[Sliding 30 min / 5 min<br/>MarketTrendWindowFunction]
-    DECODE_L --> F2[Tumbling 1 h<br/>LiquidityWindowFunction]
+## Known Gaps
 
-    F1 --> OT[dex-trading-analytics]
-    F2 --> OL[dex-liquidity-analytics]
-    F4 --> OM[dex-market-trends]
-```
-
-Fault tolerance: 60 s bounded-out-of-orderness watermarks, exactly-once delivery from Flink to its
-output topics via Kafka transactions. Note the scope: exactly-once holds at the sink boundary only.
-Ingest is at-least-once — the ingesters publish over Dapr HTTP with retry, and the aggregator is
-idempotent on `eventId` rather than transactional against the source. Late events beyond the
-watermark are not currently captured: there is no `allowedLateness` or `sideOutputLateData`
-configuration, so an event that arrives more than 60 s behind the watermark is dropped rather
-than routed anywhere. The job explicitly configures `exponential-delay` restart (1 s initial backoff, 5 min
-max, unlimited attempts) rather than relying on Flink's implicit default — the same values, made
-explicit so a future Flink upgrade can't silently change restart behavior again. Per-record
-decode/validation failures do not trigger a restart at all: they're caught and routed to a
-side-output DLQ stream (see DATA_MODEL.md's Data Quality section) rather than failing the task.
-
-### analytics-service (Kotlin / Ktor)
-
-Subscribes to all four output topics via Dapr push. Stores data in Redis sorted sets (scored by `windowStart` or `detectedAt`). Computes a composite **Pool Health Score** (35 % trading + 35 % liquidity + 30 % safety) and serves query endpoints:
-
-| Group | Endpoints |
-|---|---|
-| Trading | `/pairs/{pair}/twap`, `/ohlc`, `/volume`, `/trading`, `/latest` |
-| Liquidity | `/pairs/{pair}/liquidity`, `/liquidity/latest`, `/liquidity/flows` |
-| Pool Health | `/pools/{pair}/health`, `/pools/{pair}/alerts`, `/pools/{pair}/trends`, `/pools/leaderboard` |
-| Meta | `/analytics/summary`, `/analytics/pairs`, `/health` |
-| Dashboard | `/dashboard` (HTML), `/ws/analytics` (WebSocket live stream) |
-
-## Infrastructure
-
-### Kafka Topics
-
-| Topic                     | Schema(s)                      | Partitions | Retention |
-|---------------------------|--------------------------------|------------|-----------|
-| `dex-trading-events`      | SwapEvent                      | 6          | 7 d       |
-| `dex-liquidity-events`    | Mint / Burn / Transfer         | 6          | 30 d      |
-| `dex-dlq-events`          | JSON (failed payload + reason) | 3          | 30 d      |
-| `dex-trading-analytics`   | AggregatedAnalytics            | 3          | 30 d      |
-| `dex-liquidity-analytics` | LiquidityAnalytics             | 3          | 90 d      |
-| `dex-market-trends`       | MarketTrend                    | 3          | 30 d      |
-
-`dex-dlq-events` is written by both ingesters on publish failure and by nothing else — there is no
-consumer, no alerting, and no compaction. Records also publish unkeyed, so they do not preserve the
-pool they came from. It is a capture point, not a recovery path; see `GAPS.md`.
-
-Input topics are keyed by `pairAddress`, so all events for a pool land on one partition in order.
-Output topics are unkeyed — `buildKafkaSink` sets no key serializer, so records round-robin
-across partitions. Anything consuming an output topic must therefore order by the window
-timestamp in the payload, not by partition order.
-
-### Docker Compose Services
-
-| Service                     | Purpose                                          | Port          |
-|-----------------------------|--------------------------------------------------|---------------|
-| kafka                       | KRaft broker                                     | 9092          |
-| kafka-init                  | One-shot topic provisioning                      | —             |
-| redis                       | Analytics store                                  | 6379          |
-| dapr-placement              | Dapr placement                                   | 50006         |
-| flink-jobmanager            | Builds and runs the Flink job (application mode) | 8081 (Web UI) |
-| flink-taskmanager           | Flink workers                                    | —             |
-| analytics-service + sidecar | Kotlin API                                       | 8080          |
-| evm-ingester + sidecar      | Rust EVM listener                                | —             |
-| solana-ingester + sidecar   | Rust Solana listener                             | —             |
-
-`docker compose up -d` starts the full pipeline, including both ingesters, provided `ETH_RPC_URL` and
-`SOLANA_RPC_URL` are set in `.env`; `scripts/produce_test_events.py` can feed synthetic events instead of
-pointing at live chain access.
-
-## Production vs Prototype
-
-**Simplified for portfolio**:
-
-- Pools are declared in config — production needs Factory `PairCreated` event subscription for
-  automatic multi-pool discovery
-- In-memory checkpointing — production needs S3/GCS + RocksDB state backend
-- No authentication/rate limiting — production needs JWT auth + WAF
-
-**Production patterns retained**:
-
-- Exactly-once delivery to Kafka at the Flink sink (two-phase commit + Kafka transactions)
-- Event-time processing with watermarks (handles out-of-order blockchain events)
-- Finality gate (prevents reorg artifacts)
-- Polyglot stack with appropriate language choices per component
-
-## Future Work
-
-**Chain breadth:**
-
-1. **Multi-chain EVM** (Arbitrum, Base): one `evm-ingester` instance per deployment, each with its
-   own config file (`[chain]` id, name, confirmations); the aggregator needs no change.
-
-**Beyond chain breadth:**
-- **Uniswap V3/V4 support**: V3 keeps `(token0, token1, fee)` pool addressability but replaces
-  the constant-product model with tick math; V4 collapses all pools into one `PoolManager`
-  singleton, where pool identity is `keccak256(currency0, currency1, fee, tickSpacing, hooks)`
-  and hooks can mutate swap amounts. V4 would break the `(chain, pairAddress)` pool identity,
-  so it is a real design task, not a version bump.
-- **Natural-language query layer**: a read-only compiler from prose to a typed query plan over the
-  analytics API. The model selects a query; the engine returns every number.
-- **Multi-pool discovery**: subscribe to Factory `PairCreated` instead of declaring pools in TOML
-- **Observability**: Prometheus metrics, Grafana dashboards, structured logging
-- **Production hardening**: Kafka SASL/TLS, Dapr mTLS, secrets management
+See `INGESTER-AGGREGATOR-STATUS.md` for comprehensive gap analysis:
+- Analytics service not migrated (Flink sinks receive 404 and drop the record)
+- Token symbols all null (both ingesters hardcode `token_symbol: None`)
+- Message hash not calculated (cross-chain correlation impossible)
+- Only 3/6 exploit patterns implemented
+- `LARGE_TRANSFER_THRESHOLD` compares raw token units, which are not comparable across
+  tokens with different decimals
+- Malformed Kafka records are dropped and counted, not routed to the DLQ topic the
+  ingesters publish to

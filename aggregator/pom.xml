@@ -34,6 +34,7 @@
               <outputDirectory>${project.build.directory}/generated-sources/avro</outputDirectory>
               <sourceDirectory>${project.basedir}/../schemas</sourceDirectory>
               <stringType>String</stringType>
+              <enableDecimalLogicalType>true</enableDecimalLogicalType>
             </configuration>
             <goals>
               <goal>schema</goal>

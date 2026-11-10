@@ -1,30 +1,35 @@
 package com.web3analytics;
 
-import com.web3analytics.bridge.BridgeBurnEvent;
-import com.web3analytics.bridge.BridgeLockEvent;
-import com.web3analytics.bridge.BridgeMintEvent;
-import com.web3analytics.bridge.BridgeUnlockEvent;
-import com.web3analytics.functions.bridge.CrossChainFlowAggregateFunction;
-import com.web3analytics.functions.bridge.ExploitDetectionAggregateFunction;
-import com.web3analytics.functions.bridge.SupplyTrackingAggregateFunction;
-import com.web3analytics.functions.bridge.TransferVolumeAggregateFunction;
-import com.web3analytics.serde.BridgeBurnEventDeserializer;
-import com.web3analytics.serde.BridgeLockEventDeserializer;
-import com.web3analytics.serde.BridgeMintEventDeserializer;
-import com.web3analytics.serde.BridgeUnlockEventDeserializer;
+import com.web3analytics.bridge.BridgeSupplyEvent;
+import com.web3analytics.bridge.BridgeTransferEvent;
+import com.web3analytics.config.BridgeStreamProcessorConfig;
+import com.web3analytics.functions.CrossChainFlowAggregateFunction;
+import com.web3analytics.functions.ExploitDetectionAggregateFunction;
+import com.web3analytics.functions.ReentrancyDetectionAggregateFunction;
+import com.web3analytics.functions.SupplyTrackingAggregateFunction;
+import com.web3analytics.functions.TransferVolumeAggregateFunction;
+import com.web3analytics.model.BridgeActivity;
+import com.web3analytics.model.EventKind;
+import com.web3analytics.model.WindowStamped;
+import com.web3analytics.serde.BridgeEventDeserializer;
 import com.web3analytics.sinks.RestApiSink;
+import java.io.Serial;
 import java.time.Duration;
-import java.util.function.Function;
+import java.util.function.ToLongFunction;
+import org.apache.avro.specific.SpecificRecord;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
-import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.api.java.tuple.Tuple4;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,216 +37,189 @@ public class BridgeStreamProcessor {
 
   private static final Logger LOG = LoggerFactory.getLogger(BridgeStreamProcessor.class);
 
-  private static final String KAFKA_BOOTSTRAP_SERVERS = getEnvOrFail("KAFKA_BOOTSTRAP_SERVERS");
-  private static final String BRIDGE_TRANSFER_TOPIC = getEnvOrFail("BRIDGE_TRANSFER_TOPIC");
-  private static final String BRIDGE_SUPPLY_TOPIC = getEnvOrFail("BRIDGE_SUPPLY_TOPIC");
-  private static final String TRANSFER_VOLUME_ENDPOINT = getEnvOrFail("TRANSFER_VOLUME_ENDPOINT");
-  private static final String SUPPLY_TRACKING_ENDPOINT = getEnvOrFail("SUPPLY_TRACKING_ENDPOINT");
-  private static final String CROSS_CHAIN_FLOW_ENDPOINT = getEnvOrFail("CROSS_CHAIN_FLOW_ENDPOINT");
-  private static final String EXPLOIT_DETECTION_ENDPOINT = getEnvOrFail(
-      "EXPLOIT_DETECTION_ENDPOINT");
-
-  private static final int WATERMARK_DELAY_SECONDS = getEnvAsInt("WATERMARK_DELAY_SECONDS", 5);
-  private static final int TRANSFER_WINDOW_SECONDS = getEnvAsInt("TRANSFER_WINDOW_SECONDS", 300);
-  private static final int SUPPLY_WINDOW_SECONDS = getEnvAsInt("SUPPLY_WINDOW_SECONDS", 300);
-  private static final int FLOW_WINDOW_SECONDS = getEnvAsInt("FLOW_WINDOW_SECONDS", 300);
-  private static final int EXPLOIT_SESSION_GAP_SECONDS = getEnvAsInt("EXPLOIT_SESSION_GAP_SECONDS",
-      60);
-
-  private static String getEnvOrFail(final String key) {
-    final String value = System.getenv(key);
-    if (value == null || value.isBlank()) {
-      throw new IllegalStateException("Required environment variable not set: " + key);
-    }
-    return value;
-  }
-
-  private static int getEnvAsInt(final String key, final int defaultValue) {
-    final String value = System.getenv(key);
-    if (value == null || value.isBlank()) {
-      return defaultValue;
-    }
-    try {
-      return Integer.parseInt(value);
-    } catch (final NumberFormatException e) {
-      throw new IllegalStateException(
-          "Invalid integer for environment variable " + key + ": " + value, e);
-    }
-  }
-
   public static void main(final String[] args) throws Exception {
+    final BridgeStreamProcessorConfig config = BridgeStreamProcessorConfig.fromEnv();
     final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-    final DataStream<BridgeLockEvent> lockStream = createLockEventStream(env);
-    final DataStream<BridgeUnlockEvent> unlockStream = createUnlockEventStream(env);
-    final DataStream<BridgeMintEvent> mintStream = createMintEventStream(env);
-    final DataStream<BridgeBurnEvent> burnStream = createBurnEventStream(env);
+    // A failed HTTP post must be retried, and a restart only avoids replaying the topic from the
+    // beginning if offsets are checkpointed. Bounded attempts keep a permanently failing sink
+    // visible as a failed job instead of an endless restart loop.
+    env.enableCheckpointing(Duration.ofSeconds(config.checkpointIntervalSeconds()).toMillis());
+    final Configuration restartConf = new Configuration();
+    restartConf.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
+    restartConf.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS,
+        config.restartMaxAttempts());
+    restartConf.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY,
+        Duration.ofSeconds(config.restartDelaySeconds()));
+    env.configure(restartConf);
 
-    buildTransferVolumePipeline(lockStream, unlockStream);
-    buildSupplyTrackingPipeline(mintStream, burnStream);
-    buildCrossChainFlowPipeline(lockStream, unlockStream, mintStream, burnStream);
-    buildExploitDetectionPipeline(lockStream, unlockStream, mintStream, burnStream);
+    // One stream per topic. Lock and unlock share a topic and a record type, so they arrive on one
+    // stream and are separated by the `direction` field; the same holds for mint and burn.
+    final DataStream<BridgeTransferEvent> transferStream = createBridgeStream(env, config,
+        config.bridgeTransferTopic(), "bridge-transfer-consumer", BridgeTransferEvent.class,
+        BridgeTransferEvent::getBlockTimestamp, "Bridge Transfer Events");
+    final DataStream<BridgeSupplyEvent> supplyStream = createBridgeStream(env, config,
+        config.bridgeSupplyTopic(), "bridge-supply-consumer", BridgeSupplyEvent.class,
+        BridgeSupplyEvent::getBlockTimestamp, "Bridge Supply Events");
 
-    LOG.info("Starting Bridge Stream Processor with 4 pipelines");
+    // Built once: both activity pipelines consume the same normalized stream, so the two
+    // amount conversions happen per event once rather than once per consuming pipeline.
+    final DataStream<BridgeActivity> activityStream =
+        unionBridgeActivity(transferStream, supplyStream);
+
+    buildTransferVolumePipeline(transferStream, config);
+    buildSupplyTrackingPipeline(supplyStream, config);
+    buildCrossChainFlowPipeline(activityStream, config);
+    buildExploitDetectionPipeline(activityStream, config);
+    buildReentrancyDetectionPipeline(transferStream, config);
+
+    LOG.info("Starting Bridge Stream Processor with 5 pipelines");
     env.execute("Bridge Security Monitor");
   }
 
-  private static DataStream<BridgeLockEvent> createLockEventStream(
-      final StreamExecutionEnvironment env) {
-    return createBridgeStream(env, BRIDGE_TRANSFER_TOPIC, "bridge-lock-consumer",
-        new BridgeLockEventDeserializer(), BridgeLockEvent::getBlockTimestamp, "Bridge Lock Events");
-  }
-
-  private static DataStream<BridgeUnlockEvent> createUnlockEventStream(
-      final StreamExecutionEnvironment env) {
-    return createBridgeStream(env, BRIDGE_TRANSFER_TOPIC, "bridge-unlock-consumer",
-        new BridgeUnlockEventDeserializer(), BridgeUnlockEvent::getBlockTimestamp, "Bridge Unlock Events");
-  }
-
-  private static DataStream<BridgeMintEvent> createMintEventStream(
-      final StreamExecutionEnvironment env) {
-    return createBridgeStream(env, BRIDGE_SUPPLY_TOPIC, "bridge-mint-consumer",
-        new BridgeMintEventDeserializer(), BridgeMintEvent::getBlockTimestamp, "Bridge Mint Events");
-  }
-
-  private static DataStream<BridgeBurnEvent> createBurnEventStream(
-      final StreamExecutionEnvironment env) {
-    return createBridgeStream(env, BRIDGE_SUPPLY_TOPIC, "bridge-burn-consumer",
-        new BridgeBurnEventDeserializer(), BridgeBurnEvent::getBlockTimestamp, "Bridge Burn Events");
-  }
-
-  private static <T> DataStream<T> createBridgeStream(
+  private static <T extends SpecificRecord> DataStream<T> createBridgeStream(
       final StreamExecutionEnvironment env,
+      final BridgeStreamProcessorConfig config,
       final String topic,
       final String groupId,
-      final DeserializationSchema<T> deserializer,
-      final Function<T, Long> timestampFn,
+      final Class<T> eventClass,
+      final ToLongFunction<T> timestampFn,
       final String sourceName) {
+    final DeserializationSchema<T> deserializer = new BridgeEventDeserializer<>(eventClass);
     final KafkaSource<T> source = KafkaSource.<T>builder()
-        .setBootstrapServers(KAFKA_BOOTSTRAP_SERVERS)
+        .setBootstrapServers(config.kafkaBootstrapServers())
         .setTopics(topic)
         .setGroupId(groupId)
         .setStartingOffsets(OffsetsInitializer.earliest())
         .setValueOnlyDeserializer(deserializer)
         .build();
     final WatermarkStrategy<T> watermarkStrategy = WatermarkStrategy
-        .<T>forBoundedOutOfOrderness(Duration.ofSeconds(WATERMARK_DELAY_SECONDS))
-        .withTimestampAssigner((event, timestamp) -> timestampFn.apply(event));
+        .<T>forBoundedOutOfOrderness(Duration.ofSeconds(config.watermarkDelaySeconds()))
+        .withTimestampAssigner((event, timestamp) -> timestampFn.applyAsLong(event));
     return env.fromSource(source, watermarkStrategy, sourceName);
   }
 
   private static void buildTransferVolumePipeline(
-      final DataStream<BridgeLockEvent> lockStream,
-      final DataStream<BridgeUnlockEvent> unlockStream) {
-    final DataStream<Tuple2<BridgeLockEvent, BridgeUnlockEvent>> transferUnion = lockStream
-        .map(event -> Tuple2.of(event, (BridgeUnlockEvent) null))
-        .union(unlockStream.map(event -> Tuple2.of(null, event)));
-
-    transferUnion
-        .keyBy(tuple -> tuple.f0 != null
-            ? tuple.f0.getBridgeAddress() + ":" + tuple.f0.getChain()
-            : tuple.f1.getBridgeAddress() + ":" + tuple.f1.getChain())
-        .window(TumblingEventTimeWindows.of(Duration.ofSeconds(TRANSFER_WINDOW_SECONDS)))
-        .aggregate(new TransferVolumeAggregateFunction())
-        .sinkTo(new RestApiSink<>(TRANSFER_VOLUME_ENDPOINT))
+      final DataStream<BridgeTransferEvent> transferStream,
+      final BridgeStreamProcessorConfig config) {
+    transferStream
+        .keyBy(BridgeStreamProcessor::bridgeChainKey)
+        .window(TumblingEventTimeWindows.of(Duration.ofSeconds(config.transferWindowSeconds())))
+        .aggregate(new TransferVolumeAggregateFunction(), new WindowStamp<>())
+        .sinkTo(new RestApiSink<>(config.transferVolumeEndpoint()))
         .name("Transfer Volume REST Sink");
   }
 
   private static void buildSupplyTrackingPipeline(
-      final DataStream<BridgeMintEvent> mintStream,
-      final DataStream<BridgeBurnEvent> burnStream) {
-    final DataStream<Tuple2<BridgeMintEvent, BridgeBurnEvent>> supplyUnion = mintStream
-        .map(event -> Tuple2.of(event, (BridgeBurnEvent) null))
-        .union(burnStream.map(event -> Tuple2.of(null, event)));
-
-    supplyUnion
-        .keyBy(tuple -> tuple.f0 != null
-            ? tuple.f0.getBridgeAddress() + ":" + tuple.f0.getChain()
-            : tuple.f1.getBridgeAddress() + ":" + tuple.f1.getChain())
-        .window(TumblingEventTimeWindows.of(Duration.ofSeconds(SUPPLY_WINDOW_SECONDS)))
-        .aggregate(new SupplyTrackingAggregateFunction())
-        .sinkTo(new RestApiSink<>(SUPPLY_TRACKING_ENDPOINT))
+      final DataStream<BridgeSupplyEvent> supplyStream,
+      final BridgeStreamProcessorConfig config) {
+    supplyStream
+        .keyBy(BridgeStreamProcessor::bridgeChainKey)
+        .window(TumblingEventTimeWindows.of(Duration.ofSeconds(config.supplyWindowSeconds())))
+        .aggregate(new SupplyTrackingAggregateFunction(), new WindowStamp<>())
+        .sinkTo(new RestApiSink<>(config.supplyTrackingEndpoint()))
         .name("Supply Tracking REST Sink");
   }
 
   private static void buildCrossChainFlowPipeline(
-      final DataStream<BridgeLockEvent> lockStream,
-      final DataStream<BridgeUnlockEvent> unlockStream,
-      final DataStream<BridgeMintEvent> mintStream,
-      final DataStream<BridgeBurnEvent> burnStream) {
-    final DataStream<Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent>> flowUnion =
-        createTuple4Union(lockStream, unlockStream, mintStream, burnStream);
-
-    flowUnion
-        .keyBy(BridgeStreamProcessor::extractBridgeAddress)
-        .window(TumblingEventTimeWindows.of(Duration.ofSeconds(FLOW_WINDOW_SECONDS)))
-        .aggregate(new CrossChainFlowAggregateFunction())
-        .sinkTo(new RestApiSink<>(CROSS_CHAIN_FLOW_ENDPOINT))
+      final DataStream<BridgeActivity> activityStream,
+      final BridgeStreamProcessorConfig config) {
+    activityStream
+        .keyBy(BridgeActivity::bridgeAddress)
+        .window(TumblingEventTimeWindows.of(Duration.ofSeconds(config.flowWindowSeconds())))
+        .aggregate(new CrossChainFlowAggregateFunction(), new WindowStamp<>())
+        .sinkTo(new RestApiSink<>(config.crossChainFlowEndpoint()))
         .name("Cross-Chain Flow REST Sink");
   }
 
   private static void buildExploitDetectionPipeline(
-      final DataStream<BridgeLockEvent> lockStream,
-      final DataStream<BridgeUnlockEvent> unlockStream,
-      final DataStream<BridgeMintEvent> mintStream,
-      final DataStream<BridgeBurnEvent> burnStream) {
-    final DataStream<Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent>> flowUnion =
-        createTuple4Union(lockStream, unlockStream, mintStream, burnStream);
-
-    flowUnion
-        .keyBy(BridgeStreamProcessor::extractBridgeAddressWithChain)
-        .window(EventTimeSessionWindows.withGap(Duration.ofSeconds(EXPLOIT_SESSION_GAP_SECONDS)))
-        .aggregate(new ExploitDetectionAggregateFunction())
+      final DataStream<BridgeActivity> activityStream,
+      final BridgeStreamProcessorConfig config) {
+    activityStream
+        .keyBy(activity -> activity.bridgeAddress() + ":" + activity.chain())
+        .window(EventTimeSessionWindows.withGap(
+            Duration.ofSeconds(config.exploitSessionGapSeconds())))
+        .aggregate(new ExploitDetectionAggregateFunction(), new WindowStamp<>())
         .filter(acc -> !acc.suspiciousPatterns.isEmpty())
-        .sinkTo(new RestApiSink<>(EXPLOIT_DETECTION_ENDPOINT))
+        .sinkTo(new RestApiSink<>(config.exploitDetectionEndpoint()))
         .name("Exploit Detection REST Sink");
   }
 
-  private static DataStream<Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent>> createTuple4Union(
-      final DataStream<BridgeLockEvent> lockStream,
-      final DataStream<BridgeUnlockEvent> unlockStream,
-      final DataStream<BridgeMintEvent> mintStream,
-      final DataStream<BridgeBurnEvent> burnStream) {
-    return lockStream
-        .map(event -> Tuple4.of(event, (BridgeUnlockEvent) null, (BridgeMintEvent) null,
-            (BridgeBurnEvent) null))
-        .union(unlockStream.map(event -> Tuple4.of(null, event,
-            null, null)))
-        .union(mintStream.map(event -> Tuple4.of(null,
-            null, event, null)))
-        .union(burnStream.map(event -> Tuple4.of(null,
-            null, null, event)));
+  /**
+   * Keyed by transaction hash rather than bridge address: reentrancy is a property of a single
+   * transaction making multiple lock/unlock calls, not of bridge-level volume over a window.
+   */
+  private static void buildReentrancyDetectionPipeline(
+      final DataStream<BridgeTransferEvent> transferStream,
+      final BridgeStreamProcessorConfig config) {
+    transferStream
+        .keyBy(BridgeTransferEvent::getTransactionHash)
+        .window(TumblingEventTimeWindows.of(
+            Duration.ofSeconds(config.reentrancyWindowSeconds())))
+        .aggregate(new ReentrancyDetectionAggregateFunction(), new WindowStamp<>())
+        .filter(acc -> acc.lockCount > 1 || acc.unlockCount > 1)
+        .sinkTo(new RestApiSink<>(config.reentrancyDetectionEndpoint()))
+        .name("Reentrancy Detection REST Sink");
   }
 
-  private static String extractBridgeAddress(
-      final Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent> tuple) {
-    return extractKey(tuple, event -> event, false);
+  /**
+   * Unions the two event streams into one {@code BridgeActivity}-typed stream, tagging each element
+   * with its {@code EventKind} so downstream pipelines branch on an explicit discriminant instead
+   * of null-checking a positional tuple slot. The two topics carry structurally different records
+   * (22 and 19 fields), so the union is a real normalization, not a duplicate registration.
+   */
+  private static DataStream<BridgeActivity> unionBridgeActivity(
+      final DataStream<BridgeTransferEvent> transferStream,
+      final DataStream<BridgeSupplyEvent> supplyStream) {
+    return transferStream
+        .map(e -> new BridgeActivity(
+            e.getDirection() == com.web3analytics.bridge.TransferDirection.lock
+                ? EventKind.LOCK
+                : EventKind.UNLOCK,
+            e.getBridgeAddress(),
+            e.getChain(),
+            e.getProtocol().toString(),
+            e.getAmount().unscaledValue()))
+        .union(supplyStream.map(e -> new BridgeActivity(
+            e.getOperation() == com.web3analytics.bridge.SupplyOperation.mint
+                ? EventKind.MINT
+                : EventKind.BURN,
+            e.getBridgeAddress(),
+            e.getChain(),
+            e.getProtocol().toString(),
+            e.getAmount().unscaledValue())));
   }
 
-  private static String extractBridgeAddressWithChain(
-      final Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent> tuple) {
-    return extractKey(tuple, event -> event, true);
+  private static String bridgeChainKey(final BridgeTransferEvent event) {
+    return event.getBridgeAddress() + ":" + event.getChain();
   }
 
-  private static String extractKey(
-      final Tuple4<BridgeLockEvent, BridgeUnlockEvent, BridgeMintEvent, BridgeBurnEvent> tuple,
-      final Function<Object, Object> identity,
-      final boolean includeChain) {
-    final String addr;
-    final String chain;
-    if (tuple.f0 != null) {
-      addr = tuple.f0.getBridgeAddress();
-      chain = tuple.f0.getChain();
-    } else if (tuple.f1 != null) {
-      addr = tuple.f1.getBridgeAddress();
-      chain = tuple.f1.getChain();
-    } else if (tuple.f2 != null) {
-      addr = tuple.f2.getBridgeAddress();
-      chain = tuple.f2.getChain();
-    } else {
-      addr = tuple.f3.getBridgeAddress();
-      chain = tuple.f3.getChain();
+  private static String bridgeChainKey(final BridgeSupplyEvent event) {
+    return event.getBridgeAddress() + ":" + event.getChain();
+  }
+
+  /**
+   * Stamps each aggregate with the end timestamp of the window that produced it, so sinks report
+   * when a result is from instead of {@code windowEnd = 0}. A window function is required because
+   * {@code AggregateFunction} never sees the window itself.
+   */
+  private static class WindowStamp<T extends WindowStamped>
+      extends ProcessWindowFunction<T, T, String, TimeWindow> {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+
+    @Override
+    public void process(
+        final String key,
+        final Context context,
+        final Iterable<T> elements,
+        final Collector<T> out) {
+      final long windowEnd = context.window().getEnd();
+      for (final T element : elements) {
+        element.setWindowEnd(windowEnd);
+        out.collect(element);
+      }
     }
-    return includeChain ? addr + ":" + chain : addr;
   }
 }

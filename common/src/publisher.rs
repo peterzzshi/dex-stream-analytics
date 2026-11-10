@@ -20,8 +20,8 @@ pub struct PublisherConfig {
     pub dapr_host: String,
     pub dapr_port: u16,
     pub pubsub_name: String,
-    pub trading_topic: String,
-    pub liquidity_topic: String,
+    pub transfer_topic: String,
+    pub supply_topic: String,
     pub dlq_topic: String,
     pub source: String,
     pub max_retries: u32,
@@ -34,8 +34,8 @@ impl PublisherConfig {
             dapr_host: shared.dapr.host.clone(),
             dapr_port: shared.dapr.http_port,
             pubsub_name: shared.dapr.pubsub_name.clone(),
-            trading_topic: shared.topics.trading.clone(),
-            liquidity_topic: shared.topics.liquidity.clone(),
+            transfer_topic: shared.topics.trading.clone(),
+            supply_topic: shared.topics.liquidity.clone(),
             dlq_topic: shared.topics.dlq.clone(),
             source,
             max_retries: 3,
@@ -52,8 +52,8 @@ impl PublisherConfig {
 
     fn topic_for(&self, event: &Event) -> &str {
         match event {
-            Event::BridgeLock(_) | Event::BridgeUnlock(_) => &self.trading_topic,
-            Event::BridgeMint(_) | Event::BridgeBurn(_) => &self.liquidity_topic,
+            Event::Transfer(_) => &self.transfer_topic,
+            Event::Supply(_) => &self.supply_topic,
         }
     }
 }
@@ -188,7 +188,7 @@ impl Publisher {
         let envelope = event_envelope(&self.config.source, meta, payload)
             .map_err(|e| PublishError::Serialisation(format!("build envelope: {e:#}")))?;
         let url = self.config.publish_url(self.config.topic_for(event));
-        self.post(&url, &envelope, Some(&meta.pair_address)).await
+        self.post(&url, &envelope, Some(&meta.bridge_address)).await
     }
 
     async fn try_dead_letter(
@@ -320,7 +320,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BridgeLockEvent, BridgeMintEvent};
+    use crate::{BridgeSupplyEvent, BridgeTransferEvent, Decimal, TransferDirection, SupplyOperation};
     use std::cell::Cell;
 
     fn config() -> PublisherConfig {
@@ -328,9 +328,9 @@ mod tests {
             dapr_host: "localhost".to_string(),
             dapr_port: 3500,
             pubsub_name: "pubsub".to_string(),
-            trading_topic: "trading".to_string(),
-            liquidity_topic: "liquidity".to_string(),
-            dlq_topic: "dlq".to_string(),
+            transfer_topic: "bridge-transfer-events".to_string(),
+            supply_topic: "bridge-supply-events".to_string(),
+            dlq_topic: "bridge-dlq-events".to_string(),
             source: "test-ingester".to_string(),
             max_retries: 3,
             initial_backoff_ms: 100,
@@ -338,7 +338,7 @@ mod tests {
     }
 
     fn bridge_lock() -> Event {
-        Event::BridgeLock(BridgeLockEvent {
+        Event::Transfer(BridgeTransferEvent {
             event_id: "lock-1".to_string(),
             block_number: 1,
             block_timestamp: 1_000,
@@ -348,6 +348,7 @@ mod tests {
             chain_name: "Ethereum".to_string(),
             bridge_address: "0xbridge".to_string(),
             protocol: "wormhole".to_string(),
+            direction: TransferDirection::Lock,
             gas_used: 150000,
             gas_price: "50".to_string(),
             event_timestamp: 1_000,
@@ -355,7 +356,7 @@ mod tests {
             recipient: "0xrecipient".to_string(),
             token: "0xtoken".to_string(),
             token_symbol: None,
-            amount: "1000000".to_string(),
+            amount: Decimal::from(vec![0, 15, 66, 64]),
             destination_chain: Some("solana:5eykt".to_string()),
             source_chain: None,
             message_hash: None,
@@ -364,7 +365,7 @@ mod tests {
     }
 
     fn bridge_mint() -> Event {
-        Event::BridgeMint(BridgeMintEvent {
+        Event::Supply(BridgeSupplyEvent {
             event_id: "mint-1".to_string(),
             block_number: 1,
             block_timestamp: 1_000,
@@ -374,13 +375,14 @@ mod tests {
             chain_name: "Ethereum".to_string(),
             bridge_address: "0xbridge".to_string(),
             protocol: "wormhole".to_string(),
+            operation: SupplyOperation::Mint,
             gas_used: 150000,
             gas_price: "50".to_string(),
             event_timestamp: 1_000,
             recipient: "0xrecipient".to_string(),
             wrapped_token: "0xwrapped".to_string(),
             wrapped_token_symbol: None,
-            amount: "1000000".to_string(),
+            amount: Decimal::from(vec![0, 15, 66, 64]),
             source_chain: None,
             message_hash: None,
         })
@@ -389,8 +391,8 @@ mod tests {
     #[test]
     fn bridge_events_route_to_correct_topics() {
         let cfg = config();
-        assert_eq!(cfg.topic_for(&bridge_lock()), "trading");
-        assert_eq!(cfg.topic_for(&bridge_mint()), "liquidity");
+        assert_eq!(cfg.topic_for(&bridge_lock()), "bridge-transfer-events");
+        assert_eq!(cfg.topic_for(&bridge_mint()), "bridge-supply-events");
     }
 
     /// `(name, failure, attempts)` — a `fn` rather than a value because the retry loop

@@ -1,6 +1,6 @@
 # Aggregator
 
-Apache Flink 2 job (Java 21) consuming DEX events from Kafka and producing four analytics streams.
+Apache Flink 2 job (Java 21) consuming bridge events from Kafka and producing five analytics streams.
 
 ## Requirements
 
@@ -8,10 +8,11 @@ Apache Flink 2 job (Java 21) consuming DEX events from Kafka and producing four 
 - Maven
 - Kafka broker reachable from Flink runtime
 
-Kafka connection, topics, and job tuning are all env vars; see
-[`FlinkConfig.fromEnv`](src/main/java/com/web3analytics/config/FlinkConfig.java) for the
-full list, or root [ARCHITECTURE.md](../ARCHITECTURE.md#event-to-analytics-mapping) for the
-topic/pipeline contract. Defaults for the default stack are in `docker-compose.yml`.
+Every value the job reads is a required env var with no fallback — a missing or malformed one
+fails the job at launch. See
+[`BridgeStreamProcessorConfig.fromEnv`](src/main/java/com/web3analytics/config/BridgeStreamProcessorConfig.java)
+for the full list, or root [ARCHITECTURE.md](../ARCHITECTURE.md#event-to-analytics-mapping) for the
+topic/pipeline contract. Values for the default stack are in `docker-compose.yml`.
 
 ## Build & Test
 

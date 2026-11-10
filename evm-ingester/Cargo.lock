@@ -810,6 +810,7 @@ dependencies = [
  "apache-avro",
  "chrono",
  "cloudevents-sdk",
+ "num-bigint",
  "rand 0.10.3",
  "reqwest 0.13.5",
  "serde",
@@ -1320,10 +1321,12 @@ name = "evm-ingester"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "apache-avro",
  "dex-ingester-common",
  "ethers",
  "futures-util",
  "hex",
+ "num-bigint",
  "rand 0.10.3",
  "serde",
  "serde_json",

@@ -314,10 +314,10 @@ impl FinalityBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BridgeLockEvent, Event};
+    use crate::{BridgeTransferEvent, Decimal, Event, TransferDirection};
 
     fn mock_event(block_number: i64) -> Event {
-        Event::BridgeLock(BridgeLockEvent {
+        Event::Transfer(BridgeTransferEvent {
             event_id: format!("event-{}", block_number),
             block_number,
             block_timestamp: 1000000,
@@ -327,6 +327,7 @@ mod tests {
             chain_name: "Ethereum".to_string(),
             bridge_address: "0x123".to_string(),
             protocol: "wormhole".to_string(),
+            direction: TransferDirection::Lock,
             gas_used: 150000,
             gas_price: "50".to_string(),
             event_timestamp: 1000000,
@@ -334,7 +335,7 @@ mod tests {
             recipient: "0xrecipient".to_string(),
             token: "0xtoken".to_string(),
             token_symbol: None,
-            amount: "1000000".to_string(),
+            amount: Decimal::from(vec![0, 15, 66, 64]),
             destination_chain: Some("solana:5eykt".to_string()),
             source_chain: None,
             message_hash: None,

@@ -1,8 +1,8 @@
 # Pub/sub and topic names shared by both ingesters
 x-topics: &topics
-  TOPIC_TRADING: dex-trading-events
-  TOPIC_LIQUIDITY: dex-liquidity-events
-  TOPIC_DLQ: dex-dlq-events
+  TOPIC_TRADING: bridge-transfer-events
+  TOPIC_LIQUIDITY: bridge-supply-events
+  TOPIC_DLQ: bridge-dlq-events
 
 x-ingester-env: &ingester-env
   <<: *topics
@@ -57,9 +57,6 @@ services:
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic $$TOPIC_TRADING --partitions 6 --replication-factor 1 --config retention.ms=604800000 &&
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic $$TOPIC_LIQUIDITY --partitions 6 --replication-factor 1 --config retention.ms=2592000000 &&
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic $$TOPIC_DLQ --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-trading-analytics --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-liquidity-analytics --partitions 3 --replication-factor 1 --config retention.ms=7776000000 &&
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dex-market-trends --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
         echo "All topics created"
     networks:
       - dex-analytics-network
@@ -182,7 +179,7 @@ services:
       dockerfile: aggregator/Dockerfile
     image: dex-analytics-aggregator:latest
     container_name: flink-jobmanager
-    command: standalone-job --job-classname com.web3analytics.StreamProcessor
+    command: standalone-job --job-classname com.web3analytics.BridgeStreamProcessor
     environment:
       # TaskManagers connect via this hostname — without it the JM announces
       # its container hostname and TM registration messages get dropped.
@@ -190,18 +187,26 @@ services:
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - TOPIC_TRADING_EVENTS=dex-trading-events
-      - TOPIC_LIQUIDITY_EVENTS=dex-liquidity-events
-      - TOPIC_TRADING_ANALYTICS=dex-trading-analytics
-      - TOPIC_LIQUIDITY_ANALYTICS=dex-liquidity-analytics
-      - TOPIC_MARKET_TRENDS=dex-market-trends
-      - FLINK_CONSUMER_GROUP=dex-processor
-      - FLINK_PARALLELISM=2
-      - FLINK_CHECKPOINT_MS=10000
-      - TRADING_WINDOW_MINUTES=5
-      - LIQUIDITY_WINDOW_MINUTES=60
-      - TREND_WINDOW_MINUTES=30
-      - TREND_SLIDE_MINUTES=5
+      - BRIDGE_TRANSFER_TOPIC=${TOPIC_TRADING}
+      - BRIDGE_SUPPLY_TOPIC=${TOPIC_LIQUIDITY}
+      # analytics-service has not been migrated to bridge routes yet; these
+      # paths model the intended contract and will 404 until it is.
+      - TRANSFER_VOLUME_ENDPOINT=http://analytics-service:8080/api/bridges/transfer-volume
+      - SUPPLY_TRACKING_ENDPOINT=http://analytics-service:8080/api/bridges/supply
+      - CROSS_CHAIN_FLOW_ENDPOINT=http://analytics-service:8080/api/bridges/flow
+      - EXPLOIT_DETECTION_ENDPOINT=http://analytics-service:8080/api/bridges/alert
+      - REENTRANCY_DETECTION_ENDPOINT=http://analytics-service:8080/api/bridges/reentrancy
+      - WATERMARK_DELAY_SECONDS=5
+      - TRANSFER_WINDOW_SECONDS=300
+      - SUPPLY_WINDOW_SECONDS=300
+      - FLOW_WINDOW_SECONDS=300
+      - EXPLOIT_SESSION_GAP_SECONDS=60
+      - REENTRANCY_WINDOW_SECONDS=5
+      # Bounded restarts: a permanently failing sink ends as a failed job, not a loop. Without
+      # checkpointing, a restart replays the topic from earliest.
+      - RESTART_MAX_ATTEMPTS=3
+      - RESTART_DELAY_SECONDS=10
+      - CHECKPOINT_INTERVAL_SECONDS=60
     depends_on:
       kafka-init:
         condition: service_completed_successfully

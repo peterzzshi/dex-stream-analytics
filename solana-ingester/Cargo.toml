@@ -9,7 +9,6 @@ dex-ingester-common = { path = "../common" }
 # Solana RPC
 solana-client = "4.4.0"
 solana-sdk = "5.0.0"
-solana-message = "6.0.0"
 solana-transaction-status = { version = "4.4.0", features = ["agave-unstable-api"] }
 solana-commitment-config = "3.1.1"
 
@@ -21,6 +20,10 @@ futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "=0.8.23"
+
+# Avro encoding
+apache-avro = "0.22.0"
+num-bigint = "0.4"
 
 # Logging
 tracing = "0.1"

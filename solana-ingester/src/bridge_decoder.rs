@@ -1,8 +1,17 @@
 pub use crate::config::BridgeProtocol;
 use anyhow::{bail, Context, Result};
-use dex_ingester_common::{BridgeLockEvent, BridgeMintEvent, BridgeUnlockEvent, Event};
+use apache_avro::Decimal;
+use dex_ingester_common::{
+    BridgeSupplyEvent, BridgeTransferEvent, Event, SupplyOperation, TransferDirection,
+};
+use num_bigint::BigInt;
 use solana_sdk::pubkey::Pubkey;
 use std::convert::TryInto;
+
+fn u64_to_decimal(value: u64) -> Decimal {
+    let big_int = BigInt::from(value);
+    Decimal::from(big_int.to_signed_bytes_be())
+}
 
 pub fn decode_instruction(
     program_id: &Pubkey,
@@ -80,7 +89,7 @@ fn decode_wormhole(
         1 => {
             let amount = u64::from_le_bytes(data[0..8].try_into()?);
             let destination_chain = u16::from_le_bytes(data[8..10].try_into()?);
-            Ok(Event::BridgeLock(BridgeLockEvent {
+            Ok(Event::Transfer(BridgeTransferEvent {
                 event_id,
                 block_number,
                 block_timestamp,
@@ -90,6 +99,7 @@ fn decode_wormhole(
                 chain_name,
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
+                direction: TransferDirection::Lock,
                 gas_used: 0,
                 gas_price: "0".to_string(),
                 event_timestamp,
@@ -97,7 +107,7 @@ fn decode_wormhole(
                 recipient: "".to_string(),
                 token: "".to_string(),
                 token_symbol: None,
-                amount: amount.to_string(),
+                amount: u64_to_decimal(amount),
                 destination_chain: Some(format!("wormhole:{}", destination_chain)),
                 source_chain: None,
                 message_hash: None,
@@ -107,7 +117,7 @@ fn decode_wormhole(
         2 => {
             let amount = u64::from_le_bytes(data[0..8].try_into()?);
             let source_chain = u16::from_le_bytes(data[8..10].try_into()?);
-            Ok(Event::BridgeUnlock(BridgeUnlockEvent {
+            Ok(Event::Transfer(BridgeTransferEvent {
                 event_id,
                 block_number,
                 block_timestamp,
@@ -117,6 +127,7 @@ fn decode_wormhole(
                 chain_name,
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
+                direction: TransferDirection::Unlock,
                 gas_used: 0,
                 gas_price: "0".to_string(),
                 event_timestamp,
@@ -124,7 +135,7 @@ fn decode_wormhole(
                 recipient: "".to_string(),
                 token: "".to_string(),
                 token_symbol: None,
-                amount: amount.to_string(),
+                amount: u64_to_decimal(amount),
                 destination_chain: None,
                 source_chain: Some(format!("wormhole:{}", source_chain)),
                 message_hash: None,
@@ -134,7 +145,7 @@ fn decode_wormhole(
         3 => {
             let amount = u64::from_le_bytes(data[0..8].try_into()?);
             let source_chain = u16::from_le_bytes(data[8..10].try_into()?);
-            Ok(Event::BridgeMint(BridgeMintEvent {
+            Ok(Event::Supply(BridgeSupplyEvent {
                 event_id,
                 block_number,
                 block_timestamp,
@@ -144,13 +155,14 @@ fn decode_wormhole(
                 chain_name,
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
+                operation: SupplyOperation::Mint,
                 gas_used: 0,
                 gas_price: "0".to_string(),
                 event_timestamp,
                 recipient: "".to_string(),
                 wrapped_token: "".to_string(),
                 wrapped_token_symbol: None,
-                amount: amount.to_string(),
+                amount: u64_to_decimal(amount),
                 source_chain: Some(format!("wormhole:{}", source_chain)),
                 message_hash: None,
             }))
@@ -177,7 +189,7 @@ fn decode_allbridge(
         10 => {
             let amount = u64::from_le_bytes(data[0..8].try_into()?);
             let destination_chain = u16::from_le_bytes(data[8..10].try_into()?);
-            Ok(Event::BridgeLock(BridgeLockEvent {
+            Ok(Event::Transfer(BridgeTransferEvent {
                 event_id,
                 block_number,
                 block_timestamp,
@@ -187,6 +199,7 @@ fn decode_allbridge(
                 chain_name,
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
+                direction: TransferDirection::Lock,
                 gas_used: 0,
                 gas_price: "0".to_string(),
                 event_timestamp,
@@ -194,7 +207,7 @@ fn decode_allbridge(
                 recipient: "".to_string(),
                 token: "".to_string(),
                 token_symbol: None,
-                amount: amount.to_string(),
+                amount: u64_to_decimal(amount),
                 destination_chain: Some(format!("allbridge:{}", destination_chain)),
                 source_chain: None,
                 message_hash: None,
@@ -204,7 +217,7 @@ fn decode_allbridge(
         11 => {
             let amount = u64::from_le_bytes(data[0..8].try_into()?);
             let source_chain = u16::from_le_bytes(data[8..10].try_into()?);
-            Ok(Event::BridgeUnlock(BridgeUnlockEvent {
+            Ok(Event::Transfer(BridgeTransferEvent {
                 event_id,
                 block_number,
                 block_timestamp,
@@ -214,6 +227,7 @@ fn decode_allbridge(
                 chain_name,
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
+                direction: TransferDirection::Unlock,
                 gas_used: 0,
                 gas_price: "0".to_string(),
                 event_timestamp,
@@ -221,7 +235,7 @@ fn decode_allbridge(
                 recipient: "".to_string(),
                 token: "".to_string(),
                 token_symbol: None,
-                amount: amount.to_string(),
+                amount: u64_to_decimal(amount),
                 destination_chain: None,
                 source_chain: Some(format!("allbridge:{}", source_chain)),
                 message_hash: None,

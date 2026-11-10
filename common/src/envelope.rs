@@ -19,7 +19,7 @@ pub fn event_envelope(source: &str, meta: &EventMeta, avro_payload: Vec<u8>) -> 
         .id(meta.event_id.clone())
         .source(source)
         .ty(meta.cloudevent_type)
-        .subject(meta.pair_address.clone())
+        .subject(meta.bridge_address.clone())
         .time(time)
         .data(AVRO_CONTENT_TYPE, avro_payload)
         .build()?)
@@ -36,7 +36,7 @@ pub fn dlq_envelope(
         .id(format!("{}-dlq", meta.event_id))
         .source(source)
         .ty(DLQ_EVENT_TYPE)
-        .subject(meta.pair_address.clone())
+        .subject(meta.bridge_address.clone())
         .time(failed_at)
         .data("application/json", payload)
         .build()?)
@@ -51,7 +51,7 @@ mod tests {
         EventMeta {
             event_id: "evt-1".to_string(),
             block_number: 100,
-            pair_address: "0xbridge".to_string(),
+            bridge_address: "0xbridge".to_string(),
             cloudevent_type: "com.bridge.events.lock",
             event_timestamp: 1_700_000_000,
         }

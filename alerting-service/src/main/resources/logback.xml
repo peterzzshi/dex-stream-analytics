@@ -1,0 +1,15 @@
+<configuration>
+    <appender class="ch.qos.logback.core.ConsoleAppender" name="STDOUT">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger level="INFO" name="com.web3analytics"/>
+    <logger level="INFO" name="io.ktor"/>
+    <logger level="WARN" name="io.netty"/>
+
+    <root level="WARN">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>

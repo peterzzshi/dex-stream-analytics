@@ -1,8 +1,6 @@
 # Architecture
 
-**Status**: Ingesters and Flink aggregator migrated to bridge security monitoring. Analytics service remains on DEX endpoints (not migrated).
-
-Technical architecture for the Bridge Security Monitor ingestion and aggregation pipeline.
+Technical architecture for the Bridge Security Monitor: real-time cross-chain bridge exploit detection across Ethereum and Solana.
 
 ## System Overview
 
@@ -29,6 +27,7 @@ graph TD
         KT[bridge-transfer-events<br/>BridgeTransferEvent<br/>direction: lock | unlock]
         KS[bridge-supply-events<br/>BridgeSupplyEvent<br/>operation: mint | burn]
         DLQ[bridge-dlq-events]
+        AT[bridge-alerts<br/>Aggregated threat signals]
     end
 
     subgraph "Aggregator · Flink 2 / Java 21"
@@ -39,9 +38,11 @@ graph TD
         F5[Reentrancy Detection<br/>5-sec tumbling]
     end
 
-    subgraph "Analytics Service · Kotlin / Ktor"
-        API[REST API<br/>NOT MIGRATED]
-        REDIS[(Redis<br/>DEX data only)]
+    subgraph "Alerting Service · Kotlin / Ktor"
+        DAPR_A[Dapr sidecar]
+        SVC[Alert Service<br/>Dapr consumer]
+        REDIS[(Redis<br/>Recent alerts cache)]
+        WS[WebSocket<br/>Broadcast]
     end
 
     ETH -- "WebSocket · eth_subscribe" --> EVM
@@ -66,30 +67,26 @@ graph TD
     KT & KS -- union --> F4
     KT -- union --> F5
 
-    F1 -- "POST /api/bridges/transfer-volume" --> API
-    F2 -- "POST /api/bridges/supply" --> API
-    F3 -- "POST /api/bridges/flow" --> API
-    F4 -- "POST /api/bridges/alert" --> API
-    F5 -- "POST /api/bridges/reentrancy" --> API
-
-    API -. "NOT IMPLEMENTED" .-> REDIS
-
-    style API fill:#f88,stroke:#d44
-    style REDIS fill:#f88,stroke:#d44
+    F1 & F2 & F3 & F4 & F5 -- Kafka sink --> AT
+    AT --> DAPR_A
+    DAPR_A --> SVC
+    SVC --> REDIS
+    SVC --> WS
 ```
 
-## Event-to-Analytics Mapping
+## Event-to-Alert Mapping
 
-| Input Topic | Event Types | Pipeline | Window | Purpose |
+| Input Topic | Event Types | Pipeline | Window | Output |
 |---|---|---|---|---|
-| `bridge-transfer-events` | `direction`: lock, unlock | Transfer Volume | 5-min tumbling | Lock/unlock counts, total amounts |
-| `bridge-supply-events` | `operation`: mint, burn | Supply Tracking | 5-min tumbling | Net minted, total wrapped supply |
-| Both topics | Both records | Cross-Chain Flow | 5-min tumbling | Net flow, imbalance ratio |
-| Both topics | Both records | Exploit Detection | 60-sec session | Rapid transfers, large amounts, supply mismatch |
+| `bridge-transfer-events` | `direction`: lock, unlock | Transfer Volume | 5-min tumbling | Aggregated lock/unlock counts and totals per bridge |
+| `bridge-supply-events` | `operation`: mint, burn | Supply Tracking | 5-min tumbling | Net minted, total wrapped supply per bridge |
+| Both topics | Both records | Cross-Chain Flow | 5-min tumbling | Net flow and imbalance ratio across chains |
+| Both topics | Both records | Exploit Detection | 60-sec session | Threat signals (rapid transfers, large amounts, supply mismatch) |
 | `bridge-transfer-events` | `direction`: lock, unlock | Reentrancy Detection | 5-sec tumbling | Multiple lock/unlock calls in one transaction |
 
-Window lengths are env vars (`*_WINDOW_SECONDS`, `EXPLOIT_SESSION_GAP_SECONDS`) with no defaults; the
-values here are the `docker-compose.yml` ones.
+All pipelines output to 5 separate Kafka topics (`bridge-alerts-transfer-volume`, `bridge-alerts-supply-tracking`, `bridge-alerts-cross-chain-flow`, `bridge-alerts-exploit-detection`, `bridge-alerts-reentrancy`), consumed by the alerting service via Dapr subscription. **Note**: Flink currently uses RestApiSink (Phase A migration to KafkaSink pending).
+
+Window lengths are env vars (`*_WINDOW_SECONDS`, `EXPLOIT_SESSION_GAP_SECONDS`) with no defaults; the values here are the `docker-compose.yml` ones.
 
 Lock/Unlock events track **value transfer** across bridges. Mint/Burn events track **wrapped token supply** changes.
 
@@ -175,49 +172,42 @@ Dapr used where its strengths apply: ingesters (decouple from Kafka) and analyti
 
 Both models use the same `FinalityBuffer` abstraction with different modes (`Depth` vs `External`).
 
-### RestApiSink Pattern
+### Dapr Pub/Sub Pattern
 
-Flink aggregator sinks directly to REST API (no Kafka output topics):
-- POST per window close (e.g., 1 POST per bridge per 5-min window)
-- 10s connection timeout, 30s request timeout
-- Range inputs serialized as JSON strings — a 78-digit `BigInteger` cannot survive a
-  `long`/`double` on the receiving side as a bare number
+The pipeline uses Dapr on both ends of the Kafka streams for consistent pub/sub abstraction:
 
-**Failure classification.** Each failure is a typed exception, so the sink `catch`es the one case
-it can handle and lets the rest propagate:
+**Ingesters (Publish):**
+- Rust ingesters publish via Dapr HTTP API (`POST /v1.0/publish/{pubsubname}/{topic}`)
+- Dapr sidecar handles Kafka producer configuration, retries, and CloudEvents wrapping
+- Decouples ingester from Kafka client libraries and protocol details
 
-| Exception | Statuses | Handling |
-|---|---|---|
-| `NetworkException` | no response (refused, timed out) | retry |
-| `ServerException` | 5xx | retry |
-| `RateLimitException` | 429, 408 | retry after a 4× longer backoff |
-| `RejectedException` | any other 4xx | log, count in `recordsDroppedFatal`, drop |
+**Alerting Service (Subscribe):**
+- Dapr delivers messages via HTTP POST to subscription endpoints
+- Service registers subscriptions via `/dapr/subscribe` endpoint
+- Dapr sidecar handles Kafka consumer group management, offset tracking, and delivery guarantees
 
-`RestApiSink.post()` is the only place a status number is interpreted: 429/408 → `RateLimitException`,
-5xx → `ServerException`, any other non-2xx → `RejectedException`.
+**Why Dapr for both?**
+- Consistent pub/sub interface across Rust (ingesters) and Kotlin (alerting service)
+- Simplifies testing (mock Dapr HTTP endpoints vs embedded Kafka)
+- Production-ready retries, dead-lettering, and observability without custom implementation
 
-A code that cannot serialize fails the job rather than counting as a drop — a broken serializer is
-a defect in this pipeline, not bad input. Only a 4xx rejection increments `recordsDroppedFatal`.
+**Flink uses native Kafka connectors** (not Dapr) because it needs exactly-once semantics via Kafka transactions and tight integration with checkpointing—capabilities that require native Kafka client protocol, not an HTTP abstraction.
 
-There is no `retriable()` predicate. `SinkException` is `sealed` over the four subtypes, and the
-retry decision is a pattern `switch` in the sink, so the compiler refuses to build a switch that
-misses a failure type. A predicate would invert that: a new subtype would inherit "retry" from the
-base class without anyone deciding it should.
+### Kafka Output Topics
 
-**Retry is inline, not Flink's restart strategy.** A restart replays from the last checkpoint, so
-the operator re-emits every window since then — including the ones that already succeeded — and one
-failing window becomes a burst of duplicate POSTs. An inline retry re-sends only the record that
-failed. Four attempts with a delay of 100ms doubling (capped at 10s, jittered) keep the worst case
-far below the 10-minute checkpoint timeout, so the blocking wait cannot starve a checkpoint.
-Retries are counted in the `sinkRetries` metric.
+Flink aggregator outputs to dedicated alert topics, consumed by the alerting service:
 
-**After retries are exhausted the sink throws.** The record then reaches Flink's fixed-delay
-restart strategy, which is the only remaining option; swallowing it would silently lose a window.
-`RESTART_MAX_ATTEMPTS` bounds that loop so a permanently failing sink ends as a failed job.
+| Pipeline | Output Topic | Schema | Retention |
+|---|---|---|---|
+| Transfer Volume | `bridge-alerts-transfer-volume` | TransferVolumeResult | 7 days |
+| Supply Tracking | `bridge-alerts-supply-tracking` | SupplyTrackingResult | 7 days |
+| Cross-Chain Flow | `bridge-alerts-cross-chain-flow` | CrossChainFlowResult | 7 days |
+| Exploit Detection | `bridge-alerts-exploit-detection` | ExploitDetectionResult | 30 days |
+| Reentrancy Detection | `bridge-alerts-reentrancy` | ReentrancyResult | 30 days |
 
-A stateful restart still replays from the last checkpoint, so a POST that already succeeded before
-the failure can be delivered again. Idempotency on the receiving side is therefore required — the
-sink cannot supply it.
+All topics use JSON serialization (not Avro) for easier Dapr/HTTP consumption. BigInteger fields serialized as strings to prevent precision loss.
+
+**Exactly-once guarantee:** Flink sinks use Kafka transactions with two-phase commit, coordinated with Flink checkpoints. A checkpoint completes only after Kafka confirms the transaction commit, so no duplicates or losses even across restarts.
 
 ### TriState Field-Level Merge
 
@@ -244,8 +234,7 @@ Patterns 4-6 (Unusual Size, New Address, Cross-Chain Correlation) designed but n
 
 ## Known Gaps
 
-See `INGESTER-AGGREGATOR-STATUS.md` for comprehensive gap analysis:
-- Analytics service not migrated (Flink sinks receive 404 and drop the record)
+See `GAPS.md` for comprehensive gap analysis:
 - Token symbols all null (both ingesters hardcode `token_symbol: None`)
 - Message hash not calculated (cross-chain correlation impossible)
 - Only 3/6 exploit patterns implemented

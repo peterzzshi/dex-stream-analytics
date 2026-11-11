@@ -189,13 +189,6 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - BRIDGE_TRANSFER_TOPIC=${TOPIC_TRADING}
       - BRIDGE_SUPPLY_TOPIC=${TOPIC_LIQUIDITY}
-      # analytics-service has not been migrated to bridge routes yet; these
-      # paths model the intended contract and will 404 until it is.
-      - TRANSFER_VOLUME_ENDPOINT=http://analytics-service:8080/api/bridges/transfer-volume
-      - SUPPLY_TRACKING_ENDPOINT=http://analytics-service:8080/api/bridges/supply
-      - CROSS_CHAIN_FLOW_ENDPOINT=http://analytics-service:8080/api/bridges/flow
-      - EXPLOIT_DETECTION_ENDPOINT=http://analytics-service:8080/api/bridges/alert
-      - REENTRANCY_DETECTION_ENDPOINT=http://analytics-service:8080/api/bridges/reentrancy
       - WATERMARK_DELAY_SECONDS=5
       - TRANSFER_WINDOW_SECONDS=300
       - SUPPLY_WINDOW_SECONDS=300
@@ -248,12 +241,12 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Analytics Service: Kotlin/Ktor service for bridge security analytics
-  analytics-service:
+  # Alerting Service: Kotlin/Ktor service for real-time bridge security alerts
+  alerting-service:
     build:
-      context: ./analytics-service
+      context: ./alerting-service
       dockerfile: Dockerfile
-    container_name: analytics-service
+    container_name: alerting-service
     environment:
       - APP_PORT=8080
       - REDIS_HOST=redis
@@ -269,16 +262,16 @@ services:
       - dex-analytics-network
     restart: unless-stopped
 
-  # DAPR sidecar for analytics-service
-  analytics-service-dapr:
+  # DAPR sidecar for alerting-service
+  alerting-service-dapr:
     image: daprio/daprd:1.12.0
-    container_name: analytics-service-dapr
+    container_name: alerting-service-dapr
     command: [
       "./daprd",
-      "-app-id", "analytics-service",
+      "-app-id", "alerting-service",
       "-app-port", "8080",
       "-app-protocol", "http",
-      "-app-channel-address", "analytics-service",
+      "-app-channel-address", "alerting-service",
       "-dapr-http-port", "3502",
       "-dapr-grpc-port", "50002",
       "-components-path", "/components",
@@ -290,9 +283,9 @@ services:
       - ./dapr/config:/config
       # Declarative subscriptions must live in the components/resources path —
       # a separate /subscriptions mount is never read by self-hosted daprd.
-      - ./dapr/subscriptions/analytics-subscriptions.yaml:/components/analytics-subscriptions.yaml:ro
+      - ./dapr/subscriptions/alerting-subscriptions.yaml:/components/alerting-subscriptions.yaml:ro
     depends_on:
-      analytics-service:
+      alerting-service:
         condition: service_started
       kafka-init:
         condition: service_completed_successfully

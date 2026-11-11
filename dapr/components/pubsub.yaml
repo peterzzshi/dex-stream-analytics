@@ -42,4 +42,4 @@ spec:
 scopes:
   - evm-ingester
   - solana-ingester
-  - analytics-service
+  - alerting-service

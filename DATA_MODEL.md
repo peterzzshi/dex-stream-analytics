@@ -1,219 +1,81 @@
 # Data Model
 
-Schema definitions, field semantics, and data flow for the DEX analytics pipeline. The four event
-schemas live in `schemas/` at the repo root and are embedded by `common/src/lib.rs` with
-`include_str!`. The aggregator still codegens from its own copy in
-`aggregator/src/main/resources/avro/`.
+Bridge security monitoring event schemas and data flow.
+
+## Event Schemas
+
+Two Avro schemas in `schemas/`:
+
+### BridgeTransferEvent (`bridge-transfer-events`)
+
+Value movement across bridges (lock/unlock operations).
+
+| Field | Type | Notes |
+|---|---|---|
+| eventId | string | `txHash:logIndex` |
+| blockNumber / blockTimestamp | long | Block context (timestamp in seconds) |
+| transactionHash / logIndex | string / int | Log location |
+| chain / chainName | string | CAIP-2 format (`eip155:1`, `solana:5eykt...`) + display name |
+| bridgeAddress | string | Bridge contract address |
+| protocol | enum | `wormhole`, `layerzero`, `hop`, `allbridge` |
+| direction | enum | `lock`, `unlock` |
+| sender / recipient | string | Initiator vs receiver |
+| token / token_symbol | string / string? | Token address + symbol (symbol currently null) |
+| amount | decimal | Token amount (precision preserved) |
+| destinationChain / sourceChain | string? | Cross-chain routing info |
+| messageHash / sequenceNumber | string? / long? | Protocol-specific correlation (currently null) |
+| gasUsed / gasPrice | long / string | Transaction metrics (currently zero) |
+| eventTimestamp | long | Ingester capture time (milliseconds) |
+
+**Retention**: 7 days
+
+### BridgeSupplyEvent (`bridge-supply-events`)
+
+Wrapped token supply changes (mint/burn operations).
+
+| Field | Type | Notes |
+|---|---|---|
+| (identification fields) | — | Same as BridgeTransferEvent |
+| operation | enum | `mint`, `burn` |
+| recipient | string | Who receives minted/burned tokens |
+| wrappedToken / wrappedTokenSymbol | string / string? | Wrapped token address + symbol |
+| amount | decimal | Token amount |
+| sourceChain / messageHash | string? | Cross-chain correlation |
+| gasUsed / gasPrice / eventTimestamp | — | Same as BridgeTransferEvent |
+
+**Retention**: 30 days
 
 ## Data Flow
 
-```mermaid
-graph LR
-    subgraph Blockchain
-        LOG[Contract Logs]
-    end
-
-    subgraph Input Events
-        SE[SwapEvent]
-        ME[MintEvent]
-        BE[BurnEvent]
-        TE[TransferEvent]
-    end
-
-    subgraph Output Analytics
-        AA[AggregatedAnalytics]
-        LA[LiquidityAnalytics]
-        MT[MarketTrend]
-    end
-
-    LOG --> SE & ME & BE & TE
-    SE --> AA
-    SE --> MT
-    ME & BE & TE --> LA
+```
+Blockchain Logs → Ingester (Rust) → Kafka (2 topics) → Flink Aggregator (5 pipelines) → REST API → Analytics Service
 ```
 
-## Blockchain Source
+**Finality guarantees**:
+- EVM: 12-block confirmation depth with deduplication cache
+- Solana: External finalized-slot polling
 
-Two chain families emit the same four event schemas. Which pools are monitored is config, not code:
-`evm.toml` declares Uniswap V2 pairs, `solana.toml` declares Raydium AMM v4 pools, and one ingester
-instance per family serves every pool declared for it.
+**Event ordering**: Guaranteed within transaction (logIndex). Across transactions, event-time windows with 60s bounded-out-of-orderness watermarks absorb reordering.
 
-**EVM** — Uniswap V2 Pair (`IUniswapV2Pair`), log-based. Monitored Solidity events:
-- `Swap(address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to)`
-- `Mint(address indexed sender, uint amount0, uint amount1)`
-- `Burn(address indexed sender, uint amount0, uint amount1, address indexed to)`
+**Validation**: Ingester validates log structure and skips unclassifiable logs. Avro encoding enforces schema on write. Aggregator validates CloudEvent `type` before decoding; malformed payloads are logged and dropped (not routed to DLQ).
 
-**Solana** — Raydium AMM v4, instruction-based. There are no event logs: a swap is an instruction decoded
-by its 8-byte discriminator, and its fill amounts come from diffing the transaction's
-`preTokenBalances` against `postTokenBalances` for the pool's vault accounts. Vaults are resolved per
-instruction by AMM authority plus mint, not by fixed position — see
-[solana-ingester/README.md](solana-ingester/README.md).
+## Aggregated Analytics
 
-### Event Granularity
+Five Flink pipelines produce window-aggregated results sent via HTTP POST to analytics service:
 
-Every event is a **pool-level fill** — the vault delta for one pool — not a user intent. This matters
-most on Solana, where a swap is reached as an inner CPI from a router: one routed trade across three
-pools produces three events. Three consequences downstream:
+| Pipeline | Window | Key | Output |
+|---|---|---|---|
+| Transfer Volume | 5-min tumbling | `(chain, bridgeAddress)` | Lock/unlock counts, total amounts |
+| Supply Tracking | 5-min tumbling | `(chain, bridgeAddress)` | Net minted, total wrapped supply |
+| Cross-Chain Flow | 5-min tumbling | `bridgeAddress` | Net flow, imbalance ratio |
+| Exploit Detection | 60-sec session | `bridgeAddress:chain` | Suspicious patterns detected |
+| Reentrancy Detection | 5-sec tumbling | `transactionHash` | Multiple lock/unlock in single tx |
 
-- Summing `volumeUSD` across pools double-counts routed flow.
-- `sender` is the fee payer, which for routed flow is the router, so `sender`-based trader metrics
-  describe routers rather than traders. (The same caveat applies to EVM router swaps, where `sender`
-  and `recipient` differ.)
-- Per-pool price and depth remain well defined, and are what the analytics are built on.
+Window durations are env vars with no defaults; values shown are from `docker-compose.yml`.
 
-## Schema Conventions
+## Known Limitations
 
-- **Immutability**: all fields are read-only after creation.
-- **Financial precision**: token amounts stored as `string` (Wei) to avoid floating-point loss.
-- **Timestamps**: block timestamps in seconds; window and processing timestamps in milliseconds.
-- **Identifiers**: `eventId` = `txHash:logIndex` (unique within a chain, and stable across
-  reprocessing). Address encoding follows the chain family: `0x`-prefixed hex on EVM, base58
-  pubkeys on Solana. An event's full identity is `(blockNumber, txHash, logIndex)`.
-- **Optionality**: only truly optional fields use Avro `["null", "type"]` unions.
-- **Chain field**: every event carries `chain` (CAIP-2 string, e.g. `eip155:1`,
-  `solana:5eykt...`) and `chainName` (display label). The pool key downstream is
-  `(chain, pairAddress)`. `chain` is not an EIP-155 numeric chain ID, since the latter can name
-  neither a Solana cluster nor any non-EVM chain.
-
-## Input Event Schemas
-
-### SwapEvent (`dex-trading-events`)
-
-Represents a token trade on the pair.
-
-| Field                                           | Type          | Notes                                                  |
-|-------------------------------------------------|---------------|--------------------------------------------------------|
-| eventId                                         | string        | Deduplication key, `txHash:logIndex`                   |
-| blockNumber / blockTimestamp                    | long          | Block context (timestamp in seconds)                   |
-| transactionHash / logIndex                      | string / int  | Log location                                           |
-| pairAddress                                     | string        | Pair contract                                          |
-| token0 / token1                                 | string        | Token addresses                                        |
-| token0Symbol / token1Symbol                     | string?       | Resolved by the ingester (cached)                      |
-| sender / recipient                              | string        | Initiator vs output receiver (differ for router swaps) |
-| amount0In / amount1In / amount0Out / amount1Out | string        | Wei amounts                                            |
-| price                                           | double        | Execution price (token1 / token0)                      |
-| volumeUSD                                       | double?       | USD volume via the chain's oracle                      |
-| gasUsed / gasPrice                              | long / string | Transaction-level gas metrics                          |
-| eventTimestamp                                  | long          | Ingester capture time                                  |
-
-### MintEvent (`dex-liquidity-events`)
-
-Liquidity added to the pool.
-
-| Field | Type | Notes |
-|---|---|---|
-| eventId, blockNumber, blockTimestamp, transactionHash, logIndex | — | Same as SwapEvent |
-| pairAddress, token0, token1, token0Symbol?, token1Symbol? | — | Pair context |
-| sender | string | Router address (not the actual LP) |
-| amount0 / amount1 | string | Tokens added (Wei) |
-
-### BurnEvent (`dex-liquidity-events`)
-
-Liquidity removed from the pool.
-
-| Field | Type | Notes |
-|---|---|---|
-| (identification + pair fields) | — | Same as MintEvent |
-| sender | string | Always the pair contract |
-| recipient | string | LP receiving tokens back |
-| amount0 / amount1 | string | Tokens removed (Wei) |
-
-### TransferEvent (`dex-liquidity-events`)
-
-LP token movement for correlation with Mint/Burn.
-
-| Field | Type | Notes |
-|---|---|---|
-| (identification + pair fields) | — | Same pattern |
-| from / to | string | LP token sender / receiver |
-| value | string | LP tokens moved (Wei) |
-
-## Output Schemas
-
-### AggregatedAnalytics (`dex-trading-analytics`)
-
-5-minute tumbling window over SwapEvents.
-
-| Field | Type | Notes |
-|---|---|---|
-| windowId | string | `pairAddress:windowStart:windowEnd` |
-| windowStart / windowEnd | long | Millisecond epoch |
-| pairAddress, token0Symbol?, token1Symbol? | — | Pair context |
-| twap | double | Volume-weighted average price: $\frac{\sum(price \times volume)}{\sum volume}$ |
-| openPrice / closePrice / highPrice / lowPrice | double | OHLC from first, last, max, min swap prices |
-| priceVolatility | double | $(high - low) / twap$ |
-| totalVolume0 / totalVolume1 | string | Aggregate Wei volumes |
-| volumeUSD | double? | Sum of per-swap USD volumes |
-| swapCount / uniqueTraders | int | Activity metrics |
-| largestSwapValue / largestSwapAddress | string | Whale detection |
-| totalGasUsed / averageGasPrice | long / string | Gas metrics |
-| arbitrageCount | int | Swaps where sender == recipient |
-| repeatedTraders | string[] | Addresses with >1 swap in window |
-| processedAt | long | Flink processing time |
-
-### LiquidityAnalytics (`dex-liquidity-analytics`)
-
-1-hour tumbling window over Mint/Burn/Transfer events.
-
-| Field | Type | Notes |
-|---|---|---|
-| windowId, windowStart, windowEnd, pairAddress | — | Same pattern as above |
-| mintCount / burnCount | int | Event counts |
-| totalLpTokensMinted / totalLpTokensBurned / netLpTokenChange | string | LP token accounting (Wei) |
-| uniqueProviders | int | Distinct LP addresses |
-| processedAt | long | Flink processing time |
-
-### MarketTrend (`dex-market-trends`)
-
-30-minute sliding window (5-minute slide) over SwapEvents.
-
-| Field | Type | Notes |
-|---|---|---|
-| windowId | string | `pairAddress:trend:windowStart:windowEnd` |
-| windowStart / windowEnd | long | Window boundaries |
-| pairAddress, token0Symbol?, token1Symbol? | — | Pair context |
-| avgPrice / openPrice / closePrice | double | Price summary |
-| priceChangePercent | double | $(close - open) / open \times 100$ |
-| volumeUSD | double? | Aggregate volume |
-| swapCount / uniqueTraders | int | Activity metrics |
-| volatility | double | $(high - low) / twap$ |
-| trend | string | `BULLISH` (>1 %), `BEARISH` (<−1 %), `NEUTRAL` |
-| processedAt | long | Flink processing time |
-
-### PoolHealth (computed at query time)
-
-Not persisted — computed by the analytics service from stored data.
-
-| Field                           | Type         | Notes                                            |
-|---------------------------------|--------------|--------------------------------------------------|
-| pairAddress                     | string       | Pool identifier                                  |
-| overallScore                    | double       | Weighted composite (0–1)                         |
-| tradingScore                    | double       | 50 % weight — volume, activity, trader diversity |
-| liquidityScore                  | double       | 50 % weight — LP event activity                  |
-| trend                           | string       | Latest market trend direction                    |
-| volumeUSD24h / uniqueTraders24h | double / int | 24-hour metrics                                  |
-| evaluatedAt                     | long         | Computation timestamp                            |
-
-## Data Quality
-
-- **Reorgs**: depth-based finality gate in the EVM ingester (`confirmations` in `evm.toml`, 12 for
-  mainnet), external finalized-slot polling on Solana; 60 s watermark in Flink absorbs late arrivals.
-- **RPC lag**: `lastProcessedBlock` should be monitored against chain head. Subscription limits are
-  provider-specific — free tiers commonly throttle WebSocket subscriptions beyond a small number
-  of concurrent filters (Alchemy rejects Solana `logsSubscribe` outright on the free tier), so
-  pool count in config is bounded by the RPC plan, not by the pipeline.
-- **Event ordering**: Guaranteed within a transaction (logIndex). Across transactions, event-time
-  windows plus 60 s bounded-out-of-orderness watermarks absorb the reordering that asynchronous
-  finality produces. There is no `allowedLateness` or `sideOutputLateData` on any pipeline, so an
-  event arriving more than 60 s behind the watermark is dropped rather than captured — see
-  `GAPS.md` 11. Cross-topic ordering is also lossy on Solana: `log_index` is the instruction index *within* a
-  transaction, so it is not recoverable across transactions in a slot (`GAPS.md` 10).
-- **Validation**: The ingester checks that a decoded log has the expected topic and field count
-  and skips logs it cannot classify; Avro encoding then enforces the schema on write. The
-  aggregator checks the CloudEvent `type` before decoding; a mismatch, malformed CloudEvent, or
-  bad Avro payload throws and is routed to the deserialization-error side output (a DLQ stream)
-  rather than failing the job. Decoded amount fields are cross-validated: negative or
-  unparseable amounts are rejected, and an event with every amount field at zero (e.g.
-  `amount0In`/`amount1In`/`amount0Out`/`amount1Out` all zero) is rejected as degenerate.
-- **Known limitation**: the ingester's finality buffer is in-memory. A restart drops events that
-  were observed but not yet published; there is no Ethereum-side replay of that gap.
+- Token symbols always null (no enrichment implemented)
+- Message hash not calculated (cross-chain correlation impossible)
+- Gas data placeholder (no transaction receipt fetching)
+- DLQ topic exists but aggregator doesn't route to it

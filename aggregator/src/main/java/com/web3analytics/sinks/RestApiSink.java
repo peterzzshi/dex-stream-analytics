@@ -33,7 +33,7 @@ import org.slf4j.LoggerFactory;
  * already succeeded, so a single failing window turns into a burst of duplicate POSTs. An inline
  * retry re-sends only the record that failed.
  *
- * <p>The costs are bounded: {@link #MAX_ATTEMPTS} attempts with a delay capped at
+ * <p>The costs are bounded: {@link RestApiSinkWriter#MAX_ATTEMPTS} attempts with a delay capped at
  * {@link RetryPolicy#MAX_BACKOFF_MS} keep the worst case far under the 10-minute checkpoint
  * timeout, so the blocking wait cannot starve a checkpoint.
  */

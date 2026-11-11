@@ -1,7 +1,6 @@
 # dex-stream-analytics
 
-Real-time Flink pipeline scoring DEX pool health from live DEX events (Uniswap V2 on EVM, Raydium AMM
-v4 on Solana).
+Real-time Flink pipeline for bridge security monitoring from live bridge events (Wormhole, LayerZero, Hop on EVM; Wormhole Portal, Allbridge on Solana).
 
 ## Commands
 

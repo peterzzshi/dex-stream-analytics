@@ -3,6 +3,7 @@ package com.web3analytics.analytics
 import com.web3analytics.analytics.config.AppConfig
 import com.web3analytics.analytics.config.analyticsObjectMapper
 import com.web3analytics.analytics.config.jacksonConfig
+import com.web3analytics.analytics.route.bridgeRoutes
 import com.web3analytics.analytics.route.dashboardRoutes
 import com.web3analytics.analytics.route.dashboardWebSocket
 import com.web3analytics.analytics.route.liquidityRoutes
@@ -10,7 +11,9 @@ import com.web3analytics.analytics.route.poolRoutes
 import com.web3analytics.analytics.route.subscriptionRoutes
 import com.web3analytics.analytics.route.tradingRoutes
 import com.web3analytics.analytics.store.AnalyticsStore
+import com.web3analytics.analytics.store.BridgeStore
 import com.web3analytics.analytics.store.RedisAnalyticsStore
+import com.web3analytics.analytics.store.RedisBridgeStore
 import com.web3analytics.analytics.stream.AnalyticsEventBus
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -46,11 +49,13 @@ fun main() {
 fun Application.analyticsModule(
     config: AppConfig = AppConfig.load(),
     storeOverride: AnalyticsStore? = null,
+    bridgeStoreOverride: BridgeStore? = null,
     eventBusOverride: AnalyticsEventBus? = null
 ) {
     val mapper = analyticsObjectMapper()
 
     val store: AnalyticsStore = storeOverride ?: RedisAnalyticsStore(config, mapper)
+    val bridgeStore: BridgeStore = bridgeStoreOverride ?: RedisBridgeStore(config, mapper)
     val eventBus = eventBusOverride ?: AnalyticsEventBus()
 
     install(ContentNegotiation) {
@@ -88,6 +93,7 @@ fun Application.analyticsModule(
 
         staticResources("/static", "static")
 
+        bridgeRoutes(bridgeStore)
         tradingRoutes(store)
         liquidityRoutes(store)
         poolRoutes(store)

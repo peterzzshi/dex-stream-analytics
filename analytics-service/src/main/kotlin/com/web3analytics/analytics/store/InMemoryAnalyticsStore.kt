@@ -102,6 +102,5 @@ class InMemoryAnalyticsStore : AnalyticsStore {
 
     override fun trackedLiquidityPairs(): Set<PairAddress> = liquidityByPair.keys.toSet()
 
-    override fun allTrackedPairs(): Set<PairAddress> =
-        tradingByPair.keys + liquidityByPair.keys + trendsByPair.keys
+    override fun allTrackedPairs(): Set<PairAddress> = tradingByPair.keys + liquidityByPair.keys + trendsByPair.keys
 }

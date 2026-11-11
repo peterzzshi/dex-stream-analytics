@@ -302,7 +302,7 @@
 
   <modelVersion>4.0.0</modelVersion>
 
-  <name>Web3 DEX Analytics - Flink Aggregator</name>
+  <name>Bridge Security Monitor - Flink Aggregator</name>
 
   <packaging>jar</packaging>
 

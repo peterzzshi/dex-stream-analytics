@@ -1,0 +1,21 @@
+{
+  "type": "record",
+  "name": "TransferVolumeAlert",
+  "namespace": "com.web3analytics.alerts",
+  "doc": "Aggregated transfer volume alert from 5-minute tumbling window. Tracks lock/unlock counts and total amounts per bridge.",
+  "fields": [
+    {"name": "bridgeAddress", "type": "string"},
+    {"name": "chain", "type": "string", "doc": "CAIP-2 format: eip155:1 or solana:5eykt..."},
+    {"name": "protocol", "type": {"type": "enum", "name": "BridgeProtocol", "symbols": ["wormhole", "layerzero", "hop", "allbridge"]}},
+    {"name": "windowStart", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "windowEnd", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "severity", "type": {"type": "enum", "name": "Severity", "symbols": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}},
+    {"name": "alertType", "type": "string", "default": "TRANSFER_VOLUME"},
+    {"name": "lockCount", "type": "int"},
+    {"name": "unlockCount", "type": "int"},
+    {"name": "totalLockAmount", "type": {"type": "bytes", "logicalType": "decimal", "precision": 78, "scale": 0}},
+    {"name": "totalUnlockAmount", "type": {"type": "bytes", "logicalType": "decimal", "precision": 78, "scale": 0}},
+    {"name": "token0Symbol", "type": ["null", "string"], "default": null, "doc": "TriState merge result - may be null if enrichment not implemented"},
+    {"name": "token1Symbol", "type": ["null", "string"], "default": null, "doc": "TriState merge result - may be null if enrichment not implemented"}
+  ]
+}

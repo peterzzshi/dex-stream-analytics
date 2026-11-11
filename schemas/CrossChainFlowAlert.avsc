@@ -1,0 +1,18 @@
+{
+  "type": "record",
+  "name": "CrossChainFlowAlert",
+  "namespace": "com.web3analytics.alerts",
+  "doc": "Cross-chain flow alert from 5-minute tumbling window. Tracks net flow and imbalance ratio across chains.",
+  "fields": [
+    {"name": "bridgeAddress", "type": "string"},
+    {"name": "protocol", "type": {"type": "enum", "name": "BridgeProtocol", "symbols": ["wormhole", "layerzero", "hop", "allbridge"]}},
+    {"name": "windowStart", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "windowEnd", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "severity", "type": {"type": "enum", "name": "Severity", "symbols": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}},
+    {"name": "alertType", "type": "string", "default": "CROSS_CHAIN_FLOW"},
+    {"name": "totalInflow", "type": {"type": "bytes", "logicalType": "decimal", "precision": 78, "scale": 0}},
+    {"name": "totalOutflow", "type": {"type": "bytes", "logicalType": "decimal", "precision": 78, "scale": 0}},
+    {"name": "netFlow", "type": {"type": "bytes", "logicalType": "decimal", "precision": 78, "scale": 0}},
+    {"name": "imbalanceRatio", "type": "double", "doc": "Inflow / (Inflow + Outflow), rounded to 4 decimal places"}
+  ]
+}

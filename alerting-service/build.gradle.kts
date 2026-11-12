@@ -1,7 +1,8 @@
 plugins {
     kotlin("jvm") version "2.4.0"
     application
-    id("org.jlleitschuh.gradle.ktlint") version "12.1.1"
+    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"
+    id("com.github.davidmc24.gradle.plugin.avro") version "1.9.1"
 }
 
 group = "com.web3analytics"
@@ -14,12 +15,11 @@ repositories {
 val ktorVersion = "3.5.2"
 val logbackVersion = "1.6.3"
 val jedisVersion = "5.1.0"
-val jacksonVersion = "2.18.12"
+val jacksonVersion = "2.22.4"
 val coroutinesVersion = "1.9.0"
 val junitVersion = "5.11.4"
 val ktlintVersion = "1.3.1"
-val ktlintPluginVersion = "12.1.1"
-val avroVersion = "1.12.0"
+val avroVersion = "1.12.2"
 
 dependencies {
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
@@ -52,8 +52,41 @@ kotlin {
     jvmToolchain(21)
 }
 
+sourceSets {
+    main {
+        java {
+            srcDir("build/generated-main-avro-java")
+        }
+    }
+}
+
+tasks.named("compileKotlin") {
+    dependsOn("generateAvroJava")
+}
+
+tasks.named("compileTestKotlin") {
+    dependsOn("generateTestAvroJava")
+}
+
+tasks.named("runKtlintCheckOverMainSourceSet") {
+    dependsOn("generateAvroJava")
+}
+
+tasks.named("runKtlintCheckOverTestSourceSet") {
+    dependsOn("generateTestAvroJava")
+}
+
 tasks.test {
     useJUnitPlatform()
+}
+
+avro {
+    stringType.set("String")
+    setOutputCharacterEncoding("UTF-8")
+}
+
+tasks.named<com.github.davidmc24.gradle.plugin.avro.GenerateAvroJavaTask>("generateAvroJava") {
+    source("$projectDir/../schemas")
 }
 
 ktlint {

@@ -9,7 +9,6 @@ import com.web3analytics.alerting.websocket.AlertFilters
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.jackson.jackson
 import io.ktor.server.application.Application
-import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -25,8 +24,11 @@ import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.pingPeriod
 import io.ktor.server.websocket.timeout
 import io.ktor.server.websocket.webSocket
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import org.slf4j.LoggerFactory
-import java.time.Duration
 import java.util.UUID
 
 fun main() {
@@ -45,7 +47,7 @@ fun Application.module() {
     val mapper = Json.mapper
     val store = RedisAlertStore(jedisPool, mapper, config.alertRetentionLimit)
     val broadcaster = AlertBroadcaster(mapper)
-    val consumer = AlertConsumer(store, broadcaster, mapper, config.schemasPath)
+    val consumer = AlertConsumer(store, broadcaster, mapper)
 
     install(ContentNegotiation) {
         jackson {
@@ -152,9 +154,8 @@ fun Application.module() {
             broadcaster.addConnection(sessionId, this, filters)
 
             try {
-                for (frame in incoming) {
-                    // Client messages ignored (one-way broadcast)
-                }
+                // Keep connection open; client messages are ignored (one-way broadcast)
+                incoming.consumeEach { }
             } finally {
                 broadcaster.removeConnection(sessionId)
             }
@@ -171,6 +172,9 @@ fun Application.module() {
                     )
                 )
             } catch (e: Exception) {
+                if (e is CancellationException) {
+                    currentCoroutineContext().ensureActive()
+                }
                 call.respond(
                     HttpStatusCode.ServiceUnavailable,
                     mapOf(

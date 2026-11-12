@@ -43,6 +43,7 @@ impl BridgeNormalizer {
         instruction_data: &[u8],
         block_timestamp: i64,
         event_timestamp: i64,
+        fee: i64,
     ) -> Result<Event> {
         let event_id = format!("{}:0", tx_signature);
 
@@ -59,6 +60,7 @@ impl BridgeNormalizer {
             tx_signature,
             0,
             event_timestamp,
+            fee,
         )
     }
 }

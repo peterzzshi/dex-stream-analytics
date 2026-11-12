@@ -26,6 +26,7 @@ pub fn decode_instruction(
     transaction_hash: String,
     log_index: i32,
     event_timestamp: i64,
+    fee: i64,
 ) -> Result<Event> {
     if data.is_empty() {
         bail!("empty instruction data");
@@ -46,6 +47,7 @@ pub fn decode_instruction(
             transaction_hash,
             log_index,
             event_timestamp,
+            fee,
         ),
         BridgeProtocol::Allbridge => decode_allbridge(
             discriminator,
@@ -60,6 +62,7 @@ pub fn decode_instruction(
             transaction_hash,
             log_index,
             event_timestamp,
+            fee,
         ),
     }
     .with_context(|| {
@@ -84,6 +87,7 @@ fn decode_wormhole(
     transaction_hash: String,
     log_index: i32,
     event_timestamp: i64,
+    fee: i64,
 ) -> Result<Event> {
     match discriminator {
         1 => {
@@ -100,7 +104,7 @@ fn decode_wormhole(
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
                 direction: TransferDirection::Lock,
-                gas_used: 0,
+                gas_used: fee,
                 gas_price: "0".to_string(),
                 event_timestamp,
                 sender: "".to_string(),
@@ -128,7 +132,7 @@ fn decode_wormhole(
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
                 direction: TransferDirection::Unlock,
-                gas_used: 0,
+                gas_used: fee,
                 gas_price: "0".to_string(),
                 event_timestamp,
                 sender: "".to_string(),
@@ -156,7 +160,7 @@ fn decode_wormhole(
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
                 operation: SupplyOperation::Mint,
-                gas_used: 0,
+                gas_used: fee,
                 gas_price: "0".to_string(),
                 event_timestamp,
                 recipient: "".to_string(),
@@ -184,6 +188,7 @@ fn decode_allbridge(
     transaction_hash: String,
     log_index: i32,
     event_timestamp: i64,
+    fee: i64,
 ) -> Result<Event> {
     match discriminator {
         10 => {
@@ -200,7 +205,7 @@ fn decode_allbridge(
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
                 direction: TransferDirection::Lock,
-                gas_used: 0,
+                gas_used: fee,
                 gas_price: "0".to_string(),
                 event_timestamp,
                 sender: "".to_string(),
@@ -228,7 +233,7 @@ fn decode_allbridge(
                 bridge_address,
                 protocol: protocol.as_str().to_string(),
                 direction: TransferDirection::Unlock,
-                gas_used: 0,
+                gas_used: fee,
                 gas_price: "0".to_string(),
                 event_timestamp,
                 sender: "".to_string(),

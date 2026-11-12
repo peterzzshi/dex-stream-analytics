@@ -54,6 +54,8 @@ impl BridgeHandler {
             return Ok(vec![]);
         }
 
+        let fee = meta.fee as i64;
+
         let Some(tx_data) = tx.transaction.transaction.decode() else {
             warn!("Failed to decode transaction: {}", signature);
             return Ok(vec![]);
@@ -69,6 +71,7 @@ impl BridgeHandler {
                 instruction_data,
                 block_timestamp,
                 event_timestamp,
+                fee,
             ) {
                 Ok(event) => {
                     events.push(event);

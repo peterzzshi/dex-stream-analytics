@@ -354,7 +354,6 @@ dependencies = [
  "apache-avro",
  "chrono",
  "cloudevents-sdk",
- "num-bigint",
  "rand",
  "reqwest",
  "serde",

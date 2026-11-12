@@ -31,7 +31,14 @@ impl BridgeNormalizer {
         }
     }
 
-    pub fn normalize(&self, log: Log, block_timestamp: i64, event_timestamp: i64) -> Result<Event> {
+    pub fn normalize(
+        &self,
+        log: Log,
+        block_timestamp: i64,
+        event_timestamp: i64,
+        gas_used: i64,
+        gas_price: String,
+    ) -> Result<Event> {
         let block_number = log.block_number.context("log missing block number")?;
         let transaction_hash = log
             .transaction_hash
@@ -52,6 +59,8 @@ impl BridgeNormalizer {
             transaction_hash,
             log_index.as_u32() as i32,
             event_timestamp,
+            gas_used,
+            gas_price,
         )
     }
 }

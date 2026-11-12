@@ -86,6 +86,8 @@ impl<P: Middleware + 'static> BridgeListener<P> {
             .transaction_hash
             .context("log missing transaction hash")?;
 
+        let (gas_used, gas_price) = self.fetch_gas_data(transaction_hash).await?;
+
         let event_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|elapsed| elapsed.as_secs() as i64)
@@ -93,7 +95,7 @@ impl<P: Middleware + 'static> BridgeListener<P> {
 
         match self
             .normalizer
-            .normalize(log, block_timestamp, event_timestamp)
+            .normalize(log, block_timestamp, event_timestamp, gas_used, gas_price)
         {
             Ok(event) => Ok(Some(event)),
             Err(e) => {
@@ -133,6 +135,23 @@ impl<P: Middleware + 'static> BridgeListener<P> {
         }
 
         Ok(timestamp)
+    }
+
+    async fn fetch_gas_data(&self, transaction_hash: ethers::types::H256) -> Result<(i64, String)> {
+        let receipt = self
+            .rpc
+            .get_transaction_receipt(transaction_hash)
+            .await
+            .context("failed to fetch transaction receipt")?
+            .context("receipt not found")?;
+
+        let gas_used = receipt.gas_used.map(|g| g.as_u64() as i64).unwrap_or(0);
+        let gas_price = receipt
+            .effective_gas_price
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "0".to_string());
+
+        Ok((gas_used, gas_price))
     }
 }
 

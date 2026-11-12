@@ -23,7 +23,7 @@ toml = "=0.8.23"
 
 # Avro encoding
 apache-avro = "0.22.0"
-num-bigint = "0.4"
+num-bigint = "0.5.1"
 
 # Logging
 tracing = "0.1"

@@ -106,6 +106,18 @@ public sealed interface TriState<T> {
         };
     }
 
+    /**
+     * Converts to a nullable value for Avro union types. Defined maps to the value, Undefined and
+     * Null both map to null (Avro unions don't distinguish undefined from null).
+     */
+    default T toNullable() {
+        return switch (this) {
+          case Defined<T>(var value) -> value;
+          case Undefined<T> ignored -> null;
+          case Null<T> ignored2 -> null;
+        };
+    }
+
     record Defined<T>(T value) implements TriState<T> {
         public Defined {
             Objects.requireNonNull(value, "Defined value cannot be null");

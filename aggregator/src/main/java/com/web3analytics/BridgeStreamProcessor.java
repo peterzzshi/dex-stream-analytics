@@ -1,18 +1,28 @@
 package com.web3analytics;
 
+import com.web3analytics.alerts.CrossChainFlowAlert;
+import com.web3analytics.alerts.ExploitDetectionAlert;
+import com.web3analytics.alerts.ReentrancyAlert;
+import com.web3analytics.alerts.SupplyTrackingAlert;
+import com.web3analytics.alerts.TransferVolumeAlert;
 import com.web3analytics.bridge.BridgeSupplyEvent;
 import com.web3analytics.bridge.BridgeTransferEvent;
+import com.web3analytics.config.AlertTopics;
 import com.web3analytics.config.BridgeStreamProcessorConfig;
 import com.web3analytics.functions.CrossChainFlowAggregateFunction;
 import com.web3analytics.functions.ExploitDetectionAggregateFunction;
 import com.web3analytics.functions.ReentrancyDetectionAggregateFunction;
 import com.web3analytics.functions.SupplyTrackingAggregateFunction;
 import com.web3analytics.functions.TransferVolumeAggregateFunction;
+import com.web3analytics.mappers.CrossChainFlowAlertMapper;
+import com.web3analytics.mappers.ExploitDetectionAlertMapper;
+import com.web3analytics.mappers.ReentrancyAlertMapper;
+import com.web3analytics.mappers.SupplyTrackingAlertMapper;
+import com.web3analytics.mappers.TransferVolumeAlertMapper;
 import com.web3analytics.model.BridgeActivity;
 import com.web3analytics.model.EventKind;
 import com.web3analytics.model.WindowStamped;
 import com.web3analytics.serde.BridgeEventDeserializer;
-import com.web3analytics.sinks.RestApiSink;
 import java.io.Serial;
 import java.time.Duration;
 import java.util.function.ToLongFunction;
@@ -21,8 +31,12 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
+import org.apache.flink.connector.base.DeliveryGuarantee;
+import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
+import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.formats.avro.AvroSerializationSchema;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
@@ -102,47 +116,91 @@ public class BridgeStreamProcessor {
   private static void buildTransferVolumePipeline(
       final DataStream<BridgeTransferEvent> transferStream,
       final BridgeStreamProcessorConfig config) {
+    final KafkaSink<TransferVolumeAlert> sink = KafkaSink.<TransferVolumeAlert>builder()
+        .setBootstrapServers(config.kafkaBootstrapServers())
+        .setRecordSerializer(KafkaRecordSerializationSchema.builder()
+            .setTopic(AlertTopics.TRANSFER_VOLUME)
+            .setValueSerializationSchema(
+                AvroSerializationSchema.forSpecific(TransferVolumeAlert.class))
+            .build())
+        .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+        .build();
+
     transferStream
         .keyBy(BridgeStreamProcessor::bridgeChainKey)
         .window(TumblingEventTimeWindows.of(Duration.ofSeconds(config.transferWindowSeconds())))
         .aggregate(new TransferVolumeAggregateFunction(), new WindowStamp<>())
-        .sinkTo(new RestApiSink<>(config.transferVolumeEndpoint()))
-        .name("Transfer Volume REST Sink");
+        .map(new TransferVolumeAlertMapper(Duration.ofSeconds(config.transferWindowSeconds())))
+        .sinkTo(sink)
+        .name("Transfer Volume Kafka Sink");
   }
 
   private static void buildSupplyTrackingPipeline(
       final DataStream<BridgeSupplyEvent> supplyStream,
       final BridgeStreamProcessorConfig config) {
+    final KafkaSink<SupplyTrackingAlert> sink = KafkaSink.<SupplyTrackingAlert>builder()
+        .setBootstrapServers(config.kafkaBootstrapServers())
+        .setRecordSerializer(KafkaRecordSerializationSchema.builder()
+            .setTopic(AlertTopics.SUPPLY_TRACKING)
+            .setValueSerializationSchema(
+                AvroSerializationSchema.forSpecific(SupplyTrackingAlert.class))
+            .build())
+        .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+        .build();
+
     supplyStream
         .keyBy(BridgeStreamProcessor::bridgeChainKey)
         .window(TumblingEventTimeWindows.of(Duration.ofSeconds(config.supplyWindowSeconds())))
         .aggregate(new SupplyTrackingAggregateFunction(), new WindowStamp<>())
-        .sinkTo(new RestApiSink<>(config.supplyTrackingEndpoint()))
-        .name("Supply Tracking REST Sink");
+        .map(new SupplyTrackingAlertMapper(Duration.ofSeconds(config.supplyWindowSeconds())))
+        .sinkTo(sink)
+        .name("Supply Tracking Kafka Sink");
   }
 
   private static void buildCrossChainFlowPipeline(
       final DataStream<BridgeActivity> activityStream,
       final BridgeStreamProcessorConfig config) {
+    final KafkaSink<CrossChainFlowAlert> sink = KafkaSink.<CrossChainFlowAlert>builder()
+        .setBootstrapServers(config.kafkaBootstrapServers())
+        .setRecordSerializer(KafkaRecordSerializationSchema.builder()
+            .setTopic(AlertTopics.CROSS_CHAIN_FLOW)
+            .setValueSerializationSchema(
+                AvroSerializationSchema.forSpecific(CrossChainFlowAlert.class))
+            .build())
+        .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+        .build();
+
     activityStream
         .keyBy(BridgeActivity::bridgeAddress)
         .window(TumblingEventTimeWindows.of(Duration.ofSeconds(config.flowWindowSeconds())))
         .aggregate(new CrossChainFlowAggregateFunction(), new WindowStamp<>())
-        .sinkTo(new RestApiSink<>(config.crossChainFlowEndpoint()))
-        .name("Cross-Chain Flow REST Sink");
+        .map(new CrossChainFlowAlertMapper(Duration.ofSeconds(config.flowWindowSeconds())))
+        .sinkTo(sink)
+        .name("Cross-Chain Flow Kafka Sink");
   }
 
   private static void buildExploitDetectionPipeline(
       final DataStream<BridgeActivity> activityStream,
       final BridgeStreamProcessorConfig config) {
+    final KafkaSink<ExploitDetectionAlert> sink = KafkaSink.<ExploitDetectionAlert>builder()
+        .setBootstrapServers(config.kafkaBootstrapServers())
+        .setRecordSerializer(KafkaRecordSerializationSchema.builder()
+            .setTopic(AlertTopics.EXPLOIT_DETECTION)
+            .setValueSerializationSchema(
+                AvroSerializationSchema.forSpecific(ExploitDetectionAlert.class))
+            .build())
+        .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+        .build();
+
     activityStream
         .keyBy(activity -> activity.bridgeAddress() + ":" + activity.chain())
         .window(EventTimeSessionWindows.withGap(
             Duration.ofSeconds(config.exploitSessionGapSeconds())))
         .aggregate(new ExploitDetectionAggregateFunction(), new WindowStamp<>())
         .filter(acc -> !acc.suspiciousPatterns.isEmpty())
-        .sinkTo(new RestApiSink<>(config.exploitDetectionEndpoint()))
-        .name("Exploit Detection REST Sink");
+        .map(new ExploitDetectionAlertMapper(Duration.ofSeconds(config.exploitSessionGapSeconds())))
+        .sinkTo(sink)
+        .name("Exploit Detection Kafka Sink");
   }
 
   /**
@@ -152,14 +210,25 @@ public class BridgeStreamProcessor {
   private static void buildReentrancyDetectionPipeline(
       final DataStream<BridgeTransferEvent> transferStream,
       final BridgeStreamProcessorConfig config) {
+    final KafkaSink<ReentrancyAlert> sink = KafkaSink.<ReentrancyAlert>builder()
+        .setBootstrapServers(config.kafkaBootstrapServers())
+        .setRecordSerializer(KafkaRecordSerializationSchema.builder()
+            .setTopic(AlertTopics.REENTRANCY)
+            .setValueSerializationSchema(
+                AvroSerializationSchema.forSpecific(ReentrancyAlert.class))
+            .build())
+        .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+        .build();
+
     transferStream
         .keyBy(BridgeTransferEvent::getTransactionHash)
         .window(TumblingEventTimeWindows.of(
             Duration.ofSeconds(config.reentrancyWindowSeconds())))
         .aggregate(new ReentrancyDetectionAggregateFunction(), new WindowStamp<>())
         .filter(acc -> acc.lockCount > 1 || acc.unlockCount > 1)
-        .sinkTo(new RestApiSink<>(config.reentrancyDetectionEndpoint()))
-        .name("Reentrancy Detection REST Sink");
+        .map(new ReentrancyAlertMapper(Duration.ofSeconds(config.reentrancyWindowSeconds())))
+        .sinkTo(sink)
+        .name("Reentrancy Detection Kafka Sink");
   }
 
   /**

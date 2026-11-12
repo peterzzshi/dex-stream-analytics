@@ -143,12 +143,11 @@
           <version>5.0.0-2.2</version>
         </dependency>
 
-        <!-- Flink Avro (unused at runtime — provided for compilation only) -->
+        <!-- Flink Avro for Kafka sink serialization -->
         <dependency>
           <artifactId>flink-avro</artifactId>
-            <groupId>org.apache.flink</groupId>
-          <scope>provided</scope>
-            <version>${flink.version}</version>
+          <groupId>org.apache.flink</groupId>
+          <version>${flink.version}</version>
         </dependency>
 
         <!-- Avro -->

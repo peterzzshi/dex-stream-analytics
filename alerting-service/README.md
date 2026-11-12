@@ -1,12 +1,13 @@
 # Alerting Service
 
-Kotlin/Ktor real-time alerting service consuming bridge security threat signals from Flink via Dapr/Kafka subscription. Maintains recent alert cache in Redis and broadcasts to WebSocket clients with severity-based filtering.
+Kotlin/Ktor service that consumes bridge security alerts from Flink via Dapr, caches recent alerts in
+Redis, and broadcasts them to WebSocket clients.
 
 ## Requirements
 
 - JDK 21
 - Redis 7+
-- Dapr sidecar with Kafka component
+- Dapr sidecar with the `kafka-pubsub` component (for subscribed mode)
 
 ## Build & Test
 
@@ -15,53 +16,67 @@ Kotlin/Ktor real-time alerting service consuming bridge security threat signals 
 ./gradlew build
 ```
 
+Avro alert classes are generated from `../schemas` at build time (Gradle plugin
+`com.github.davidmc24.gradle.plugin.avro`); the generated sources land in
+`build/generated-main-avro-java`.
+
 ## Run
 
-Standalone (requires reachable Redis and Dapr sidecar):
 ```bash
-REDIS_HOST=localhost REDIS_PORT=6379 APP_PORT=8080 ./gradlew run
+REDIS_HOST=localhost REDIS_PORT=6379 ./gradlew run
 ```
 
-Full stack (recommended):
+The server binds `0.0.0.0:8080` unconditionally — `APP_PORT` is not read by the server. If Redis is
+unreachable the process fails at startup, not on first request.
 
-```bash
-docker compose up -d --build   # from repo root
-```
-
-Connect to WebSocket at `ws://localhost:8080/ws/alerts` for real-time bridge security alerts.
+Full stack: `docker compose up -d --build` from the repo root (see `GAPS.md` for the currently broken
+image build).
 
 ## Configuration
 
-| Variable                    | Default     | Description                        |
-|-----------------------------|-------------|------------------------------------|
-| `APP_PORT`                  | `8080`      | HTTP server port                   |
-| `REDIS_HOST`                | `localhost` | Redis host                         |
-| `REDIS_PORT`                | `6379`      | Redis port                         |
-| `REDIS_PASSWORD`            | —           | Redis password (optional)          |
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `ALERT_RETENTION_LIMIT` | `100` | Alerts kept per bridge+chain |
+| `WS_KEEPALIVE_SECONDS` | `30` | WebSocket ping period |
+
+`SCHEMAS_PATH` is read into `AppConfig` but unused — Avro decoding uses compiled generated classes,
+not `.avsc` files at runtime.
 
 ## API
 
 ### WebSocket
-- `GET /ws/alerts` - Real-time alert broadcast
-  - Query params: `bridgeAddress`, `chain`, `minSeverity` (all optional)
+
+- `GET /ws/alerts` — live alert stream, one JSON object per text frame
+  - `bridgeAddress` — exact match
+  - `chain` — CAIP-2 chain id; Cross-Chain Flow alerts never match (they carry no chain)
+  - `severity` — minimum severity: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`
+  - `alertTypes` — comma-separated, e.g. `EXPLOIT_DETECTION,REENTRANCY`
 
 ### REST
-- `GET /health` - Health check
-- `GET /alerts/recent?bridgeAddress={addr}&limit={n}` - Recent alerts (default 100)
 
-### Dapr Subscriptions
-Service registers subscriptions for Flink output topics via `/dapr/subscribe`:
-- `bridge-alerts-transfer-volume`
-- `bridge-alerts-supply-tracking`
-- `bridge-alerts-cross-chain-flow`
-- `bridge-alerts-exploit-detection`
-- `bridge-alerts-reentrancy`
+- `GET /health` — pings Redis, reports WebSocket connection count
+- `GET /alerts/{bridgeAddress}/{chain}?limit=100` — recent alerts for one bridge+chain, newest first
 
-See [ARCHITECTURE.md](../ARCHITECTURE.md) for complete data flow.
+### Dapr
 
-## Design Notes
+- `POST /dapr/subscribe` — returns the five subscriptions (Dapr also loads the declarative
+  subscriptions from `../dapr/subscriptions/alerting-subscriptions.yaml`)
+- `POST /events/{transfer-volume,supply-tracking,cross-chain-flow,exploit-detection,reentrancy}` —
+  CloudEvent handler per topic
 
-- **Dapr subscription pattern** - Service receives POST to `/events/{alert-type}` from Dapr sidecar when new alerts arrive
-- **Redis as cache only** - Stores recent 100 alerts per bridge (not a time-series store)
-- **WebSocket fan-out** - Kotlin coroutines handle concurrent connections with structured concurrency
-- **Alert deduplication** - Same alert pattern within 5-minute window is suppressed
+## Message Format
+
+Dapr delivers a CloudEvent whose `data_base64` holds the Avro-binary alert. The service decodes it with
+a `SpecificDatumReader` against the generated class. A missing or undecodable `data_base64` is logged
+and dropped; the handler still returns 200 so the sidecar does not redeliver a poison message
+indefinitely.
+
+## Storage
+
+Redis sorted set per `bridge:alerts:{bridgeAddress}:{chain}`, scored by `windowEnd` epoch-millis,
+capped at `ALERT_RETENTION_LIMIT`. `ZADD ... GT` prevents a replayed older window from displacing a
+newer one.
+
+See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full data flow.

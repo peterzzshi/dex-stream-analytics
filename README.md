@@ -1,111 +1,84 @@
-# DEX Stream Analytics
+# Bridge Security Monitor
 
-Real-time analytics for DeFi liquidity pools — score pool health and track market trends from
-finalized on-chain events.
+Real-time exploit detection for cross-chain bridges. Ingests lock/unlock and mint/burn events from
+Wormhole, LayerZero and Hop on Ethereum and from Wormhole Portal and Allbridge on Solana, aggregates
+them in Flink, and pushes severity-ranked alerts to a WebSocket.
 
-## Problem
+Bridges are the highest-value target in DeFi, and the damage is done in the first minutes of an
+exploit — so the interesting question is not "what happened last week" but "is this bridge behaving
+outside its normal envelope right now". This pipeline answers that with windows over finalized
+events, not sampled block-by-block state.
 
-LPs can't identify toxic pools before committing capital, and existing tools (Dune, DEXTools)
-aggregate after the fact with 5-15 min lag. This pipeline computes per-pool metrics from
-finalized chain events with bounded, event-time semantics, so the numbers are reproducible
-rather than sampled from a moving head.
+## What It Detects
 
-**On latency, honestly**: this is a post-trade pipeline, not a pre-trade warning system. An
-EVM event is published only after 12 confirmations (~2.4 min) and then has to clear a 60 s
-watermark and a window boundary, so EVM analytics land several minutes after the block.
-Solana finalizes in ~13 s and is correspondingly faster. Anything that warns a trader *before*
-their transaction executes would need the mempool, not the chain.
+Five windowed pipelines, each emitting to its own Kafka topic as an Avro alert:
 
-## Solution
+| Signal | Window | What it fires on |
+|---|---|---|
+| Transfer volume | 5 min | Lock/unlock totals per `(bridge, chain)` cross size thresholds |
+| Supply tracking | 5 min | Net minted/burned; **burn-only with no mints is critical** (drain pattern) |
+| Cross-chain flow | 5 min | Inflow/outflow imbalance per bridge across chains |
+| Exploit patterns | 60 s session | Rapid transfers (>10 events), large single transfer, lock/mint supply mismatch |
+| Reentrancy | 5 s | More than one lock or unlock in a single transaction hash |
 
-Apache Flink pipeline processing live DEX events from both EVM and Solana chains:
+## Pipeline
 
-- **Pool health scoring**: Composite metric (trading + liquidity), computed on finalized events
-  after the chain's own finality gate rather than intra-block
-- **Market analytics**: TWAP, OHLC, volume from on-chain events
-- **Multi-chain support**: EVM (Uniswap V2) and Solana (Raydium AMM v4) ingesters publishing to shared Kafka topics
+```
+Ethereum ─┐                          ┌─ 5 alert topics ─┐
+          ├─ Rust ingesters ─ Kafka ─┤                  ├─ Dapr ─ Kotlin service ─ Redis + WebSocket
+Solana  ──┘   (via Dapr)   3 topics  └─ Flink 5 jobs ──┘        (subscription)     (recent alerts, live)
+```
 
-The pipeline, topics, and aggregations are chain-neutral; adding a chain means adding an ingester instance,
-not changing the aggregator or analytics service.
+| Component | Language | Role |
+|---|---|---|
+| `evm-ingester/` | Rust | `eth_subscribe` logs from Ethereum; 12-block depth finality |
+| `solana-ingester/` | Rust | `logsSubscribe` + finalized-slot polling |
+| `aggregator/` | Java 21 / Flink | 5 windowed pipelines, Avro sinks |
+| `alerting-service/` | Kotlin / Ktor | Dapr consumer, Redis recent-alert cache, WebSocket fan-out |
+| `dapr/` | YAML | Kafka pub/sub component and alert subscriptions |
 
-**Chain families**: EVM (log-based) and Solana (account-diff-based), both implemented and both
-emitting identical Avro schemas to the shared topics.
-
-## Tech Stack
-
-| Component            | Language          | Purpose                                |
-|----------------------|-------------------|----------------------------------------|
-| `evm-ingester/`      | Rust              | EVM listener + Chainlink pricing       |
-| `solana-ingester/`   | Rust              | Solana listener + Pyth pricing         |
-| `aggregator/`        | Java 21 / Flink 2 | Stream processing (4 window pipelines) |
-| `analytics-service/` | Kotlin / Ktor     | REST API + pool health scoring         |
-| `dapr/`              | YAML              | Pub/sub component configs              |
-
-Avro event schemas have a single source of truth in the repo-root `schemas/` directory, embedded
-by the shared `common/` crate. The aggregator still codegens from its own copy in
-`aggregator/src/main/resources/avro/`.
-
-## Documentation
-
-- [ARCHITECTURE.md](ARCHITECTURE.md) — System design, data flow, design decisions
-- [DATA_MODEL.md](DATA_MODEL.md) — Schema definitions, field semantics, evolution
-- Component READMEs — Build and run instructions
+`common/` is the shared Rust crate: config, Avro encoding, CloudEvents envelope, retry, finality
+buffer, publisher. Event and alert schemas live once in root `schemas/` and are codegen'd by both the
+Maven and Gradle builds.
 
 ## Quick Start
 
-Start all services:
-
 ```bash
+cp .env.example .env          # add ETH_RPC_URL and/or SOLANA_RPC_URL
 docker compose up -d --build
 ```
 
-Without RPC URLs configured, `evm-ingester` and `solana-ingester` will fail validation and restart continuously (this is
-expected). The rest of the pipeline (Kafka, Flink, analytics API) runs independently.
+Without RPC URLs the two ingesters fail validation and restart continuously; that is the intended
+fail-fast behavior, and the rest of the stack still runs.
 
-### Live Chain Data (Optional)
+| Endpoint | URL |
+|---|---|
+| Health (also reports Redis and live WS connections) | `http://localhost:8080/health` |
+| WebSocket alerts | `ws://localhost:8080/ws/alerts` |
+| Recent alerts for a bridge | `http://localhost:8080/alerts/{bridgeAddress}/{chain}` |
+| Flink UI | `http://localhost:8081` |
 
-To ingest real blockchain events:
+WebSocket clients can filter server-side with `?bridgeAddress=`, `?chain=`, `?severity=` (minimum)
+and `?alertTypes=`.
 
-```bash
-cp .env.example .env
-# Edit .env: add ETH_RPC_URL and/or SOLANA_RPC_URL
-docker compose up -d --build
-```
+## Latency, Honestly
 
-### Access Points
+This is a post-finality detector, not a pre-execution shield. An EVM event is published only after 12
+confirmations (~2.4 min) and then has to clear a 5 s watermark and a window boundary. Solana finality
+polling lands around 13 s. Nobody is front-run — the goal is to fire before an exploit has finished
+draining, which most of these windows can do, and before a human watching dashboards would notice,
+which they reliably do.
 
-- **Analytics API**: http://localhost:8080/health
-- **Flink Web UI**: http://localhost:8081
+## Documentation
 
-View logs: `docker compose logs -f flink-jobmanager analytics-service`
-
-### Cleanup
-
-Remove all containers and images:
-
-```bash
-docker compose down --rmi all
-docker image prune -f
-```
+- [ARCHITECTURE.md](ARCHITECTURE.md) — data flow, design decisions, alert semantics
+- [DATA_MODEL.md](DATA_MODEL.md) — event and alert schemas
+- [GAPS.md](GAPS.md) — known limitations and outstanding defects
+- [E2E-TEST.md](E2E-TEST.md) — end-to-end verification walkthrough
+- [AGENT.md](AGENT.md) — conventions and commands
 
 ## Build Individual Components
 
-See component READMEs for standalone build instructions:
-
-- `evm-ingester/README.md`
-- `solana-ingester/README.md`
+- `evm-ingester/README.md`, `solana-ingester/README.md`
 - `aggregator/README.md`
-- `analytics-service/README.md`
-
-## Roadmap
-
-**✅ Multi-chain support** — Solana ingester now implemented. The chain-agnostic design
-(see [ARCHITECTURE.md](ARCHITECTURE.md#design-decisions)) is validated: `solana-ingester` emits identical Avro schemas
-to shared Kafka topics; aggregator and analytics-service process EVM and Solana events without modification.
-
-**Next**:
-
-1. **Natural-language query layer** — a read-only compiler that turns a prose question into a
-   typed query plan over the analytics API. The model selects a query; the engine returns every
-   number.
-2. **Additional EVM L2s** — config entries in `evm-ingester`, no new code
+- `alerting-service/README.md`

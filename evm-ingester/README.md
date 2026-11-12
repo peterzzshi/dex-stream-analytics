@@ -1,10 +1,11 @@
 # evm-ingester
 
-Streams Uniswap V2 events from an EVM chain over a WebSocket RPC subscription, enriches them with Chainlink pricing,
-and publishes to Kafka via Dapr.
+Subscribes to bridge contract events on an EVM chain over a WebSocket RPC, waits for block-depth
+finality, and publishes `BridgeTransferEvent` / `BridgeSupplyEvent` records to Kafka via Dapr.
 
-Runs as a single instance today. The design is one instance per EVM chain — same binary, different config,
-publishing to shared Kafka topics with Solana events.
+One process serves every bridge in its config file, each with its own listener task. The design is
+one instance per EVM chain — same binary, different config — publishing to the same topics as the
+Solana ingester.
 
 ## Run
 
@@ -12,51 +13,60 @@ publishing to shared Kafka topics with Solana events.
 docker compose up -d evm-ingester evm-ingester-dapr
 ```
 
-Set `ETH_RPC_URL` in `.env`. It embeds an API key, so it is never written to a file in the repo or image.
+Set `ETH_RPC_URL` (a `wss://` URL) in `.env` at the repo root. It carries an API key, so it is never
+written to a file in the repo or the image. Without it the process exits at startup — the compose
+service is configured to crash-loop rather than idle.
 
 ## Configuration
 
-Two sources; `src/config.rs` is the source of truth for both.
+Two sources. `src/config.rs` is the source of truth for both.
 
-**Environment variables** (all required): `CONFIG_FILE`, `DAPR_HOST`, `DAPR_HTTP_PORT`, `PUBSUB_NAME`, `TOPIC_TRADING`,
-`TOPIC_LIQUIDITY`, `TOPIC_DLQ`, `ETH_RPC_URL`.
+**Environment variables** — all required, no fallback defaults:
 
-**Config file** (`CONFIG_FILE`, `evm.toml` at the repo root): chain identity (CAIP-2 id, name), confirmations, a
-`[[tokens]]` table (address, symbol, Chainlink feed, stablecoin flag) and `[[pools]]`.
+`DAPR_HOST`, `DAPR_HTTP_PORT`, `PUBSUB_NAME`, `TOPIC_TRADING`, `TOPIC_LIQUIDITY`, `TOPIC_DLQ`,
+`ETH_RPC_URL`.
 
-**Validation at startup:**
+| Variable | Meaning |
+|---|---|
+| `TOPIC_TRADING` | transfers topic (`bridge-transfer-events`) |
+| `TOPIC_LIQUIDITY` | supply topic (`bridge-supply-events`) |
+| `TOPIC_DLQ` | dead-letter topic for evicted and undeliverable events |
 
-- Unknown TOML keys → fail
-- Invalid addresses (not 0x + 40 hex chars) → fail, field name in error
-- Duplicate token/pool addresses (case-insensitive) → fail
-- Stablecoin with chainlink_feed → fail (pick one)
-- No pools configured → fail
-- Pool references undeclared token → fail
+The names are legacy from the DEX version; the topics they point at carry bridge records.
 
-RPC retry (max retries, backoff, timeout) is a default in code.
-`ETH_RPC_URL` is a secret and is redacted from `Debug` output.
+`BRIDGE_CONFIG_FILE` is optional and defaults to `evm-bridges.toml`.
+
+**Config file** (`evm-bridges.toml`) — one `[[bridge]]` table per contract:
+
+| Key | Notes |
+|---|---|
+| `name` | display name, copied into the record |
+| `protocol` | `wormhole`, `layerzero`, `hop` or `allbridge` |
+| `address` | checksummed or lowercase `0x` + 40 hex chars |
+| `chain_id` | numeric; rendered as CAIP-2 `eip155:<id>` |
+| `chain_name` | free text, copied into the record |
+
+**Validated at load** (`bridge_file_config.rs`): unknown TOML keys, empty bridge list, malformed
+address, duplicate address (case-insensitive), and unknown protocol all fail at startup with the
+offending field and value in the message.
 
 ## Design Notes
 
-- **Reorg handling**: logs with `removed: true` from the WebSocket subscription are dropped, not forwarded.
-- **Finality gate**: events are only considered final once the chain has advanced `confirmations` blocks past them (12
-  for Ethereum mainnet). Depth-based, so no separate polling task is needed, unlike the Solana ingester's
-  external finality buffer.
-- **Enrichment at ingest**: Chainlink pricing resolved here, so Flink reprocessing reproduces the same values.
-- **Failure visibility**: Events evicted from the finality buffer on overflow are dead-lettered to `TOPIC_DLQ`.
-  Publishes retry with backoff, then fall back to the same DLQ topic. If the Dapr sidecar itself is unreachable,
-  the process logs and exits rather than degrading silently. Decode failures are logged. No metrics, no health
-  check endpoint.
+- **Reorg handling**: logs flagged `removed: true` by the subscription are dropped, not forwarded.
+- **Finality gate**: an event becomes final only once the chain has advanced 12 blocks past it
+  (`confirmations` is a constant in `config.rs`, not a TOML key). Depth-based, so no separate poller
+  is needed — unlike the Solana ingester's external-slot model.
+- **Gas data**: populated from the transaction receipt (`gas_used`, `effective_gas_price`), fetched
+  when the event is emitted, not when it is first seen.
+- **Failure visibility**: events evicted from the finality buffer on overflow are dead-lettered to
+  `TOPIC_DLQ`; publishes retry with backoff and then fall back to that same topic. An unreachable
+  Dapr sidecar logs and exits rather than degrading silently. Decode failures are logged and the log
+  is skipped. There is no metrics exporter and no health endpoint.
 
-## Test
+## Test & Lint
 
 ```bash
 cargo test
-```
-
-## Lint
-
-```bash
 cargo clippy -- -D warnings
 cargo fmt -- --check
 ```

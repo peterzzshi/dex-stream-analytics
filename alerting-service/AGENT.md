@@ -1,10 +1,17 @@
-# analytics-service conventions
+# alerting-service conventions
 
 Extends root `AGENT.md`.
 
 - Idiom: follow *Effective Kotlin* (Moskała); prefer immutable data classes.
-- Apply `/functional-programming-patterns` — the `analytics/fp/` package (`Either`, `RoutePipeline`) already does this; extend it rather than adding ad hoc error handling to new routes.
-- Package layout target: flatten to one level under `com.web3analytics.*` — drop the `.analytics` middle segment (`com.web3analytics.analytics.route` → `com.web3analytics.route`, same for `config`, `health`, `stream`, `fp`, `model`, `store`). Current code doesn't match yet; apply on the planned rebuild, not as a drive-by rename.
-- Testing: use functions as parameters to avoid mocking (project rule). Real fakes (`InMemoryAnalyticsStore`) injected
-  via DI (`analyticsModule(storeOverride = ...)`) for route tests; pure-function/behavioral tests for `fp/` logic. No
-  mocking framework.
+- Package layout is flat under `com.web3analytics.alerting.*`: `config`, `consumer`, `model`, `store`,
+  `websocket`. Keep new packages one level deep.
+- Alerts are a sealed interface (`Alert`) with one implementation per Avro alert type; dispatch with
+  `when` over the sealed hierarchy rather than string matching where the type is known. Wire-format
+  dispatch on `alertType` happens only in `RedisAlertStore.deserializeAlert`.
+- Coroutines: blocking Redis calls run under `Dispatchers.IO` inside `RedisAlertStore`. Keep the Ktor
+  route handlers suspension-only; do not add blocking calls to them.
+- Testing: pure-behavior tests against real fakes; no mocking framework. Inject dependencies
+  (`AlertStore`, `AlertBroadcaster` with an overridden `broadcast`) rather than stubbing frameworks.
+  There is currently one test, `RedisAlertStoreTest` — new behavior needs a test beside it.
+- WebSocket filters live in `AlertFilters` and are applied server-side in `AlertBroadcaster`; a new
+  alert type must be added to `AlertFilters.matches` or `chain` filtering silently breaks for it.
